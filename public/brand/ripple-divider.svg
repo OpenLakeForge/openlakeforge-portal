@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 120" preserveAspectRatio="none" aria-hidden="true">
+  <!-- Section divider: three ripple lines, echoing the mark. Recolor with currentColor. -->
+  <g fill="none" stroke="currentColor" stroke-linecap="round">
+    <path stroke-width="2" opacity=".9" d="M0 40C240 70 480 82 720 82S1200 70 1440 40"/>
+    <path stroke-width="1.5" opacity=".55" d="M0 64C240 92 480 104 720 104S1200 92 1440 64"/>
+    <path stroke-width="1" opacity=".3" d="M0 86C240 110 480 118 720 118S1200 110 1440 86"/>
+  </g>
+</svg>

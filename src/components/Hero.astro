@@ -1,0 +1,64 @@
+---
+interface Props {
+  routeCount: number;
+}
+const { routeCount } = Astro.props;
+
+// Lake-bed depth contours: one outline, scaled and turned.
+const rings = [
+  [0.6, 8, 0.9], [1.1, 4, 0.8], [1.7, -2, 0.7], [2.4, -7, 0.6], [3.2, -11, 0.5],
+  [4.1, -14, 0.4], [5.1, -16, 0.3], [6.3, -18, 0.2], [7.6, -20, 0.15],
+];
+const outline = "M0-100C70-104 130-70 150-20S135 85 70 102-55 118-110 80-160-10-120-60-55-97 0-100Z";
+---
+
+<section>
+  <svg class="contours" viewBox="0 0 1200 800" aria-hidden="true">
+    <g fill="none" stroke="currentColor" transform="translate(760 360)">
+      {rings.map(([scale, rotate, opacity]) => (
+        <path d={outline} transform={`scale(${scale}) rotate(${rotate})`} opacity={opacity} stroke-width={(1.2 / scale).toFixed(3)} />
+      ))}
+    </g>
+  </svg>
+  <div class="wrap">
+    <div class="label">OpenLakeForge &middot; {routeCount} routes</div>
+    <h1>Your lakehouse is <em>running</em>.</h1>
+    <p>Every user-facing service on this cluster, grouped by stage. Shared services first, then each stage.</p>
+  </div>
+</section>
+
+<style>
+  section { position: relative; overflow: hidden; }
+  .contours {
+    position: absolute;
+    right: -8rem;
+    top: -12rem;
+    width: 60rem;
+    height: 40rem;
+    color: var(--olf-highlight);
+    opacity: var(--contour-opacity);
+    pointer-events: none;
+  }
+  .wrap {
+    position: relative;
+    padding-top: var(--olf-space-24);
+    padding-bottom: var(--olf-space-16);
+  }
+  .label { color: var(--olf-highlight); }
+  h1 {
+    margin: var(--olf-space-5) 0;
+    font: 400 clamp(2.75rem, 7vw, var(--olf-text-display)) / var(--olf-leading-display) var(--olf-font-display);
+    letter-spacing: -0.01em;
+  }
+  em { color: var(--olf-highlight); }
+  p {
+    max-width: 40rem;
+    margin: 0;
+    font-size: var(--olf-text-body-lg);
+    line-height: 1.67;
+    color: var(--olf-text-secondary);
+  }
+  @media (max-width: 40rem) {
+    .wrap { padding-top: var(--olf-space-12); padding-bottom: var(--olf-space-8); }
+  }
+</style>

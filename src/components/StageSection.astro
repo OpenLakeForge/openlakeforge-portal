@@ -1,0 +1,57 @@
+---
+import type { Section } from "../lib/routes";
+import ServiceCard from "./ServiceCard.astro";
+
+interface Props {
+  section: Section;
+}
+const { section } = Astro.props;
+const count = section.services.length;
+---
+
+<section aria-labelledby={`stage-${section.stage}`}>
+  <div class="head">
+    <span class="label depth">{section.depth}</span>
+    <span class="tick"></span>
+    <h2 id={`stage-${section.stage}`}>{section.heading}</h2>
+    <span class={`label tag tag-${section.stage}`}>{section.stage}</span>
+    <span class="rule"></span>
+    <span class="label count">{count} {count === 1 ? "service" : "services"}</span>
+  </div>
+  <ul>
+    {section.services.map((service) => <li><ServiceCard service={service} /></li>)}
+  </ul>
+</section>
+
+<style>
+  section { margin-top: var(--olf-space-12); }
+  .head { display: flex; align-items: center; gap: var(--olf-space-3); margin-bottom: var(--olf-space-5); }
+  .depth { text-transform: none; }
+  .tick { width: var(--olf-space-6); height: 1.5px; background: var(--olf-border-strong); }
+  h2 { margin: 0; font: 500 var(--olf-text-h3) / var(--olf-leading-h3) var(--olf-font-heading); letter-spacing: -0.01em; }
+  .rule { flex: 1; height: 1px; background: var(--olf-border-subtle); }
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.15rem var(--olf-space-2);
+    border-radius: var(--olf-radius-sm);
+    background: var(--olf-tint-neutral);
+    color: var(--olf-text-secondary);
+    font-size: 0.6875rem;
+  }
+  .tag::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .tag-dev { background: var(--olf-tint-highlight); color: var(--olf-link); }
+  .tag-prod { background: var(--olf-tint-warning); color: var(--olf-warning); }
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+    gap: var(--olf-space-5);
+  }
+  @media (max-width: 40rem) {
+    .count, .rule { display: none; }
+  }
+</style>

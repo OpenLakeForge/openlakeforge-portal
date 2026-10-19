@@ -1,0 +1,254 @@
+/*
+ * OpenLakeForge design tokens — "Deep Water".
+ *
+ * One file shared by the docs site and the platform portal. Primitives are
+ * raw values; components only ever read the semantic layer (--olf-*), which
+ * flips between the dark default and the light theme.
+ *
+ * Mirrors the "OpenLakeForge — Design System" Figma file variable for
+ * variable: Primitives / Color (Dark, Light) / Spacing / Radius.
+ * The translucent --olf-tint-* (and --olf-bg-accent-subtle) are its tint/*.
+ */
+
+:root {
+  /* ── Primitives: abyss (sea-blue neutrals, the water column) ── */
+  --abyss-950: #071a2a;
+  --abyss-900: #0b2235;
+  --abyss-850: #0f2a40;
+  --abyss-800: #14334c;
+  --abyss-700: #1c4260;
+  --abyss-600: #285574;
+  --abyss-500: #3d6b8c;
+  --abyss-400: #6a91ae;
+  --abyss-300: #9cbad0;
+  --abyss-200: #c7d9e6;
+  --abyss-100: #e4eef5;
+  --abyss-50: #f2f7fa;
+
+  /* ── Primitives: lake (brand blue, from the logo waves) ── */
+  --lake-900: #0c2e52;
+  --lake-800: #103f70;
+  --lake-700: #135190;
+  --lake-600: #1766b5;
+  --lake-500: #1f7fd8;
+  --lake-400: #3d9aea;
+  --lake-300: #69b6f2;
+  --lake-200: #a2d2f8;
+  --lake-100: #d0e9fc;
+  --lake-50: #eaf5fe;
+
+  /* ── Primitives: shallows (azure — the logo's ripples) ── */
+  --shallows-700: #005d8f;
+  --shallows-600: #0079b8;
+  --shallows-500: #0096e0;
+  --shallows-400: #12b4ff;
+  --shallows-300: #5cc9ff;
+  --shallows-200: #a6e1ff;
+
+  /* ── Primitives: brand (the two logo colors, exact) ── */
+  --brand-anvil: #0a2c6b;
+  --brand-ripple: #12b4ff;
+
+  /* ── Primitives: status ── */
+  --reed-600: #1f9d63;
+  --reed-400: #3dd68c;
+  --sand-600: #c48f12;
+  --sand-400: #f5c451;
+  --rose-600: #d63649;
+  --rose-400: #ff6b7a;
+
+  /* ── Primitives: medallion layers (diagrams, badges) ── */
+  --medallion-bronze: #c8864a;
+  --medallion-silver: #a7b4c2;
+  --medallion-gold: #e9b949;
+
+  /* ── Typography ── */
+  --olf-font-display: "Instrument Serif", Georgia, "Times New Roman", serif;
+  --olf-font-heading: "Space Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --olf-font-body: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --olf-font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+  /* size / line-height pairs (px at a 16px root) */
+  --olf-text-display: 4.5rem;   /* 72 / 76 — hero, Instrument Serif */
+  --olf-leading-display: 1.05;
+  --olf-text-h1: 3rem;          /* 48 / 56 */
+  --olf-leading-h1: 1.15;
+  --olf-text-h2: 2rem;          /* 32 / 40 */
+  --olf-leading-h2: 1.25;
+  --olf-text-h3: 1.5rem;        /* 24 / 32 */
+  --olf-leading-h3: 1.33;
+  --olf-text-h4: 1.125rem;      /* 18 / 28 */
+  --olf-leading-h4: 1.55;
+  --olf-text-body-lg: 1.125rem; /* 18 / 30 */
+  --olf-text-body: 1rem;        /* 16 / 26 */
+  --olf-leading-body: 1.65;
+  --olf-text-small: 0.875rem;   /* 14 / 22 */
+  --olf-text-label: 0.75rem;    /* 12 / 16 — mono, uppercase, tracked */
+  --olf-tracking-label: 0.12em;
+  --olf-text-code: 0.875rem;    /* 14 / 22 */
+
+  /* ── Spacing (4px grid) ── */
+  --olf-space-0: 0;
+  --olf-space-0-5: 0.125rem; /* 2 */
+  --olf-space-1: 0.25rem;    /* 4 */
+  --olf-space-2: 0.5rem;     /* 8 */
+  --olf-space-3: 0.75rem;    /* 12 */
+  --olf-space-4: 1rem;       /* 16 */
+  --olf-space-5: 1.25rem;    /* 20 */
+  --olf-space-6: 1.5rem;     /* 24 */
+  --olf-space-8: 2rem;       /* 32 */
+  --olf-space-10: 2.5rem;    /* 40 */
+  --olf-space-12: 3rem;      /* 48 */
+  --olf-space-16: 4rem;      /* 64 */
+  --olf-space-20: 5rem;      /* 80 */
+  --olf-space-24: 6rem;      /* 96 */
+  --olf-space-32: 8rem;      /* 128 */
+
+  /* ── Radius: squared-off, technical ── */
+  --olf-radius-xs: 2px;
+  --olf-radius-sm: 4px;
+  --olf-radius-md: 6px;
+  --olf-radius-lg: 10px;
+  --olf-radius-xl: 16px;
+  --olf-radius-full: 999px;
+
+  /* ── Layout ── */
+  --olf-content-width: 46rem;   /* docs prose column, ~72ch */
+  --olf-page-width: 80rem;      /* 1280 */
+  --olf-sidebar-width: 17rem;
+  --olf-toc-width: 14rem;
+
+  /* ── Motion: slow, like water ── */
+  --olf-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --olf-duration-fast: 120ms;
+  --olf-duration: 220ms;
+}
+
+/* ── Semantic: Dark (default — the deep lake) ── */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --olf-bg-base: var(--abyss-950);
+  --olf-bg-surface: var(--abyss-900);
+  --olf-bg-raised: var(--abyss-850);
+  --olf-bg-code: var(--abyss-850);
+  --olf-bg-accent-subtle: rgb(61 154 234 / 0.12);
+  --olf-tint-neutral: rgb(156 186 208 / 0.12);
+  --olf-tint-highlight: rgb(92 201 255 / 0.10);
+  --olf-tint-info: rgb(105 182 242 / 0.10);
+  --olf-tint-success: rgb(61 214 140 / 0.12);
+  --olf-tint-warning: rgb(245 196 81 / 0.12);
+  --olf-tint-danger: rgb(255 107 122 / 0.12);
+  --olf-tint-bronze: rgb(200 134 74 / 0.14);
+  --olf-tint-silver: rgb(167 180 194 / 0.14);
+  --olf-tint-gold: rgb(233 185 73 / 0.14);
+
+  --olf-border-subtle: var(--abyss-800);
+  --olf-border-default: var(--abyss-700);
+  --olf-border-strong: var(--abyss-500);
+
+  --olf-text-primary: var(--abyss-100);
+  --olf-text-secondary: var(--abyss-300);
+  --olf-text-muted: var(--abyss-400);
+  --olf-text-inverse: var(--abyss-950);
+
+  --olf-accent: var(--lake-400);
+  --olf-accent-hover: var(--lake-300);
+  --olf-accent-text: var(--abyss-950);
+  --olf-link: var(--shallows-300);
+  --olf-highlight: var(--shallows-300);
+  --olf-focus-ring: rgb(92 201 255 / 0.55);
+
+  --olf-success: var(--reed-400);
+  --olf-warning: var(--sand-400);
+  --olf-danger: var(--rose-400);
+  --olf-info: var(--lake-300);
+
+  --olf-shadow-raised: 0 1px 0 rgb(255 255 255 / 0.04) inset, 0 12px 32px -12px rgb(0 0 0 / 0.6);
+  --olf-glow: 0 0 0 1px rgb(61 154 234 / 0.35), 0 8px 40px -8px rgb(61 154 234 / 0.35);
+}
+
+/* ── Semantic: Light (the surface on a clear day) ── */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --olf-bg-base: var(--abyss-50);
+  --olf-bg-surface: #ffffff;
+  --olf-bg-raised: var(--lake-50);
+  --olf-bg-code: var(--abyss-900);
+  --olf-bg-accent-subtle: rgb(23 102 181 / 0.08);
+  --olf-tint-neutral: rgb(61 107 140 / 0.08);
+  --olf-tint-highlight: rgb(0 121 184 / 0.08);
+  --olf-tint-info: rgb(23 102 181 / 0.07);
+  --olf-tint-success: rgb(31 157 99 / 0.10);
+  --olf-tint-warning: rgb(196 143 18 / 0.10);
+  --olf-tint-danger: rgb(214 54 73 / 0.08);
+  --olf-tint-bronze: rgb(200 134 74 / 0.14);
+  --olf-tint-silver: rgb(167 180 194 / 0.22);
+  --olf-tint-gold: rgb(233 185 73 / 0.18);
+
+  --olf-border-subtle: var(--abyss-100);
+  --olf-border-default: var(--abyss-200);
+  --olf-border-strong: var(--abyss-400);
+
+  --olf-text-primary: var(--abyss-900);
+  --olf-text-secondary: var(--abyss-600);
+  --olf-text-muted: var(--abyss-500);
+  --olf-text-inverse: #ffffff;
+
+  --olf-accent: var(--lake-600);
+  --olf-accent-hover: var(--lake-700);
+  --olf-accent-text: #ffffff;
+  --olf-link: var(--lake-600);
+  --olf-highlight: var(--shallows-600);
+  --olf-focus-ring: rgb(23 102 181 / 0.45);
+
+  --olf-success: var(--reed-600);
+  --olf-warning: var(--sand-600);
+  --olf-danger: var(--rose-600);
+  --olf-info: var(--lake-600);
+
+  --olf-shadow-raised: 0 1px 2px rgb(11 34 53 / 0.06), 0 12px 32px -16px rgb(11 34 53 / 0.25);
+  --olf-glow: 0 0 0 1px rgb(23 102 181 / 0.25), 0 8px 32px -8px rgb(23 102 181 / 0.25);
+}
+
+/* Follow the OS when the visitor has not picked a theme. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+    --olf-bg-base: var(--abyss-50);
+    --olf-bg-surface: #ffffff;
+    --olf-bg-raised: var(--lake-50);
+    --olf-bg-code: var(--abyss-900);
+    --olf-bg-accent-subtle: rgb(23 102 181 / 0.08);
+    --olf-tint-neutral: rgb(61 107 140 / 0.08);
+    --olf-tint-highlight: rgb(0 121 184 / 0.08);
+    --olf-tint-info: rgb(23 102 181 / 0.07);
+    --olf-tint-success: rgb(31 157 99 / 0.10);
+    --olf-tint-warning: rgb(196 143 18 / 0.10);
+    --olf-tint-danger: rgb(214 54 73 / 0.08);
+    --olf-tint-bronze: rgb(200 134 74 / 0.14);
+    --olf-tint-silver: rgb(167 180 194 / 0.22);
+    --olf-tint-gold: rgb(233 185 73 / 0.18);
+    --olf-border-subtle: var(--abyss-100);
+    --olf-border-default: var(--abyss-200);
+    --olf-border-strong: var(--abyss-400);
+    --olf-text-primary: var(--abyss-900);
+    --olf-text-secondary: var(--abyss-600);
+    --olf-text-muted: var(--abyss-500);
+    --olf-text-inverse: #ffffff;
+    --olf-accent: var(--lake-600);
+    --olf-accent-hover: var(--lake-700);
+    --olf-accent-text: #ffffff;
+    --olf-link: var(--lake-600);
+    --olf-highlight: var(--shallows-600);
+    --olf-focus-ring: rgb(23 102 181 / 0.45);
+    --olf-success: var(--reed-600);
+    --olf-warning: var(--sand-600);
+    --olf-danger: var(--rose-600);
+    --olf-info: var(--lake-600);
+    --olf-shadow-raised: 0 1px 2px rgb(11 34 53 / 0.06), 0 12px 32px -16px rgb(11 34 53 / 0.25);
+    --olf-glow: 0 0 0 1px rgb(23 102 181 / 0.25), 0 8px 32px -8px rgb(23 102 181 / 0.25);
+  }
+}

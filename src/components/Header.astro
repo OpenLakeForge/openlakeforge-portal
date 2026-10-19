@@ -1,0 +1,33 @@
+---
+import Mark from "./Mark.astro";
+---
+
+<header>
+  <div class="wrap">
+    <Mark />
+    <span class="wordmark">Open<span>Lake</span>Forge</span>
+    <span class="label pill">Platform portal</span>
+  </div>
+</header>
+
+<style>
+  header { border-bottom: 1px solid var(--olf-border-subtle); }
+  .wrap {
+    display: flex;
+    align-items: center;
+    gap: var(--olf-space-4);
+    padding-top: var(--olf-space-5);
+    padding-bottom: var(--olf-space-5);
+  }
+  .wordmark {
+    font: 700 var(--olf-text-h4) / 1 var(--olf-font-heading);
+    letter-spacing: -0.01em;
+  }
+  .wordmark span { color: var(--olf-highlight); }
+  .pill {
+    border: 1px solid var(--olf-border-default);
+    border-radius: var(--olf-radius-sm);
+    padding: 0.2rem var(--olf-space-2);
+    font-size: 0.6875rem;
+  }
+</style>

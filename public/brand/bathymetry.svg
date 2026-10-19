@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" aria-hidden="true">
+  <!-- Depth contours of a lake bed: hero and empty-state background. Recolor with currentColor at low opacity. -->
+  <defs>
+    <path id="b" d="M0-100C70-104 130-70 150-20S135 85 70 102-55 118-110 80-160-10-120-60-55-97 0-100Z"/>
+  </defs>
+  <g fill="none" stroke="currentColor" stroke-width="1.2" vector-effect="non-scaling-stroke" transform="translate(760 360)">
+    <use href="#b" transform="scale(.6) rotate(8)" opacity=".9"/>
+    <use href="#b" transform="scale(1.1) rotate(4)" opacity=".8"/>
+    <use href="#b" transform="scale(1.7) rotate(-2)" opacity=".7"/>
+    <use href="#b" transform="scale(2.4) rotate(-7)" opacity=".6"/>
+    <use href="#b" transform="scale(3.2) rotate(-11)" opacity=".5"/>
+    <use href="#b" transform="scale(4.1) rotate(-14)" opacity=".4"/>
+    <use href="#b" transform="scale(5.1) rotate(-16)" opacity=".3"/>
+    <use href="#b" transform="scale(6.3) rotate(-18)" opacity=".2"/>
+  </g>
+</svg>

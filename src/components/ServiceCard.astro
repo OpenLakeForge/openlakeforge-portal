@@ -1,0 +1,79 @@
+---
+import type { Service } from "../lib/routes";
+
+interface Props {
+  service: Service;
+}
+const { service } = Astro.props;
+---
+
+<a class="card" href={service.url}>
+  <span class="head">
+    {service.logo
+      ? <img class="icon logo" src={service.logo} alt="" width="40" height="40" />
+      : <span class="icon" aria-hidden="true">{service.monogram}</span>}
+    <span class="title">
+      <strong>{service.title}</strong>
+      <code>{service.host}</code>
+    </span>
+    <span class="arrow" aria-hidden="true">&#8599;</span>
+  </span>
+  {service.summary && <span class="summary">{service.summary}</span>}
+</a>
+
+<style>
+  .card {
+    display: block;
+    height: 100%;
+    padding: var(--olf-space-6);
+    border: 1px solid var(--olf-border-default);
+    border-radius: var(--olf-radius-lg);
+    background: var(--olf-bg-surface);
+    color: inherit;
+    text-decoration: none;
+    transition: border-color var(--olf-duration), background var(--olf-duration), box-shadow var(--olf-duration);
+  }
+  .card:hover {
+    border-color: var(--olf-accent);
+    background: var(--olf-bg-raised);
+    box-shadow: var(--olf-glow);
+  }
+  .card:focus-visible { outline: 2px solid var(--olf-highlight); outline-offset: 3px; }
+  .head { display: flex; align-items: center; gap: var(--olf-space-3); }
+  .icon {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: var(--olf-radius-md);
+    background: var(--olf-bg-accent-subtle);
+    color: var(--olf-link);
+    font: 500 var(--olf-text-h4) / 1 var(--olf-font-heading);
+  }
+  /* Brand logos sit on a light tile in both themes, at their own proportions. */
+  .logo {
+    padding: 0.4375rem;
+    object-fit: contain;
+    background: var(--abyss-50);
+    box-shadow: inset 0 0 0 1px rgb(11 34 53 / 0.08);
+  }
+  .title { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--olf-space-0-5); }
+  strong { font: 500 var(--olf-text-h4) / 1.4 var(--olf-font-heading); }
+  code {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: var(--olf-text-label) / 1.4 var(--olf-font-mono);
+    color: var(--olf-text-muted);
+  }
+  .arrow { color: var(--olf-text-muted); transition: color var(--olf-duration), transform var(--olf-duration); }
+  .card:hover .arrow { color: var(--olf-link); transform: translate(2px, -2px); }
+  .summary {
+    display: block;
+    margin-top: var(--olf-space-4);
+    font-size: var(--olf-text-small);
+    line-height: 1.57;
+    color: var(--olf-text-secondary);
+  }
+</style>

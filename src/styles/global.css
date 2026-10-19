@@ -1,0 +1,48 @@
+/* Portal styles. Every colour, size and font comes from tokens.css (the
+   "Deep Water" design system); this file only lays the page out. */
+
+:root {
+  --mark-anvil: var(--abyss-100);
+  --contour-opacity: 0.32;
+}
+:root[data-theme="light"] {
+  --mark-anvil: var(--brand-anvil);
+  --contour-opacity: 0.22;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --mark-anvil: var(--brand-anvil);
+    --contour-opacity: 0.22;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--olf-bg-base);
+  color: var(--olf-text-primary);
+  font: var(--olf-text-body) / var(--olf-leading-body) var(--olf-font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: var(--olf-page-width);
+  margin: 0 auto;
+  padding: 0 var(--olf-space-16);
+}
+
+.label {
+  font: 500 var(--olf-text-label) / 1.33 var(--olf-font-mono);
+  letter-spacing: var(--olf-tracking-label);
+  text-transform: uppercase;
+  color: var(--olf-text-muted);
+}
+
+@media (max-width: 40rem) {
+  .wrap { padding: 0 var(--olf-space-4); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
