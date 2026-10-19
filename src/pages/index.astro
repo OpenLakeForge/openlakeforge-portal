@@ -13,8 +13,9 @@ import StageSection from "../components/StageSection.astro";
 import Footer from "../components/Footer.astro";
 import { loadRoutes, sections } from "../lib/routes";
 
-const routes = loadRoutes();
+const { routes, problem } = loadRoutes();
 const stages = sections(routes);
+Astro.response.headers.set("Cache-Control", "no-store");
 ---
 
 <!doctype html>
@@ -30,7 +31,26 @@ const stages = sections(routes);
     <Hero routeCount={Object.keys(routes).length} />
     <main class="wrap">
       {stages.map((section) => <StageSection section={section} />)}
+      {stages.length === 0 && (
+        <p class="empty">
+          <span class="label">No routes</span>
+          {problem ?? "This deployment exposes no user-facing services yet."}
+        </p>
+      )}
     </main>
     <Footer />
   </body>
 </html>
+
+<style>
+  .empty {
+    display: flex;
+    flex-direction: column;
+    gap: var(--olf-space-2);
+    margin: var(--olf-space-12) 0 0;
+    padding: var(--olf-space-6);
+    border: 1px dashed var(--olf-border-default);
+    border-radius: var(--olf-radius-lg);
+    color: var(--olf-text-secondary);
+  }
+</style>

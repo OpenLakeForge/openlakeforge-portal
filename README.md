@@ -3,13 +3,13 @@
 **The front door of an [OpenLakeForge](https://github.com/OpenLakeForge/openlakeforge) lakehouse: every service on the cluster, grouped by stage, one click away.**
 
 The portal is what you see at the base domain of a deployed OpenLakeForge
-stack (`http://olf.localhost` on the local kind profile). Today it is a
-static index of the user-facing routes: orchestration, reporting, query,
-governance and sign-in, each listed under the shared services or the stage
-(`dev`, `prod`, …) it belongs to. It is built with [Astro](https://astro.build)
-and styled with the OpenLakeForge **Deep Water** design system.
+stack (`http://olf.localhost` on the local kind profile). Today it lists the
+user-facing routes (orchestration, reporting, query, governance and sign-in),
+each under the shared services or the stage (`dev`, `prod`, …) it belongs to.
+It is built with [Astro](https://astro.build), rendered on the server, and
+styled with the OpenLakeForge **Deep Water** design system.
 
-> **Status: early.** This repository starts as the static index. It is meant
+> **Status: early.** This repository starts as the route index. It is meant
 > to grow into a full platform UI (runs, assets, catalog and SQL in one place,
 > in the spirit of Databricks or dbt Cloud) while staying a client of
 > OpenLakeForge's provider contracts.
@@ -21,15 +21,21 @@ Requires Node.js 22 or later.
 ```bash
 npm install
 npm run dev       # http://localhost:4321, using src/data/routes.example.json
-npm run build     # static site in dist/
-npm run preview   # serve dist/
+npm test          # unit tests (vitest)
+npm run build     # server build in dist/
+OLF_ROUTES_FILE=src/data/routes.example.json npm start   # serve dist/ on :4321
 ```
 
-### Render your own cluster's routes
+## Routes are a deploy-time parameter
 
-The page is built from a JSON file with the same shape as the `links`
-variable of OpenLakeForge's portal Terraform module (`infra/terraform/modules/access/portal`).
-It maps each contract ref to the route's stage, service name and URL:
+The image is the same for every cluster. The routes are not baked in: they
+are read **on every request** from the JSON file named by `OLF_ROUTES_FILE`
+(`/config/routes.json` in the image). OpenLakeForge writes that file when it
+deploys, so a changed route shows up without rebuilding or restarting the
+portal.
+
+The file has the same shape as the `links` variable of OpenLakeForge's portal
+Terraform module: contract ref → stage, service name and URL.
 
 ```json
 {
@@ -38,44 +44,81 @@ It maps each contract ref to the route's stage, service name and URL:
 }
 ```
 
-Point `OLF_ROUTES_FILE` at it when building:
+- Every route needs a non-empty `stage` and `name` and an `http(s)` URL. A
+  malformed file is logged and the page says it cannot read the routes. It
+  never shows partial or made-up links.
+- `npm run dev` without `OLF_ROUTES_FILE` uses
+  [`src/data/routes.example.json`](src/data/routes.example.json). A production
+  server without it shows an empty portal that says so.
 
-```bash
-OLF_ROUTES_FILE=./routes.json npm run build
+## Container image and releases
+
+Each release publishes a multi-arch image (linux/amd64, linux/arm64):
+
+```text
+ghcr.io/openlakeforge/openlakeforge-portal:<version>
 ```
 
-Without it, the bundled [`src/data/routes.example.json`](src/data/routes.example.json) is used.
+| | |
+| --- | --- |
+| Port | `8080` (`PORT`) |
+| Routes | `/config/routes.json` (`OLF_ROUTES_FILE`), read-only |
+| Health | `GET /healthz` → `200 ok` |
+| User | `65534:65534` (nobody); runs on a read-only root filesystem |
+| Contents | `node:22-alpine` and the self-contained `dist/`, no `node_modules` |
+
+**To release:** bump `version` in `package.json`, merge, then push the
+matching tag:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The [release workflow](.github/workflows/release.yml) checks that the tag
+matches `package.json`, then builds and pushes the image with a build
+provenance attestation. It also creates a GitHub release whose notes carry the
+image digest. [CI](.github/workflows/ci.yml) runs the tests, the build, and a
+check that the served page links exactly the configured routes, both from
+Node and from the image (as nobody, read-only).
 
 ## How it fits with OpenLakeForge
 
 - **OpenLakeForge owns the contract; the portal is a client.** Routes, stages
   and enabled services come from the access contract. The portal never
-  hardcodes a hostname or assumes a provider, so the same build works locally,
-  on AWS and on Azure.
+  hardcodes a hostname or assumes a provider, so one image serves local, AWS
+  and Azure.
+- **OpenLakeForge pins a release by digest** in `release/component-catalog.yaml`
+  and deploys it from its portal Terraform module. The module mounts a
+  ConfigMap holding `routes.json` (`jsonencode(var.links)`) at `/config`.
+- **The page stays checkable.** It is rendered on the server, so the HTML that
+  is served contains the route links. Stylesheets are inlined and fonts
+  bundled, so the only `href` attributes are those links. That is what
+  OpenLakeForge's e2e landing-page check (`check_portal_lists_routes`) compares
+  with the contract. It also keeps the page working in an offline cluster.
 - **Services are named by capability.** Cards read *Orchestration*, *Query*,
   *Governance*… with the implementing tool's logo. Presentation lives in
   [`src/lib/routes.ts`](src/lib/routes.ts). An unknown service still gets a
   card, with a monogram.
-- **Self-contained output.** Stylesheets are inlined and fonts are bundled, so
-  the page works inside an offline cluster. The only `href` attributes on the
-  page are route links: OpenLakeForge's e2e landing-page check
-  (`check_portal_lists_routes`) compares them with the contract.
-- **Until this replaces it,** OpenLakeForge serves an equivalent page rendered
-  by Terraform (`index.html.tftpl` in the portal module).
+- **Until OpenLakeForge switches to this image,** it serves an equivalent page
+  rendered by Terraform (`index.html.tftpl` in the portal module).
 
 ## Project layout
 
 ```text
 src/
   pages/index.astro        the page: header, hero, one section per stage, footer
+  pages/healthz.ts         liveness endpoint for the container
   components/              Header, Hero, StageSection, ServiceCard, Mark, Footer
-  lib/routes.ts            loads the routes and groups them into stages
+  lib/routes.ts            reads and validates the routes, groups them into stages
+  lib/routes.test.ts       unit tests
   data/routes.example.json sample routes for local development
   styles/tokens.css        Deep Water design tokens (the --olf-* variables)
   styles/global.css        page-level layout
 public/
   logos/                   service logos (Dagster, Superset, Trino, Dex, OpenMetadata)
   brand/                   OpenLakeForge mark and the ripple / bathymetry motifs
+Dockerfile                 the release image (node:22-alpine + dist/)
+.github/workflows/         ci.yml on every change, release.yml on v* tags
 ```
 
 ## Design system
