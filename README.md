@@ -123,7 +123,7 @@ Dockerfile                 the release image (node:22-alpine + dist/)
 
 ## Design system
 
-The portal and the [documentation website](https://github.com/OpenLakeForge/openlakeforge-website)
+The portal and the [documentation website](https://github.com/OpenLakeForge/openlakeforge.github.io)
 share one visual language, **Deep Water**: technical like a terminal, calm
 like a lake. Dark is the default (the deep lake); light follows the OS.
 
