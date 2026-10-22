@@ -129,7 +129,7 @@ like a lake. Dark is the default (the deep lake); light follows the OS.
 
 - **Colour:** sea-blue neutrals (`abyss`), the brand blue (`lake`), the azure of
   the logo's ripples (`shallows`). Status colours are the only non-blue hues.
-- **Type:** Instrument Serif for the one display line, Space Grotesk for
+- **Type:** Fraunces (soft, wonky) for the one display line, Space Grotesk for
   headings, Inter for text, JetBrains Mono for code, labels and hosts.
 - **Motifs:** depth markers (`00 m`, `10 m`, …) as section labels, lake-bed
   contours behind the hero, ripple lines as dividers.
