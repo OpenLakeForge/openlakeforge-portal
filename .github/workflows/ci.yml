@@ -32,6 +32,8 @@ jobs:
           grep -o 'href="[^"]*"' page.html | sed 's/href="//; s/"$//' | sort -u > linked.txt
           jq -r '.[].url' "$OLF_ROUTES_FILE" | sort -u > wanted.txt
           diff wanted.txt linked.txt
+          # OpenLakeForge's Logout redirects here, outside the sign-in perimeter.
+          curl -sf http://localhost:8080/signed-out.html | grep -q 'href="https://github.com/logout"'
 
   image:
     runs-on: ubuntu-latest

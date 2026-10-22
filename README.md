@@ -4,8 +4,10 @@
 
 The portal is what you see at the base domain of a deployed OpenLakeForge
 stack (`http://olf.localhost` on the local kind profile). Today it lists the
-user-facing routes (orchestration, reporting, query, governance and sign-in),
-each under the shared services or the stage (`dev`, `prod`, …) it belongs to.
+user-facing routes (orchestration, reporting, query, governance) and, with
+the GitHub issuer, an Admin link to the organisation's teams, each under the
+shared services or the stage (`dev`, `prod`, …) it belongs to. It also serves
+`/signed-out.html`, the page OpenLakeForge's Logout lands on.
 It is built with [Astro](https://astro.build), rendered on the server, and
 styled with the OpenLakeForge **Deep Water** design system.
 
@@ -99,23 +101,26 @@ Node and from the image (as nobody, read-only).
   *Governance*… with the implementing tool's logo. Presentation lives in
   [`src/lib/routes.ts`](src/lib/routes.ts). An unknown service still gets a
   card, with a monogram.
-- **Until OpenLakeForge switches to this image,** it serves an equivalent page
-  rendered by Terraform (`index.html.tftpl` in the portal module).
+- **Admin is a link, not a route.** With the GitHub issuer, members and
+  roles are GitHub teams, so OpenLakeForge adds `shared/admin` pointing at
+  `https://github.com/orgs/<org>/teams`. The identity login surface (Dex) is
+  never listed: it has no page of its own to visit.
 
 ## Project layout
 
 ```text
 src/
   pages/index.astro        the page: header, hero, one section per stage, footer
+  pages/signed-out.html.astro  where Logout lands, outside the perimeter
   pages/healthz.ts         liveness endpoint for the container
-  components/              Header, Hero, StageSection, ServiceCard, Mark, Footer
+  components/              Page (shared shell), Header, Hero, StageSection, ServiceCard, Mark, Footer
   lib/routes.ts            reads and validates the routes, groups them into stages
   lib/routes.test.ts       unit tests
   data/routes.example.json sample routes for local development
   styles/tokens.css        Deep Water design tokens (the --olf-* variables)
   styles/global.css        page-level layout
 public/
-  logos/                   service logos (Dagster, Superset, Trino, Dex, OpenMetadata)
+  logos/                   service logos (Dagster, Superset, Trino, OpenMetadata, GitHub)
   brand/                   OpenLakeForge mark and the ripple / bathymetry motifs
 Dockerfile                 the release image (node:22-alpine + dist/)
 .github/workflows/         ci.yml on every change, release.yml on v* tags

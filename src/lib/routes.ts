@@ -35,8 +35,8 @@ const presentation: Record<string, { title: string; summary: string; logo: strin
   orchestration: { title: "Orchestration", summary: "Runs, schedules and asset lineage.", logo: "/logos/dagster.svg" },
   reporting: { title: "Reporting", summary: "Dashboards over the Gold marts.", logo: "/logos/superset.png" },
   query: { title: "Query", summary: "SQL over every Iceberg table.", logo: "/logos/trino.svg" },
-  identity: { title: "Sign-in", summary: "The login page every service sends you to.", logo: "/logos/dex.svg" },
   governance_service: { title: "Governance", summary: "Catalog, glossary and column-level lineage.", logo: "/logos/openmetadata.svg" },
+  admin: { title: "Admin", summary: "Members and roles, managed as GitHub teams.", logo: "/logos/github.svg" },
 };
 
 const titleCase = (value: string) => value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
