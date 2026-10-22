@@ -1,16 +1,7 @@
 ---
-import "@fontsource-variable/fraunces/full.css";
-import "@fontsource-variable/fraunces/full-italic.css";
-import "@fontsource-variable/space-grotesk";
-import "@fontsource-variable/inter";
-import "@fontsource-variable/jetbrains-mono";
-import "../styles/tokens.css";
-import "../styles/global.css";
-
-import Header from "../components/Header.astro";
+import Page from "../components/Page.astro";
 import Hero from "../components/Hero.astro";
 import StageSection from "../components/StageSection.astro";
-import Footer from "../components/Footer.astro";
 import { loadRoutes, sections } from "../lib/routes";
 
 const { routes, problem } = loadRoutes();
@@ -18,29 +9,18 @@ const stages = sections(routes);
 Astro.response.headers.set("Cache-Control", "no-store");
 ---
 
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark light" />
-    <title>OpenLakeForge</title>
-  </head>
-  <body>
-    <Header />
-    <Hero routeCount={Object.keys(routes).length} />
-    <main class="wrap">
-      {stages.map((section) => <StageSection section={section} />)}
-      {stages.length === 0 && (
-        <p class="empty">
-          <span class="label">No routes</span>
-          {problem ?? "This deployment exposes no user-facing services yet."}
-        </p>
-      )}
-    </main>
-    <Footer />
-  </body>
-</html>
+<Page title="OpenLakeForge">
+  <Hero routeCount={Object.keys(routes).length} />
+  <main class="wrap">
+    {stages.map((section) => <StageSection section={section} />)}
+    {stages.length === 0 && (
+      <p class="empty">
+        <span class="label">No routes</span>
+        {problem ?? "This deployment exposes no user-facing services yet."}
+      </p>
+    )}
+  </main>
+</Page>
 
 <style>
   .empty {

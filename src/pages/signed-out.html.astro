@@ -1,0 +1,31 @@
+---
+// Where OpenLakeForge's Logout lands, outside the sign-in perimeter: the
+// platform session is gone, the identity provider's own one is not. The path
+// keeps its .html suffix because OpenLakeForge routes exactly /signed-out.html.
+import Page from "../components/Page.astro";
+---
+
+<Page title="Signed out · OpenLakeForge">
+  <main class="wrap">
+    <div class="label">Signed out</div>
+    <h1>You are signed out of OpenLakeForge.</h1>
+    <p>Your GitHub session is still active. Sign out of GitHub too on a shared browser.</p>
+    <p class="actions">
+      <a href="https://github.com/logout">Sign out of GitHub</a>
+      <a href="/">Sign in again</a>
+    </p>
+  </main>
+</Page>
+
+<style>
+  main { padding-top: var(--olf-space-24); }
+  .label { color: var(--olf-highlight); }
+  h1 {
+    margin: var(--olf-space-5) 0;
+    font: 400 clamp(2.25rem, 5vw, var(--olf-text-display)) / var(--olf-leading-display) var(--olf-font-display);
+    font-variation-settings: var(--olf-font-display-axes);
+  }
+  p { max-width: 40rem; color: var(--olf-text-secondary); font-size: var(--olf-text-body-lg); }
+  .actions { display: flex; gap: var(--olf-space-6); }
+  a { color: var(--olf-link); }
+</style>

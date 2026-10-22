@@ -4,6 +4,6 @@
   "stage/prod/orchestration": { "stage": "prod", "name": "orchestration", "url": "http://dagster-prod.olf.localhost" },
   "stage/prod/reporting": { "stage": "prod", "name": "reporting", "url": "http://superset-prod.olf.localhost" },
   "shared/query": { "stage": "shared", "name": "query", "url": "http://trino.olf.localhost" },
-  "shared/identity": { "stage": "shared", "name": "identity", "url": "http://auth.olf.localhost" },
+  "shared/admin": { "stage": "shared", "name": "admin", "url": "https://github.com/orgs/OpenLakeForge/teams" },
   "shared/governance_service": { "stage": "shared", "name": "governance_service", "url": "http://openmetadata.olf.localhost" }
 }
