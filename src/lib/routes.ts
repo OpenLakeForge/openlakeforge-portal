@@ -85,10 +85,14 @@ export function loadRoutes(file = process.env.OLF_ROUTES_FILE, dev = import.meta
   }
 }
 
+/** The header's Sign out button, not a service card: only present when authentication is on. */
+const SIGN_OUT = "shared/sign-out";
+export const signOutUrl = (routes: Record<string, Route>): string | undefined => routes[SIGN_OUT]?.url;
+
 /** Shared services first, then each stage in name order, each a step deeper. */
 export function sections(routes: Record<string, Route>): Section[] {
   const byStage = new Map<string, Service[]>();
-  for (const key of Object.keys(routes).sort()) {
+  for (const key of Object.keys(routes).filter((ref) => ref !== SIGN_OUT).sort()) {
     const route = routes[key];
     const shown = presentation[route.name];
     const title = shown?.title ?? titleCase(route.name);
