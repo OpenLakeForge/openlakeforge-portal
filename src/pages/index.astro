@@ -2,14 +2,14 @@
 import Page from "../components/Page.astro";
 import Hero from "../components/Hero.astro";
 import StageSection from "../components/StageSection.astro";
-import { loadRoutes, sections } from "../lib/routes";
+import { loadRoutes, sections, signOutUrl } from "../lib/routes";
 
 const { routes, problem } = loadRoutes();
 const stages = sections(routes);
 Astro.response.headers.set("Cache-Control", "no-store");
 ---
 
-<Page title="OpenLakeForge">
+<Page title="OpenLakeForge" signOut={signOutUrl(routes)}>
   <Hero routeCount={Object.keys(routes).length} />
   <main class="wrap">
     {stages.map((section) => <StageSection section={section} />)}

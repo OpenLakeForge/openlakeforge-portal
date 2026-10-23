@@ -1,5 +1,10 @@
 ---
 import Mark from "./Mark.astro";
+
+interface Props {
+  signOut?: string;
+}
+const { signOut } = Astro.props;
 ---
 
 <header>
@@ -7,6 +12,7 @@ import Mark from "./Mark.astro";
     <Mark />
     <span class="wordmark">Open<span>Lake</span>Forge</span>
     <span class="label pill">Platform portal</span>
+    {signOut && <a class="sign-out label" href={signOut}>Sign out</a>}
   </div>
 </header>
 
@@ -30,4 +36,13 @@ import Mark from "./Mark.astro";
     padding: 0.2rem var(--olf-space-2);
     font-size: 0.6875rem;
   }
+  .sign-out {
+    margin-left: auto;
+    color: var(--olf-link);
+    border: 1px solid var(--olf-border-default);
+    border-radius: var(--olf-radius-sm);
+    padding: 0.2rem var(--olf-space-2);
+    font-size: 0.6875rem;
+  }
+  .sign-out:hover { border-color: var(--olf-accent); }
 </style>

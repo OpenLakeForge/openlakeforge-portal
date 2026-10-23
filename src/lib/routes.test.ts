@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadRoutes, parseRoutes, sections } from "./routes";
+import { loadRoutes, parseRoutes, sections, signOutUrl } from "./routes";
 
 const routes = {
   "stage/prod/orchestration": { stage: "prod", name: "orchestration", url: "http://dagster-prod.olf.localhost" },
@@ -29,6 +29,21 @@ describe("sections", () => {
     const unknown = shared.find((s) => s.name === "new_thing");
     expect(query).toMatchObject({ title: "Query", host: "trino.olf.localhost", logo: "/logos/trino.svg" });
     expect(unknown).toMatchObject({ title: "New Thing", monogram: "Ne", summary: "", logo: undefined });
+  });
+});
+
+describe("signOutUrl", () => {
+  const signOut = "http://oauth2.olf.localhost/oauth2/sign_out";
+  const withSignOut = { ...routes, "shared/sign-out": { stage: "shared", name: "sign-out", url: signOut } };
+
+  it("returns the sign-out url and keeps it out of the service cards", () => {
+    const parsed = parseRoutes(withSignOut);
+    expect(signOutUrl(parsed)).toBe(signOut);
+    expect(sections(parsed)[0].services.map((s) => s.name)).not.toContain("sign-out");
+  });
+
+  it("is undefined when authentication is off", () => {
+    expect(signOutUrl(parseRoutes(routes))).toBeUndefined();
   });
 });
 

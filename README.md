@@ -105,6 +105,10 @@ Node and from the image (as nobody, read-only).
   roles are GitHub teams, so OpenLakeForge adds `shared/admin` pointing at
   `https://github.com/orgs/<org>/teams`. The identity login surface (Dex) is
   never listed: it has no page of its own to visit.
+- **Sign out is a button, not a route.** With authentication on, OpenLakeForge
+  adds `shared/sign-out` pointing at the perimeter's sign-out URL. The portal
+  shows it as a "Sign out" button in the header and lists no card for it. With
+  authentication off the entry is absent and so is the button.
 
 ## Project layout
 
