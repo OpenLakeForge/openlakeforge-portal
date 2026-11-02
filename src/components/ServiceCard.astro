@@ -7,7 +7,7 @@ interface Props {
 const { service } = Astro.props;
 ---
 
-<a class="card" href={service.url}>
+<a class="card" href={service.url} target="_blank" rel="noopener noreferrer">
   <span class="head">
     {service.logo
       ? <img class="icon logo" src={service.logo} alt="" width="40" height="40" />
