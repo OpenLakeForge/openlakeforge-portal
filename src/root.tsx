@@ -1,14 +1,13 @@
-import { isRouteErrorResponse, Meta, Outlet, useRouteError } from "react-router";
+import { isRouteErrorResponse, Meta, Outlet, Scripts, useRouteError } from "react-router";
 import fonts from "./styles/fonts.css?inline";
 import tokens from "./styles/tokens.css?inline";
 import global from "./styles/global.css?inline";
 import portal from "./styles/portal.css?inline";
+import queries from "./styles/queries.css?inline";
 
-// One self-contained HTML document: OpenLakeForge's e2e check expects the only
-// href attributes on the index to be route links, so the CSS is inlined rather
-// than linked, and no scripts are shipped (the page is static HTML for now).
-// shortcut: no <Scripts/>, so no hydration (the shell's nav is plain links);
-// add it when a route needs client interactivity (#8).
+// OpenLakeForge's e2e check counts the href attributes on the landing page as
+// routes, so the CSS is inlined rather than linked. <Scripts/> hydrates the
+// page (the query workspace needs it), at the cost of the module preload links.
 export const meta = () => [{ title: "OpenLakeForge" }];
 
 export function Layout({ children }: { children: React.ReactNode }) {
@@ -19,9 +18,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="color-scheme" content="dark light" />
         <Meta />
-        <style dangerouslySetInnerHTML={{ __html: [fonts, tokens, global, portal].join("\n") }} />
+        <style dangerouslySetInnerHTML={{ __html: [fonts, tokens, global, portal, queries].join("\n") }} />
       </head>
-      <body>{children}</body>
+      <body>
+        {children}
+        <Scripts />
+      </body>
     </html>
   );
 }

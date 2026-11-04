@@ -134,9 +134,10 @@ describe("app shell", () => {
 });
 
 describe("queries page", () => {
-  it("says the workspace is unavailable and offers no editor", () => {
+  it("renders inside the shell without needing the API at render time", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     render(<Queries />);
-    expect(screen.getByText(/not available in this deployment yet/)).toBeInTheDocument();
-    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Query your lakehouse" })).toBeInTheDocument();
+    vi.unstubAllGlobals();
   });
 });
