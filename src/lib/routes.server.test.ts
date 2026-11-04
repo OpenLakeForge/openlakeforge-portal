@@ -18,9 +18,11 @@ const writeRoutes = (content: string) => {
 };
 
 describe("sections", () => {
-  it("puts shared services first, then stages in name order, one step deeper each", () => {
-    const result = sections(parseRoutes(routes));
-    expect(result.map((s) => [s.stage, s.depth])).toEqual([["shared", "00 m"], ["dev", "10 m"], ["prod", "20 m"]]);
+  it("puts shared services first, then DEV, UAT, PROD, then unknown stages by name", () => {
+    const uat = { stage: "uat", name: "orchestration", url: "http://dagster-uat.olf.localhost" };
+    const qa = { stage: "qa", name: "orchestration", url: "http://dagster-qa.olf.localhost" };
+    const result = sections(parseRoutes({ ...routes, "stage/qa/orchestration": qa, "stage/uat/orchestration": uat }));
+    expect(result.map((s) => [s.stage, s.heading])).toEqual([["shared", "Shared"], ["dev", "DEV"], ["uat", "UAT"], ["prod", "PROD"], ["qa", "QA"]]);
   });
 
   it("presents known services by capability and falls back to a monogram", () => {

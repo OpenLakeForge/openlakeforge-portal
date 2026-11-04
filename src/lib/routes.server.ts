@@ -19,7 +19,6 @@ export interface Service extends Route {
 export interface Section {
   stage: string;
   heading: string;
-  depth: string;
   services: Service[];
 }
 
@@ -89,7 +88,10 @@ export function loadRoutes(file = process.env.OLF_ROUTES_FILE, dev = import.meta
 const SIGN_OUT = "shared/sign-out";
 export const signOutUrl = (routes: Record<string, Route>): string | undefined => routes[SIGN_OUT]?.url;
 
-/** Shared services first, then each stage in name order, each a step deeper. */
+const STAGE_ORDER = ["shared", "dev", "uat", "prod"];
+const rank = (stage: string) => (STAGE_ORDER.includes(stage) ? STAGE_ORDER.indexOf(stage) : STAGE_ORDER.length);
+
+/** Shared services first, then DEV, UAT, PROD, then any other stage by name. */
 export function sections(routes: Record<string, Route>): Section[] {
   const byStage = new Map<string, Service[]>();
   for (const key of Object.keys(routes).filter((ref) => ref !== SIGN_OUT).sort()) {
@@ -106,11 +108,10 @@ export function sections(routes: Record<string, Route>): Section[] {
     };
     byStage.set(route.stage, [...(byStage.get(route.stage) ?? []), service]);
   }
-  const stages = [...byStage.keys()].sort((a, b) => (a === "shared" ? -1 : b === "shared" ? 1 : a.localeCompare(b)));
-  return stages.map((stage, index) => ({
+  const stages = [...byStage.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  return stages.map((stage) => ({
     stage,
-    heading: titleCase(stage),
-    depth: `${String(index * 10).padStart(2, "0")} m`,
+    heading: stage === "shared" ? "Shared" : stage.toUpperCase(),
     services: byStage.get(stage) ?? [],
   }));
 }

@@ -7,8 +7,8 @@ import portal from "./styles/portal.css?inline";
 // One self-contained HTML document: OpenLakeForge's e2e check expects the only
 // href attributes on the index to be route links, so the CSS is inlined rather
 // than linked, and no scripts are shipped (the page is static HTML for now).
-// shortcut: no <Scripts/>, so no hydration; add it (and relax that check to
-// anchor hrefs) when a route needs client interactivity (#7/#8).
+// shortcut: no <Scripts/>, so no hydration (the shell's nav is plain links);
+// add it when a route needs client interactivity (#8).
 export const meta = () => [{ title: "OpenLakeForge" }];
 
 export function Layout({ children }: { children: React.ReactNode }) {
