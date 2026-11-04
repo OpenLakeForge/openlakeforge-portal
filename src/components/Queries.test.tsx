@@ -185,6 +185,41 @@ describe("running", () => {
     expect(calls.at(-1)!.url.searchParams.get("cursor")).toBe("c2");
   });
 
+  it("passes next_cursor on the poll and appends rows", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const calls = api({
+        ...base,
+        "POST /api/v1/stages/dev/queries": { body: done({ status: "running", rows: [["a", "x"]], row_count: 1, next_cursor: "c2" }) },
+        "GET /api/v1/stages/dev/queries/q1": { body: done({ rows: [["b", "y"]], row_count: 1, next_cursor: null }) },
+      });
+      await ready();
+      await type("select 1");
+      await run();
+      await screen.findByText("b", {}, { timeout: 4000 });
+      expect(screen.getByText("a")).toBeInTheDocument();
+      expect(screen.getByText(/2 ROWS/)).toBeInTheDocument();
+      expect(calls.filter((c) => c.method === "GET" && c.url.pathname.endsWith("/q1")).map((c) => c.url.searchParams.get("cursor"))).toEqual(["c2"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the rows when a later page is empty", async () => {
+    api({
+      ...base,
+      "POST /api/v1/stages/dev/queries": { body: done({ rows: [["a", "x"]], row_count: 1, next_cursor: "c2" }) },
+      "GET /api/v1/stages/dev/queries/q1": { body: done({ rows: [], columns: [], row_count: 0, elapsed_ms: 0, next_cursor: null }) },
+    });
+    await ready();
+    await type("select 1");
+    await run();
+    await userEvent.click(await screen.findByRole("button", { name: /load more rows/i }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /load more rows/i })).toBeNull());
+    expect(screen.getByText("a")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: /channel/ })).toBeInTheDocument();
+  });
+
   it("refuses a duplicate submit, including from the keyboard", async () => {
     let release!: (r: { body: unknown }) => void;
     const calls = api({ ...base, "POST /api/v1/stages/dev/queries": new Promise((r) => { release = r; }) });
@@ -204,7 +239,7 @@ describe("running", () => {
     const calls = api({
       ...base,
       "POST /api/v1/stages/dev/queries": { body: { id: "q9", status: "running", columns: [], rows: [], truncated: false, row_count: 0, elapsed_ms: 0 } },
-      "DELETE /api/v1/stages/dev/queries/q9": { body: {} },
+      "DELETE /api/v1/stages/dev/queries/q9": { body: { id: "q9", status: "cancelled", columns: [], rows: [], truncated: false, row_count: 0, elapsed_ms: 5, next_cursor: null } },
     });
     await ready();
     await type("select 1");
@@ -217,8 +252,10 @@ describe("running", () => {
 
   it.each([
     [401, {}, /session has expired/],
-    [403, { detail: "denied by polaris" }, /Access denied\. denied by polaris/],
-    [400, { detail: "line 1: syntax error" }, /rejected\. line 1: syntax error/],
+    [403, { detail: "denied by polaris" }, /^denied by polaris$/],
+    [400, { detail: "line 1:8: Column 'x' cannot be resolved" }, /^line 1:8: Column 'x' cannot be resolved$/],
+    [403, { detail: "only read queries (SELECT, WITH, VALUES, TABLE) are offered in the portal yet; writes and other statements are not" }, /writes and other statements are not/],
+    [503, { detail: "no signing key" }, /unavailable\. no signing key/],
     [504, {}, /timed out/],
   ])("maps a %i to a clear message", async (status, body, message) => {
     api({ ...base, "POST /api/v1/stages/dev/queries": { status, body } });

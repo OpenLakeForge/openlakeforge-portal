@@ -1,11 +1,9 @@
 // The Platform API contract for the query workspace (openlakeforge #800 query
 // execution, #801 discovery), in one place so aligning with the final backend
 // shape is a small diff. Same-origin and cookie-authenticated: no token in JS.
-// Discovery types follow the written #801 backend; the execution types below are
-// briefed, not built yet.
-// shortcut: hand-written types and an assumed shape (rows as arrays aligned to
-// columns, error as a string); generate them from the committed OpenAPI spec
-// once #800/#801 land.
+// Types follow the built backend (platform-api queries.py, #800 and #801).
+// Every failure is an HTTP error with {detail}; a result never carries status "failed".
+// shortcut: hand-written types; generate them from the committed OpenAPI spec.
 
 const BASE = "/api/v1";
 
@@ -13,7 +11,7 @@ export type StageCapability = { stage: string; engine: "trino"; available: boole
 export type Page<T> = { items: T[]; next_cursor: string | null };
 export type Column = { name: string; type: string };
 export type Cell = string | number | boolean | null | object;
-export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type RunStatus = "queued" | "running" | "succeeded" | "cancelled";
 export type QueryResult = {
   id: string;
   status: RunStatus;
@@ -22,8 +20,7 @@ export type QueryResult = {
   truncated: boolean;
   row_count: number;
   elapsed_ms: number;
-  error?: string;
-  next_cursor?: string | null;
+  next_cursor: string | null;
 };
 
 /** status 0 is a network failure. `message` is safe, truthful text to show as is. */
@@ -36,12 +33,16 @@ export class ApiError extends Error {
 function explain(status: number, detail?: string): string {
   const more = detail ? ` ${detail}` : "";
   if (status === 0) return "The Platform API cannot be reached.";
-  if (status === 401) return "Your session has expired. Reload the page to sign in again.";
-  if (status === 403) return `Access denied.${more}`;
+  if (status === 401) return `Your session has expired. Reload the page to sign in again.${more}`;
+  // 403 is a denied grant or a write statement; the detail says which, so it stands alone.
+  if (status === 403) return detail || "Access denied.";
   if (status === 404) return `Not found.${more}`;
-  if (status === 400 || status === 409 || status === 422) return `The query was rejected.${more}`;
+  // 400 carries Trino's own message about the SQL, which is the feedback the user ran it for.
+  if (status === 400) return detail || "The query was rejected.";
+  if (status === 409 || status === 422) return `The query was rejected.${more}`;
   if (status === 413) return "The result is too large to export.";
-  if (status === 502 || status === 503) return "The query engine is unreachable. Try again shortly.";
+  if (status === 503) return `Query execution is unavailable.${more}`;
+  if (status === 502) return "The query engine is unreachable. Try again shortly.";
   if (status === 504) return "The query timed out.";
   return `The request failed (${status}).${more}`;
 }
