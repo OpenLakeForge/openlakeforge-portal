@@ -301,6 +301,10 @@ describe("editor actions", () => {
     await type("select a,b from t where x=1");
     expect((await editorView()).state.doc.toString()).toBe("select a,b from t where x=1");
     await userEvent.click(screen.getByRole("button", { name: "Format" }));
-    await waitFor(async () => expect((await editorView()).state.doc.toString()).toContain("\n"));
+    // Format imports sql-formatter on demand; the release image runs these tests under arm64
+    // emulation, where that first import alone outlasts waitFor's 1 s default.
+    await waitFor(async () => expect((await editorView()).state.doc.toString()).toContain("\n"), {
+      timeout: 15_000,
+    });
   });
 });
