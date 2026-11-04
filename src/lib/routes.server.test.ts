@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadRoutes, parseRoutes, sections, signOutUrl } from "./routes";
+import { loadRoutes, parseRoutes, sections, signOutUrl } from "./routes.server";
 
 const routes = {
   "stage/prod/orchestration": { stage: "prod", name: "orchestration", url: "http://dagster-prod.olf.localhost" },
