@@ -1,4 +1,4 @@
-# The OpenLakeForge portal image. OpenLakeForge pins it by digest in
+# The OpenLakeForge portal image (React Router, server-rendered on Node). OpenLakeForge pins it by digest in
 # release/component-catalog.yaml and mounts the cluster's routes at
 # /config/routes.json (a ConfigMap) when it deploys.
 
@@ -23,10 +23,13 @@ ENV NODE_ENV=production \
     PORT=8080 \
     OLF_ROUTES_FILE=/config/routes.json
 WORKDIR /app
-# dist/ is self-contained (astro.config.mjs bundles every server dependency).
-COPY --from=build /app/package.json ./
-COPY --from=build /app/dist ./dist
+# build/ holds the SSR bundle and the static assets, but react-router-serve (the
+# Express server that runs them) is a runtime dependency, so install the
+# production dependencies only: no Vite, React Router CLI, TypeScript or test tools.
+COPY --from=build /app/package.json /app/package-lock.json ./
+RUN npm ci --omit=dev --no-fund --no-audit
+COPY --from=build /app/build ./build
 # Runs as nobody with a read-only root filesystem: nothing is written at runtime.
 USER 65534:65534
 EXPOSE 8080
-CMD ["node", "dist/server/entry.mjs"]
+CMD ["node", "node_modules/.bin/react-router-serve", "build/server/index.js"]

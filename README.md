@@ -8,8 +8,8 @@ user-facing routes (orchestration, reporting, query, governance) and, with
 the GitHub issuer, an Admin link to the organisation's teams, each under the
 shared services or the stage (`dev`, `prod`, …) it belongs to. It also serves
 `/signed-out.html`, the page OpenLakeForge's Logout lands on.
-It is built with [Astro](https://astro.build), rendered on the server, and
-styled with the OpenLakeForge **Deep Water** design system.
+It is a [React Router](https://reactrouter.com) (framework mode) app in
+TypeScript, rendered on the server by Node, and styled with the OpenLakeForge **Deep Water** design system.
 
 > **Status: early.** This repository starts as the route index. It is meant
 > to grow into a full platform UI (runs, assets, catalog and SQL in one place,
@@ -18,14 +18,15 @@ styled with the OpenLakeForge **Deep Water** design system.
 
 ## Quick start
 
-Requires Node.js 22 or later.
+Requires Node.js 22.22 or later.
 
 ```bash
 npm install
-npm run dev       # http://localhost:4321, using src/data/routes.example.json
-npm test          # unit tests (vitest)
-npm run build     # server build in dist/
-OLF_ROUTES_FILE=src/data/routes.example.json npm start   # serve dist/ on :4321
+npm run dev       # http://localhost:5173, using src/data/routes.example.json
+npm test          # unit tests (vitest, React Testing Library)
+npm run typecheck # route types and tsc
+npm run build     # server and client build in build/
+OLF_ROUTES_FILE=src/data/routes.example.json PORT=8080 npm start   # serve build/ on :8080
 ```
 
 ## Routes are a deploy-time parameter
@@ -67,7 +68,7 @@ ghcr.io/openlakeforge/openlakeforge-portal:<version>
 | Routes | `/config/routes.json` (`OLF_ROUTES_FILE`), read-only |
 | Health | `GET /healthz` → `200 ok` |
 | User | `65534:65534` (nobody); runs on a read-only root filesystem |
-| Contents | `node:22-alpine` and the self-contained `dist/`, no `node_modules` |
+| Contents | `node:22-alpine`, `build/` and the production `node_modules` (`react-router-serve` runs the build) |
 
 **To release:** bump `version` in `package.json`, merge, then push the
 matching tag:
@@ -99,7 +100,7 @@ Node and from the image (as nobody, read-only).
   with the contract. It also keeps the page working in an offline cluster.
 - **Services are named by capability.** Cards read *Orchestration*, *Query*,
   *Governance*… with the implementing tool's logo. Presentation lives in
-  [`src/lib/routes.ts`](src/lib/routes.ts). An unknown service still gets a
+  [`src/lib/routes.server.ts`](src/lib/routes.server.ts). An unknown service still gets a
   card, with a monogram.
 - **Admin is a link, not a route.** With the GitHub issuer, members and
   roles are GitHub teams, so OpenLakeForge adds `shared/admin` pointing at
@@ -114,19 +115,22 @@ Node and from the image (as nobody, read-only).
 
 ```text
 src/
-  pages/index.astro        the page: header, hero, one section per stage, footer
-  pages/signed-out.html.astro  where Logout lands, outside the perimeter
-  pages/healthz.ts         liveness endpoint for the container
-  components/              Page (shared shell), Header, Hero, StageSection, ServiceCard, Mark, Footer
-  lib/routes.ts            reads and validates the routes, groups them into stages
-  lib/routes.test.ts       unit tests
+  root.tsx                 HTML shell (inlined CSS), error boundary
+  routes.ts                route table
+  routes/home.tsx          the index: server loader reads the routes file per request, no-store
+  routes/signed-out.tsx    where Logout lands, outside the perimeter
+  routes/healthz.ts        liveness endpoint for the container
+  components/              Page (header, footer, mark) and Index (hero, stage sections, service cards)
+  lib/routes.server.ts     server-only: reads and validates the routes, groups them into stages
+  lib/routes.server.test.ts, routes/home.test.tsx   unit tests
   data/routes.example.json sample routes for local development
   styles/tokens.css        Deep Water design tokens (the --olf-* variables)
   styles/global.css        page-level layout
+  styles/portal.css        component styles
 public/
   logos/                   service logos (Dagster, Superset, Trino, OpenMetadata, GitHub)
   brand/                   OpenLakeForge mark and the ripple / bathymetry motifs
-Dockerfile                 the release image (node:22-alpine + dist/)
+Dockerfile                 the release image (node:22-alpine + build/)
 .github/workflows/         ci.yml on every change, release.yml on v* tags
 ```
 
