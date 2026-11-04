@@ -122,17 +122,25 @@ function Explorer({ stage, schema, search, onSearch, onSchemas }: {
 
 // ── results ─────────────────────────────────────────────────────────────────
 
+type RunState = RunStatus | "failed"; // "failed" is the UI's own: the API reports failures as HTTP errors
 type Run = {
-  stage: string; id?: string; status: RunStatus; columns: Column[]; rows: Cell[][];
+  stage: string; id?: string; status: RunState; columns: Column[]; rows: Cell[][];
   truncated: boolean; rowCount?: number; elapsedMs?: number; next?: string | null; error?: string;
 };
 const fromApi = (stage: string, r: QueryResult): Run => ({
   stage, id: r.id, status: r.status, columns: r.columns ?? [], rows: r.rows ?? [], truncated: !!r.truncated,
-  rowCount: r.row_count, elapsedMs: r.elapsed_ms, next: r.next_cursor, error: r.error,
+  rowCount: r.row_count, elapsedMs: r.elapsed_ms, next: r.next_cursor,
 });
-const active = (s: RunStatus) => s === "queued" || s === "running";
+// A follow-up response holds only the next rows (empty once the submit carried everything), so append and
+// keep what is shown; the response's row_count and elapsed_ms cover that call alone.
+const merge = (cur: Run, r: QueryResult): Run => ({
+  ...cur, status: r.status, columns: r.columns?.length ? r.columns : cur.columns, rows: [...cur.rows, ...(r.rows ?? [])],
+  truncated: cur.truncated || !!r.truncated, next: r.next_cursor, error: undefined,
+  rowCount: cur.rows.length + (r.rows?.length ?? 0), elapsedMs: (cur.elapsedMs ?? 0) + (r.elapsed_ms ?? 0),
+});
+const active = (s: RunState) => s === "queued" || s === "running";
 const duration = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
-const STATUS: Record<RunStatus, string> = {
+const STATUS: Record<RunState, string> = {
   queued: "RUNNING", running: "RUNNING", succeeded: "COMPLETED", failed: "FAILED", cancelled: "CANCELLED",
 };
 
@@ -285,12 +293,14 @@ export function QueryWorkspace() {
     setRun({ stage: st, status: "running", columns: [], rows: [], truncated: false });
     try {
       let r = await submitQuery(st, sql); // the SQL only: the schema filter is never sent
+      let cur = fromApi(st, r);
       while (gen.current === mine) {
-        setRun(fromApi(st, r));
+        setRun(cur);
         if (!active(r.status)) break;
         await sleep(POLL_MS);
         if (gen.current !== mine) break;
-        r = await pollQuery(st, r.id);
+        r = await pollQuery(st, r.id, r.next_cursor ?? undefined); // the previous response's cursor, always
+        cur = merge(cur, r);
       }
       if (gen.current !== mine) cancelQuery(st, r.id).catch(() => {}); // cancelled while the POST was in flight
     } catch (e) {
@@ -320,7 +330,7 @@ export function QueryWorkspace() {
     setPaging(true);
     try {
       const r = await pollQuery(run.stage, run.id, run.next);
-      setRun((cur) => cur && { ...cur, rows: [...cur.rows, ...(r.rows ?? [])], next: r.next_cursor, truncated: !!r.truncated });
+      setRun((cur) => cur && merge(cur, r));
     } catch (e) {
       setRun((cur) => cur && { ...cur, error: messageOf(e) });
     } finally {
