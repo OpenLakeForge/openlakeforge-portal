@@ -84,6 +84,26 @@ image digest. [CI](.github/workflows/ci.yml) runs the tests, the build, and a
 check that the served page links exactly the configured routes, both from
 Node and from the image (as nobody, read-only).
 
+## Preview a branch on OpenLakeForge
+
+To try a branch on a real stack without a release, the
+[preview workflow](.github/workflows/preview.yml) publishes a throwaway image:
+
+- It runs on pull requests from this repository (forks get no `packages: write`)
+  and, through **Run workflow**, on any branch.
+- It pushes `ghcr.io/openlakeforge/openlakeforge-portal:pr-<number>`, or
+  `:branch-<name>` for a manual run, for linux/amd64 and linux/arm64. It makes no
+  GitHub release and no `latest` or semver tag, so a preview never looks like a release.
+- The job summary ends with a line to copy into a var file for OpenLakeForge's
+  local deploy (`--var-file`):
+
+  ```hcl
+  portal_image = "ghcr.io/openlakeforge/openlakeforge-portal:pr-12@sha256:<digest>"
+  ```
+
+Preview images are not pinned in `release/component-catalog.yaml`; only a
+tagged release is.
+
 ## How it fits with OpenLakeForge
 
 - **OpenLakeForge owns the contract; the portal is a client.** Routes, stages

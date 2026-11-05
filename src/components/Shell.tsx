@@ -41,7 +41,7 @@ export function AppShell({ signOut, children }: { signOut?: string; children: Re
       <nav className="sidebar" aria-label="Primary">
         {items.map(({ to, label, icon }) => (
           <NavLink key={to} to={to} className="nav-item">
-            <img src={icon} alt="" width="19" height="19" loading="lazy" />
+            <img src={icon} alt="" width="16" height="16" loading="lazy" />
             {label}
           </NavLink>
         ))}

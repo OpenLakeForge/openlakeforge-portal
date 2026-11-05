@@ -124,11 +124,11 @@ function Explorer({ stage, schema, search, onSearch, onSchemas }: {
 
 type RunState = RunStatus | "failed"; // "failed" is the UI's own: the API reports failures as HTTP errors
 type Run = {
-  stage: string; id?: string; status: RunState; columns: Column[]; rows: Cell[][];
+  stage: string; schema: string; id?: string; status: RunState; columns: Column[]; rows: Cell[][];
   truncated: boolean; rowCount?: number; elapsedMs?: number; next?: string | null; error?: string;
 };
-const fromApi = (stage: string, r: QueryResult): Run => ({
-  stage, id: r.id, status: r.status, columns: r.columns ?? [], rows: r.rows ?? [], truncated: !!r.truncated,
+const fromApi = (stage: string, schema: string, r: QueryResult): Run => ({
+  stage, schema, id: r.id, status: r.status, columns: r.columns ?? [], rows: r.rows ?? [], truncated: !!r.truncated,
   rowCount: r.row_count, elapsedMs: r.elapsed_ms, next: r.next_cursor,
 });
 // A follow-up response holds only the next rows (empty once the submit carried everything), so append and
@@ -174,8 +174,8 @@ function ResultTable({ run }: { run: Run }) {
   );
 }
 
-function Results({ run, cancelling, formats, onMore, paging }: {
-  run: Run | null; cancelling: boolean; formats: string[]; onMore(): void; paging: boolean;
+function Results({ run, schema, cancelling, formats, onMore, paging }: {
+  run: Run | null; schema: string; cancelling: boolean; formats: string[]; onMore(): void; paging: boolean;
 }) {
   const [format, setFormat] = useState("csv");
   const chosen = formats.includes(format) ? format : formats[0];
@@ -191,7 +191,7 @@ function Results({ run, cancelling, formats, onMore, paging }: {
             <span className={`q-status q-${tone}`} role="status">● {label}</span>
             <span className="q-meta">
               {run.status === "succeeded" && run.rowCount !== undefined && `${run.rowCount} ROWS · `}
-              {run.elapsedMs !== undefined && `${duration(run.elapsedMs)} · `}{run.stage.toUpperCase()}
+              {run.elapsedMs !== undefined && `${duration(run.elapsedMs)} · `}{run.stage.toUpperCase()}{run.schema && ` · ${run.schema}`}
             </span>
           </>
         )}
@@ -204,6 +204,11 @@ function Results({ run, cancelling, formats, onMore, paging }: {
           ? <a className="q-btn" href={exportUrl(run.stage, run.id!, chosen)} download>↓ Download</a>
           : <span className="q-btn" aria-disabled="true">↓ Download</span>}
       </div>
+      {run && run.schema !== schema && (
+        <p className="q-note q-pad">
+          This result ran with {run.schema ? `default schema ${run.schema}` : "no default schema"}; the selection has changed. Run again to apply it.
+        </p>
+      )}
       {!run && <p className="q-note q-pad">Run a query to see results here.</p>}
       {run?.error && <p className="q-note q-warn q-pad" role="alert">{run.error}</p>}
       {run && run.columns.length > 0 && <ResultTable run={run} />}
@@ -290,10 +295,11 @@ export function QueryWorkspace() {
     busy.current = true;
     const mine = ++gen.current;
     const st = stage;
-    setRun({ stage: st, status: "running", columns: [], rows: [], truncated: false });
+    const sc = schema; // the context this run belongs to, whatever is selected later
+    setRun({ stage: st, schema: sc, status: "running", columns: [], rows: [], truncated: false });
     try {
-      let r = await submitQuery(st, sql); // the SQL only: the schema filter is never sent
-      let cur = fromApi(st, r);
+      let r = await submitQuery(st, sql, sc || undefined); // "All schemas" sends no default schema
+      let cur = fromApi(st, sc, r);
       while (gen.current === mine) {
         setRun(cur);
         if (!active(r.status)) break;
@@ -304,7 +310,7 @@ export function QueryWorkspace() {
       }
       if (gen.current !== mine) cancelQuery(st, r.id).catch(() => {}); // cancelled while the POST was in flight
     } catch (e) {
-      if (gen.current === mine) setRun({ stage: st, status: "failed", columns: [], rows: [], truncated: false, error: messageOf(e) });
+      if (gen.current === mine) setRun({ stage: st, schema: sc, status: "failed", columns: [], rows: [], truncated: false, error: messageOf(e) });
     } finally {
       if (gen.current === mine) busy.current = false;
     }
@@ -394,7 +400,7 @@ export function QueryWorkspace() {
         </label>
         <label>
           <span className="q-label">Schema</span>
-          <select className="q-select q-wide" value={schema} onChange={(e) => { setSchema(e.target.value); setSearch(""); }}>
+          <select className="q-select q-wide" aria-describedby="q-ctx" value={schema} onChange={(e) => { setSchema(e.target.value); setSearch(""); }}>
             <option value="">All schemas</option>
             {schemas.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
@@ -415,7 +421,12 @@ export function QueryWorkspace() {
           </div>
           <SqlEditor value={sql} onChange={setSql} onRun={submit} />
           <div className="q-actions">
-            <span className="q-hint">Ctrl/Cmd + Enter to run · Your permissions apply</span>
+            <span className="q-hint">
+              Ctrl/Cmd + Enter to run · Your permissions apply
+              <span id="q-ctx" className="q-ctx">
+                {schema ? `Unqualified tables resolve in ${schema}` : "Qualify tables as schema.table"}
+              </span>
+            </span>
             {running || cancelling
               ? <button type="button" className="q-run q-cancel" onClick={cancel} disabled={cancelling}>{cancelling ? "Cancelling…" : "■ Cancel"}</button>
               : <button type="button" className="q-run" onClick={submit} disabled={!sql.trim()}>▶ RUN</button>}
@@ -423,7 +434,7 @@ export function QueryWorkspace() {
         </section>
         <Explorer key={stage} stage={stage} schema={schema} search={search} onSearch={setSearch} onSchemas={setSchemas} />
       </div>
-      <Results run={run} cancelling={cancelling} formats={formats} onMore={more} paging={paging} />
+      <Results run={run} schema={schema} cancelling={cancelling} formats={formats} onMore={more} paging={paging} />
     </>
   );
 }

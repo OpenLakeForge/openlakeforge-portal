@@ -32,9 +32,29 @@ function StageSection({ section }: { section: Section }) {
   );
 }
 
+// Lake-bed depth contours: one outline, scaled and turned (scale, rotate, opacity).
+const rings = [
+  [0.6, 8, 0.9], [1.1, 4, 0.8], [1.7, -2, 0.7], [2.4, -7, 0.6], [3.2, -11, 0.5],
+  [4.1, -14, 0.4], [5.1, -16, 0.3], [6.3, -18, 0.2], [7.6, -20, 0.15],
+];
+const outline = "M0-100C70-104 130-70 150-20S135 85 70 102-55 118-110 80-160-10-120-60-55-97 0-100Z";
+
+function Contours() {
+  return (
+    <svg className="contours" viewBox="0 0 1200 800" aria-hidden="true">
+      <g fill="none" stroke="currentColor" transform="translate(760 360)">
+        {rings.map(([scale, rotate, opacity]) => (
+          <path key={scale} d={outline} transform={`scale(${scale}) rotate(${rotate})`} opacity={opacity} strokeWidth={(1.2 / scale).toFixed(3)} />
+        ))}
+      </g>
+    </svg>
+  );
+}
+
 export function Services({ stages, problem }: { stages: Section[]; problem?: string }) {
   return (
     <>
+      <Contours />
       <h1>Your lakehouse, one click away.</h1>
       <p className="lede">Open the services available in this deployment.</p>
       {stages.map((section) => <StageSection key={section.stage} section={section} />)}

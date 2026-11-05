@@ -123,5 +123,6 @@
 .q-foot { margin: 0; padding: var(--olf-space-3) var(--olf-space-4); border-top: 1px solid var(--olf-border-subtle); font: 0.625rem var(--olf-font-mono); color: var(--olf-text-muted); }
 .q-run { white-space: nowrap; }
 .q-hint { flex: 1; min-width: 0; }
+.q-ctx { display: block; color: var(--olf-text-muted); }
 .q-code .cm-gutters { padding-left: var(--olf-space-3); }
 .q-code .cm-lineNumbers .cm-gutterElement { padding: 0 var(--olf-space-3) 0 var(--olf-space-1); }
