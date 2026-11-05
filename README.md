@@ -24,10 +24,43 @@ Requires Node.js 22.22 or later.
 npm install
 npm run dev       # http://localhost:5173, using src/data/routes.example.json
 npm test          # unit tests (vitest, React Testing Library)
+npm run mock      # dev server with a fake Platform API (see below)
 npm run typecheck # route types and tsc
 npm run build     # server and client build in build/
 OLF_ROUTES_FILE=src/data/routes.example.json PORT=8080 npm start   # serve build/ on :8080
 ```
+
+## Run the UI against a mock backend
+
+To review the whole portal, including the SQL workspace, without deploying
+OpenLakeForge on Kubernetes:
+
+```bash
+npm run mock      # http://localhost:5173 with a fake /api/v1 and src/data/routes.example.json
+```
+
+[`mock/api.ts`](mock/api.ts) imitates the Platform API's query and discovery
+endpoints with small in-memory fixtures (stages `dev` and `prod`; schemas
+`bronze`, `silver`, `gold_sales`, `information_schema`, plus `scratch` in dev).
+It is mounted by the Vite dev server only when `OLF_MOCK_API=1`, which
+`npm run mock` sets; it lives outside `src/`, so `npm run build` and the image
+never contain it. These words in the SQL pick a behaviour:
+
+| SQL | What it shows |
+| --- | --- |
+| `SELECT * FROM silver.orders` | A normal result, with a NULL and an HTML-looking string (rendered as text). |
+| `SELECT * FROM orders` | With a schema chosen, the table resolves there. With "All schemas" it is a 400: "Schema must be specified when session schema is not set". |
+| `INSERT`, `UPDATE`, `DELETE`, `DROP`, `CREATE`, `ALTER`, `MERGE` first | A 403 "only read queries ... are offered in the portal yet". |
+| `syntax_error` | A 400 with a Trino-style message. |
+| `slow` | The query stays running for five polls, so Cancel can be tried. |
+| `big` | A result returned in pages of 100 rows while running, cut at 250 rows and marked truncated. |
+
+Export (CSV, JSON), cancel and the schema and table search all work. The
+browser tests in `e2e/` (Playwright) run against this mock: `npm run test:ui`.
+They save full-page screenshots of `/services` and `/queries` (dark, light and
+390 px wide) in `test-results/screenshots/` for review; CI uploads them as the
+`ui-review` artifact. In a sandbox whose Chromium is not the revision Playwright
+expects, set `PW_CHROMIUM` to its path. Locally run `npx playwright install chromium` once.
 
 ## Routes are a deploy-time parameter
 
