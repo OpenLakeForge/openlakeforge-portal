@@ -1,5 +1,5 @@
 {
-  "include": ["src", "*.ts", ".react-router/types/**/*"],
+  "include": ["src", "mock", "*.ts", ".react-router/types/**/*"],
   "compilerOptions": {
     "lib": ["DOM", "DOM.Iterable", "ES2022"],
     "types": ["node", "vite/client"],
@@ -11,6 +11,7 @@
     "resolveJsonModule": true,
     "strict": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "verbatimModuleSyntax": true
   }

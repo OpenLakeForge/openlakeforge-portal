@@ -3,5 +3,9 @@ build
 .react-router
 .git
 .github
+e2e
+mock
+test-results
+playwright-report
 *.md
 !README.md
