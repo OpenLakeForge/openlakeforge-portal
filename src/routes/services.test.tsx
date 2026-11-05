@@ -95,7 +95,7 @@ describe("services page", () => {
     expect(link).toHaveAttribute("href", trino.url);
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAccessibleName(/Query/);
-    expect(screen.queryByText(/routes|services$/i)).toBeNull();
+    expect(screen.queryByText(/\d+\s*(routes|services)/i)).toBeNull();
   });
 
   it("draws the depth contours as a hidden, decorative svg", () => {
@@ -144,7 +144,7 @@ describe("queries page", () => {
   it("renders inside the shell without needing the API at render time", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     render(<Queries />);
-    expect(screen.getByRole("heading", { name: "Query your lakehouse, at any depth." })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Queries" })).toBeInTheDocument();
     vi.unstubAllGlobals();
   });
 });

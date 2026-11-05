@@ -366,9 +366,7 @@ export function QueryWorkspace() {
   const header = (
     <div className="q-head">
       <div>
-        <p className="eyebrow">Queries · Trino</p>
-        <h1>Query your lakehouse, <em>at any depth.</em></h1>
-        <p className="lede">Run ad-hoc SQL on your lakehouse.</p>
+        <h1>Queries</h1>
       </div>
       <EngineBadge />
     </div>
@@ -415,7 +413,11 @@ export function QueryWorkspace() {
             <span className="q-spacer" />
             <span className="q-note" role="status">{note}</span>
             <button type="button" className="q-text-btn" onClick={format} disabled={!sql.trim()}>Format</button>
-            <button type="button" className="q-text-btn" onClick={copy} aria-label="Copy SQL" disabled={!sql}>Copy</button>
+            <button type="button" className="q-icon-btn" onClick={copy} aria-label="Copy SQL" disabled={!sql}>
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 0 1 2-2h9" />
+              </svg>
+            </button>
           </div>
           <SqlEditor value={sql} onChange={setSql} onRun={submit} />
           <div className="q-actions">

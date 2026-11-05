@@ -69,20 +69,18 @@
 .main { position: relative; isolation: isolate; min-width: 0; padding: var(--olf-space-8) var(--olf-space-8) var(--olf-space-16); }
 .main h1 {
   margin: 0;
-  font: 400 clamp(2rem, 4vw, 2.75rem) / 1.12 var(--olf-font-display);
+  font: 400 clamp(1.75rem, 3vw, 2.25rem) / 1.15 var(--olf-font-display);
   font-variation-settings: var(--olf-font-display-axes);
 }
-.main h1 em { color: var(--olf-title-accent); font-style: italic; }
 
-/* Mono, uppercase, tracked: the site's eyebrow. Also the look of every section label. */
-.eyebrow, .stage h2, .q-label, .q-card-head h2 {
+/* Mono, uppercase, tracked: the site's label style, for every section label. */
+.stage h2, .q-label, .q-card-head h2 {
   margin: 0;
   font: 500 var(--olf-text-label) / 1.33 var(--olf-font-mono);
   letter-spacing: var(--olf-tracking-label);
   text-transform: uppercase;
   color: var(--olf-title-accent);
 }
-.eyebrow { margin-bottom: var(--olf-space-2); }
 /* Stage depth ("DEV · 10m"), drawn here so it stays out of the text and the accessible name. */
 [data-depth]::after { content: " · " attr(data-depth) / ""; color: var(--olf-text-muted); text-transform: none; }
 
@@ -100,7 +98,6 @@
 }
 @media (max-width: 64rem) { .main::after { display: none; } }
 @media (min-width: 64rem) { .main { padding-right: var(--olf-space-12); } }
-.lede { margin: var(--olf-space-1) 0 0; font-size: var(--olf-text-small); color: var(--olf-text-secondary); }
 
 @media (max-width: 48rem) {
   .app { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; }

@@ -7,12 +7,12 @@
 }
 :root[data-theme="light"] {
   --mark-anvil: var(--brand-anvil);
-  --contour-opacity: 0.6;
+  --contour-opacity: 0.22;
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     --mark-anvil: var(--brand-anvil);
-    --contour-opacity: 0.6;
+    --contour-opacity: 0.22;
   }
 }
 

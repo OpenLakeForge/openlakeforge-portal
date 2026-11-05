@@ -184,15 +184,13 @@
 :root[data-theme="light"] {
   color-scheme: light;
 
-  --olf-bg-base: var(--abyss-50);
-  --olf-bg-sky: linear-gradient(180deg, #8fd6ff 0%, #bfe6fd 45%, #e3f3fd 100%); /* the surface, a clear day */
-  --olf-card-fill: rgb(255 255 255 / 0.5);
-  --olf-card-fill-hover: rgb(255 255 255 / 0.75);
+  --olf-bg-base: #ffffff;
+  --olf-bg-sky: none; /* light is plain white: the tool, not the site */
+  --olf-card-fill: #ffffff;
+  --olf-card-fill-hover: var(--lake-50);
   --olf-hairline: rgb(11 34 53 / 0.2);
   --olf-title-accent: var(--lake-700);
-  --olf-contour: #ffffff;
-  --olf-text-secondary: var(--abyss-700);
-  --olf-text-muted: var(--abyss-600);
+  --olf-contour: var(--lake-600);
   --olf-bg-surface: #ffffff;
   --olf-bg-raised: var(--lake-50);
   --olf-bg-code: var(--abyss-900);
@@ -212,6 +210,8 @@
   --olf-border-strong: var(--abyss-400);
 
   --olf-text-primary: var(--abyss-900);
+  --olf-text-secondary: var(--abyss-600);
+  --olf-text-muted: var(--abyss-500);
   --olf-text-inverse: #ffffff;
 
   --olf-accent: var(--lake-600);
@@ -234,15 +234,13 @@
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     color-scheme: light;
-    --olf-bg-base: var(--abyss-50);
-    --olf-bg-sky: linear-gradient(180deg, #8fd6ff 0%, #bfe6fd 45%, #e3f3fd 100%); /* the surface, a clear day */
-    --olf-card-fill: rgb(255 255 255 / 0.5);
-    --olf-card-fill-hover: rgb(255 255 255 / 0.75);
+    --olf-bg-base: #ffffff;
+    --olf-bg-sky: none; /* light is plain white: the tool, not the site */
+    --olf-card-fill: #ffffff;
+    --olf-card-fill-hover: var(--lake-50);
     --olf-hairline: rgb(11 34 53 / 0.2);
     --olf-title-accent: var(--lake-700);
-    --olf-contour: #ffffff;
-    --olf-text-secondary: var(--abyss-700);
-    --olf-text-muted: var(--abyss-600);
+    --olf-contour: var(--lake-600);
     --olf-bg-surface: #ffffff;
     --olf-bg-raised: var(--lake-50);
     --olf-bg-code: var(--abyss-900);
@@ -260,6 +258,8 @@
     --olf-border-default: var(--abyss-200);
     --olf-border-strong: var(--abyss-400);
     --olf-text-primary: var(--abyss-900);
+    --olf-text-secondary: var(--abyss-600);
+    --olf-text-muted: var(--abyss-500);
     --olf-text-inverse: #ffffff;
     --olf-accent: var(--lake-600);
     --olf-accent-hover: var(--lake-700);

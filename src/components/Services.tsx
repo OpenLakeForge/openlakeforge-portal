@@ -55,13 +55,10 @@ function Contours() {
 
 export function Services({ stages, problem }: { stages: Section[]; problem?: string }) {
   const deep = stages.filter((s) => s.stage !== "shared");
-  const count = stages.reduce((n, s) => n + s.services.length, 0);
   return (
     <>
       <Contours />
-      <p className="eyebrow">Services{count > 0 && ` · ${count} available`}</p>
-      <h1>Your lakehouse, <em>one click away.</em></h1>
-      <p className="lede">Open the services available in this deployment.</p>
+      <h1>Services</h1>
       {stages.map((section) => <StageSection key={section.stage} section={section} depth={section.stage === "shared" ? "00m" : depthOf(deep.indexOf(section), deep.length)} />)}
       {stages.length === 0 && (
         <p className="empty">
