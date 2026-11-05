@@ -2,6 +2,7 @@
 // execution, #801 discovery), in one place so aligning with the final backend
 // shape is a small diff. Same-origin and cookie-authenticated: no token in JS.
 // Types follow the built backend (platform-api queries.py, #800 and #801).
+// A chosen schema is sent with the query as its default schema; "All schemas" sends none.
 // Every failure is an HTTP error with {detail}; a result never carries status "failed".
 // shortcut: hand-written types; generate them from the committed OpenAPI spec.
 
@@ -97,9 +98,12 @@ export const listTables = async (stage: string, schema: string, q: string, curso
   return { items: p.tables, next_cursor: p.next_cursor };
 };
 
-// Only the SQL is sent: the schema selector filters the explorer, never the query.
-export const submitQuery = (stage: string, sql: string) =>
-  request<QueryResult>(`/stages/${seg(stage)}/queries`, { method: "POST", body: JSON.stringify({ sql }) });
+// The API rejects unknown fields (422), so `schema` is in the body only when one is chosen. Polling,
+// cancel and export need no schema: the signed query id carries it.
+export const submitQuery = (stage: string, sql: string, schema?: string) =>
+  request<QueryResult>(`/stages/${seg(stage)}/queries`, {
+    method: "POST", body: JSON.stringify(schema ? { sql, schema } : { sql }),
+  });
 
 export const pollQuery = (stage: string, id: string, cursor?: string) =>
   request<QueryResult>(`/stages/${seg(stage)}/queries/${seg(id)}${qs({ cursor })}`);

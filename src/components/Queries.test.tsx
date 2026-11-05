@@ -51,6 +51,11 @@ async function type(sql: string) {
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: sql } });
   await waitFor(() => expect(screen.getByRole("button", { name: /run/i })).toBeEnabled()); // React saw the change
 }
+async function choose(schema: string) {
+  const select = screen.getByRole("combobox", { name: /schema/i });
+  await waitFor(() => expect(within(select).getAllByRole("option").length).toBeGreaterThan(1)); // the schemas have loaded
+  await userEvent.selectOptions(select, schema);
+}
 const run = () => userEvent.click(screen.getByRole("button", { name: /run/i }));
 
 beforeEach(() => {
@@ -126,19 +131,62 @@ describe("explorer", () => {
     expect(await screen.findByText("No schemas visible to you.")).toBeInTheDocument();
   });
 
-  it("filters the explorer by schema without ever sending it with the query", async () => {
-    const calls = api({ ...base, "POST /api/v1/stages/dev/queries": { body: done() } });
+  it("filters the explorer by schema", async () => {
+    api(base);
     await ready();
     await screen.findByRole("button", { name: /bronze/ });
-    await screen.findByRole("option", { name: "bronze" });
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /schema/i }), "bronze");
+    await choose("bronze");
     expect(screen.queryByRole("button", { name: /silver/ })).toBeNull();
+  });
+});
+
+describe("default schema", () => {
+  const bodyOf = (calls: ReturnType<typeof api>) =>
+    JSON.parse(calls.find((c) => c.method === "POST")!.init.body as string);
+  const post = { "POST /api/v1/stages/dev/queries": { body: done() } };
+
+  it("sends the chosen schema with the query", async () => {
+    const calls = api({ ...base, ...post });
+    await ready();
+    await choose("bronze");
+    await type("select * from orders");
+    await run();
+    await screen.findByText("COMPLETED", { exact: false });
+    expect(bodyOf(calls)).toEqual({ sql: "select * from orders", schema: "bronze" });
+    expect(screen.getByText(/DEV · bronze/)).toBeInTheDocument();
+  });
+
+  it("sends no schema for All schemas", async () => {
+    const calls = api({ ...base, ...post });
+    await ready();
     await type("select 1");
     await run();
     await screen.findByText("COMPLETED", { exact: false });
-    const post = calls.find((c) => c.method === "POST")!;
-    expect(JSON.parse(post.init.body as string)).toEqual({ sql: "select 1" });
-    expect(post.url.search).toBe("");
+    expect(bodyOf(calls)).toEqual({ sql: "select 1" });
+  });
+
+  it("says which context applies to unqualified tables", async () => {
+    api(base);
+    await ready();
+    expect(screen.getByText("Qualify tables as schema.table")).toBeInTheDocument();
+    await choose("silver");
+    expect(screen.getByText("Unqualified tables resolve in silver")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /schema/i })).toHaveAccessibleDescription("Unqualified tables resolve in silver");
+    await choose("");
+    expect(screen.getByText("Qualify tables as schema.table")).toBeInTheDocument();
+  });
+
+  it("keeps the result after a schema change, marks it, and does not re-run", async () => {
+    const calls = api({ ...base, ...post });
+    await ready();
+    await choose("bronze");
+    await type("select 1");
+    await run();
+    await screen.findByRole("table");
+    await choose("silver");
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(screen.getByText(/ran with default schema bronze; the selection has changed/)).toBeInTheDocument();
+    expect(calls.filter((c) => c.method === "POST")).toHaveLength(1);
   });
 });
 
