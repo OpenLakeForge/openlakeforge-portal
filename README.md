@@ -56,7 +56,11 @@ never contain it. These words in the SQL pick a behaviour:
 | `big` | A result returned in pages of 100 rows while running, cut at 250 rows and marked truncated. |
 
 Export (CSV, JSON), cancel and the schema and table search all work. The
-browser tests in `e2e/` run against this mock: `npm run test:ui`.
+browser tests in `e2e/` (Playwright) run against this mock: `npm run test:ui`.
+They save full-page screenshots of `/services` and `/queries` (dark, light and
+390 px wide) in `test-results/screenshots/` for review; CI uploads them as the
+`ui-review` artifact. In a sandbox whose Chromium is not the revision Playwright
+expects, set `PW_CHROMIUM` to its path. Locally run `npx playwright install chromium` once.
 
 ## Routes are a deploy-time parameter
 
