@@ -7,12 +7,12 @@
 }
 :root[data-theme="light"] {
   --mark-anvil: var(--brand-anvil);
-  --contour-opacity: 0.22;
+  --contour-opacity: 0.6;
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     --mark-anvil: var(--brand-anvil);
-    --contour-opacity: 0.22;
+    --contour-opacity: 0.6;
   }
 }
 
@@ -20,7 +20,8 @@
 
 body {
   margin: 0;
-  background: var(--olf-bg-base);
+  background: var(--olf-bg-base) var(--olf-bg-sky) no-repeat;
+  min-height: 100vh;
   color: var(--olf-text-primary);
   font: var(--olf-text-body) / var(--olf-leading-body) var(--olf-font-body);
   -webkit-font-smoothing: antialiased;

@@ -1,3 +1,4 @@
+import { depthOf } from "../lib/depth";
 import type { Section, Service } from "../lib/routes.server";
 
 // loading=lazy: otherwise React hoists a <link rel=preload href> per logo, and the
@@ -20,11 +21,12 @@ function ServiceCard({ service }: { service: Service }) {
   );
 }
 
-function StageSection({ section }: { section: Section }) {
+// data-depth is drawn by CSS (::after), so the heading's name and text stay just the stage.
+function StageSection({ section, depth }: { section: Section; depth: string }) {
   const id = `stage-${section.stage}`;
   return (
     <section className="stage" aria-labelledby={id}>
-      <h2 id={id}>{section.heading}</h2>
+      <h2 id={id} data-depth={depth}>{section.heading}</h2>
       <ul>
         {section.services.map((service) => <li key={service.url}><ServiceCard service={service} /></li>)}
       </ul>
@@ -52,12 +54,15 @@ function Contours() {
 }
 
 export function Services({ stages, problem }: { stages: Section[]; problem?: string }) {
+  const deep = stages.filter((s) => s.stage !== "shared");
+  const count = stages.reduce((n, s) => n + s.services.length, 0);
   return (
     <>
       <Contours />
-      <h1>Your lakehouse, one click away.</h1>
+      <p className="eyebrow">Services{count > 0 && ` · ${count} available`}</p>
+      <h1>Your lakehouse, <em>one click away.</em></h1>
       <p className="lede">Open the services available in this deployment.</p>
-      {stages.map((section) => <StageSection key={section.stage} section={section} />)}
+      {stages.map((section) => <StageSection key={section.stage} section={section} depth={section.stage === "shared" ? "00m" : depthOf(deep.indexOf(section), deep.length)} />)}
       {stages.length === 0 && (
         <p className="empty">
           <span className="label">No routes</span>

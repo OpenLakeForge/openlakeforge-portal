@@ -144,7 +144,7 @@ describe("queries page", () => {
   it("renders inside the shell without needing the API at render time", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     render(<Queries />);
-    expect(screen.getByRole("heading", { name: "Query your lakehouse" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Query your lakehouse, at any depth." })).toBeInTheDocument();
     vi.unstubAllGlobals();
   });
 });
