@@ -7,7 +7,7 @@
 /* App shell: top bar over a sidebar and the page. Stacks at narrow widths. */
 .app {
   display: grid;
-  grid-template-columns: 14.5rem 1fr;
+  grid-template-columns: 10.5rem 1fr;
   grid-template-rows: auto 1fr;
   min-height: 100vh;
 }
@@ -49,20 +49,19 @@
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: 0.4375rem;
-  padding: var(--olf-space-8) var(--olf-space-4) var(--olf-space-4);
-  background: var(--olf-bg-surface);
+  gap: 0.25rem;
+  padding: var(--olf-space-6) var(--olf-space-2) var(--olf-space-4);
   border-right: 1px solid var(--olf-border-subtle);
 }
 .nav-item {
   display: flex;
   align-items: center;
-  gap: var(--olf-space-3);
-  min-height: 2.625rem;
-  padding: 0 var(--olf-space-3);
-  border-radius: var(--olf-radius-md);
+  gap: var(--olf-space-2);
+  min-height: 2.125rem;
+  padding: 0 var(--olf-space-2);
+  border-radius: var(--olf-radius-sm);
   color: var(--olf-text-secondary);
-  font: 500 var(--olf-text-small) / 1.57 var(--olf-font-body);
+  font: 500 0.8125rem / 1.5 var(--olf-font-body);
   text-decoration: none;
 }
 .nav-item:hover { background: var(--olf-tint-neutral); }
