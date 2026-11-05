@@ -3,13 +3,16 @@
 
 :root {
   --mark-anvil: var(--abyss-100);
+  --contour-opacity: 0.32;
 }
 :root[data-theme="light"] {
   --mark-anvil: var(--brand-anvil);
+  --contour-opacity: 0.22;
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     --mark-anvil: var(--brand-anvil);
+    --contour-opacity: 0.22;
   }
 }
 
