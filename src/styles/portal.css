@@ -69,8 +69,10 @@
 .main { position: relative; isolation: isolate; min-width: 0; padding: var(--olf-space-8) var(--olf-space-8) var(--olf-space-16); }
 .main h1 {
   margin: 0;
-  font: 400 clamp(1.75rem, 3vw, 2.25rem) / 1.15 var(--olf-font-display);
-  font-variation-settings: var(--olf-font-display-axes);
+  font: 400 clamp(2rem, 3.5vw, 2.5rem) / 1.1 var(--olf-font-display);
+  letter-spacing: -0.01em;
+  /* The site's hero cut: pin the optical size to its 72px display, not the smaller text cut. */
+  font-variation-settings: var(--olf-font-display-axes), "opsz" 72;
 }
 
 /* Mono, uppercase, tracked: the site's label style, for every section label. */
@@ -165,7 +167,7 @@
   box-shadow: inset 0 0 0 1px rgb(11 34 53 / 0.08);
 }
 .card-title { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--olf-space-0-5); }
-.card strong { font: 500 var(--olf-text-h4) / 1.4 var(--olf-font-heading); }
+.card strong { font: 400 1.375rem / 1.2 var(--olf-font-display); font-variation-settings: var(--olf-font-display-axes); letter-spacing: -0.005em; }
 .card code {
   overflow: hidden;
   text-overflow: ellipsis;
