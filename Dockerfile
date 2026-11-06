@@ -4,7 +4,9 @@
 
 ARG NODE_IMAGE=node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
 
-FROM ${NODE_IMAGE} AS build
+# The build stage runs on the runner's own platform: its output (build/) is plain JS that runs on any
+# platform, and Vite's native bundler hangs under QEMU, which stalled the arm64 release build.
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-fund --no-audit
