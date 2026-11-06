@@ -18,8 +18,7 @@
   gap: var(--olf-space-3);
   min-height: 4.5rem;
   padding: 0 var(--olf-space-8);
-  background: var(--olf-bg-surface);
-  border-bottom: 1px solid var(--olf-border-subtle);
+  border-bottom: 1px solid var(--olf-hairline);
 }
 .wordmark {
   font: 700 var(--olf-text-h4) / 1 var(--olf-font-heading);
@@ -29,8 +28,8 @@
 .pill {
   border-radius: var(--olf-radius-sm);
   padding: 0.2rem var(--olf-space-3);
-  background: var(--olf-bg-raised);
-  color: var(--olf-highlight);
+  border: 1px solid var(--olf-hairline);
+  color: var(--olf-title-accent);
   font-size: 0.6875rem;
 }
 .sign-out {
@@ -51,7 +50,7 @@
   flex-direction: column;
   gap: 0.25rem;
   padding: var(--olf-space-6) var(--olf-space-2) var(--olf-space-4);
-  border-right: 1px solid var(--olf-border-subtle);
+  border-right: 1px solid var(--olf-hairline);
 }
 .nav-item {
   display: flex;
@@ -65,11 +64,42 @@
   text-decoration: none;
 }
 .nav-item:hover { background: var(--olf-tint-neutral); }
-.nav-item[aria-current="page"] { background: var(--olf-bg-raised); color: var(--olf-highlight); font-weight: 600; }
+.nav-item[aria-current="page"] { background: var(--olf-card-fill-hover); color: var(--olf-title-accent); font-weight: 600; }
 
 .main { position: relative; isolation: isolate; min-width: 0; padding: var(--olf-space-8) var(--olf-space-8) var(--olf-space-16); }
-.main h1 { margin: 0; font: 700 2.125rem / 1.3 var(--olf-font-heading); letter-spacing: -0.01em; }
-.lede { margin: var(--olf-space-1) 0 0; font-size: var(--olf-text-small); color: var(--olf-text-secondary); }
+.main h1 {
+  margin: 0;
+  font: 400 clamp(2rem, 3.5vw, 2.5rem) / 1.1 var(--olf-font-display);
+  letter-spacing: -0.01em;
+  /* The site's hero cut: pin the optical size to its 72px display, not the smaller text cut. */
+  font-variation-settings: var(--olf-font-display-axes), "opsz" 72;
+}
+
+/* Mono, uppercase, tracked: the site's label style, for every section label. */
+.stage h2, .q-label, .q-card-head h2 {
+  margin: 0;
+  font: 500 var(--olf-text-label) / 1.33 var(--olf-font-mono);
+  letter-spacing: var(--olf-tracking-label);
+  text-transform: uppercase;
+  color: var(--olf-title-accent);
+}
+/* Stage depth ("DEV · 10m"), drawn here so it stays out of the text and the accessible name. */
+[data-depth]::after { content: " · " attr(data-depth) / ""; color: var(--olf-text-muted); text-transform: none; }
+
+/* A static depth ruler on the right edge; the page keeps clear of it. */
+.main::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 1.5rem;
+  border-left: 1px solid var(--olf-hairline);
+  background:
+    repeating-linear-gradient(to bottom, var(--olf-text-muted) 0 1px, transparent 1px 5rem) right / 1rem 100% no-repeat,
+    repeating-linear-gradient(to bottom, var(--olf-hairline) 0 1px, transparent 1px 1rem) right / 0.5rem 100% no-repeat;
+  pointer-events: none;
+}
+@media (max-width: 64rem) { .main::after { display: none; } }
+@media (min-width: 64rem) { .main { padding-right: var(--olf-space-12); } }
 
 @media (max-width: 48rem) {
   .app { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; }
@@ -82,7 +112,6 @@
     border-bottom: 1px solid var(--olf-border-subtle);
   }
   .main { padding: var(--olf-space-6) var(--olf-space-4) var(--olf-space-12); }
-  .main h1 { font-size: var(--olf-text-h2); }
 }
 
 /* Lake-bed contours behind the page header: behind the text (z-index -1 inside .main), clipped by the svg. */
@@ -93,7 +122,7 @@
   right: 0;
   width: 42rem;
   height: 28rem;
-  color: var(--olf-highlight);
+  color: var(--olf-contour);
   opacity: var(--contour-opacity);
   mask-image: radial-gradient(ellipse at 65% 40%, #000 30%, transparent 72%); /* no hard edge where the svg ends */
   pointer-events: none;
@@ -105,16 +134,16 @@
   display: block;
   height: 100%;
   padding: var(--olf-space-6);
-  border: 1px solid var(--olf-border-default);
+  border: 1px solid var(--olf-hairline);
   border-radius: var(--olf-radius-lg);
-  background: var(--olf-bg-surface);
+  background: var(--olf-card-fill);
   color: inherit;
   text-decoration: none;
   transition: border-color var(--olf-duration), background var(--olf-duration), box-shadow var(--olf-duration);
 }
 .card:hover {
   border-color: var(--olf-accent);
-  background: var(--olf-bg-raised);
+  background: var(--olf-card-fill-hover);
   box-shadow: var(--olf-glow);
 }
 .card:focus-visible { outline: 2px solid var(--olf-highlight); outline-offset: 3px; }
@@ -138,7 +167,7 @@
   box-shadow: inset 0 0 0 1px rgb(11 34 53 / 0.08);
 }
 .card-title { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--olf-space-0-5); }
-.card strong { font: 500 var(--olf-text-h4) / 1.4 var(--olf-font-heading); }
+.card strong { font: 400 1.375rem / 1.2 var(--olf-font-display); font-variation-settings: var(--olf-font-display-axes); letter-spacing: -0.005em; }
 .card code {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -157,8 +186,8 @@
 }
 
 /* Stage section */
-.stage { margin-top: var(--olf-space-6); }
-.stage h2 { margin: 0 0 var(--olf-space-3); font: 700 1.1875rem / 1.4 var(--olf-font-heading); }
+.stage { margin-top: var(--olf-space-8); }
+.stage h2 { margin: 0 0 var(--olf-space-3); }
 .stage ul {
   list-style: none;
   margin: 0;
@@ -175,7 +204,7 @@
   gap: var(--olf-space-2);
   margin: var(--olf-space-8) 0 0;
   padding: var(--olf-space-6);
-  border: 1px dashed var(--olf-border-default);
+  border: 1px dashed var(--olf-hairline);
   border-radius: var(--olf-radius-lg);
   color: var(--olf-text-secondary);
 }

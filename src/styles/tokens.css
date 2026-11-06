@@ -135,6 +135,12 @@
   color-scheme: dark;
 
   --olf-bg-base: var(--abyss-950);
+  --olf-bg-sky: linear-gradient(180deg, #0f3556 0%, var(--abyss-900) 35%, var(--abyss-950) 100%); /* the deep, darker downward */
+  --olf-card-fill: rgb(20 51 76 / 0.35);
+  --olf-card-fill-hover: rgb(20 51 76 / 0.6);
+  --olf-hairline: rgb(156 186 208 / 0.22);
+  --olf-title-accent: var(--shallows-300);
+  --olf-contour: var(--shallows-300);
   --olf-bg-surface: var(--abyss-900);
   --olf-bg-raised: var(--abyss-850);
   --olf-bg-code: var(--abyss-850);
@@ -178,7 +184,13 @@
 :root[data-theme="light"] {
   color-scheme: light;
 
-  --olf-bg-base: var(--abyss-50);
+  --olf-bg-base: #ffffff;
+  --olf-bg-sky: none; /* light is plain white: the tool, not the site */
+  --olf-card-fill: #ffffff;
+  --olf-card-fill-hover: var(--lake-50);
+  --olf-hairline: rgb(11 34 53 / 0.2);
+  --olf-title-accent: var(--lake-700);
+  --olf-contour: var(--lake-600);
   --olf-bg-surface: #ffffff;
   --olf-bg-raised: var(--lake-50);
   --olf-bg-code: var(--abyss-900);
@@ -222,7 +234,13 @@
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     color-scheme: light;
-    --olf-bg-base: var(--abyss-50);
+    --olf-bg-base: #ffffff;
+    --olf-bg-sky: none; /* light is plain white: the tool, not the site */
+    --olf-card-fill: #ffffff;
+    --olf-card-fill-hover: var(--lake-50);
+    --olf-hairline: rgb(11 34 53 / 0.2);
+    --olf-title-accent: var(--lake-700);
+    --olf-contour: var(--lake-600);
     --olf-bg-surface: #ffffff;
     --olf-bg-raised: var(--lake-50);
     --olf-bg-code: var(--abyss-900);

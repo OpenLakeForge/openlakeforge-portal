@@ -3,6 +3,7 @@ import {
   ApiError, cancelQuery, exportUrl, getCapabilities, listSchemas, listTables, pollQuery, submitQuery,
   type Cell, type Column, type Page, type QueryResult, type RunStatus, type StageCapability,
 } from "../lib/query-api";
+import { depthOf } from "../lib/depth";
 import { SqlEditor } from "./SqlEditor";
 
 const POLL_MS = 1000;
@@ -174,8 +175,8 @@ function ResultTable({ run }: { run: Run }) {
   );
 }
 
-function Results({ run, schema, cancelling, formats, onMore, paging }: {
-  run: Run | null; schema: string; cancelling: boolean; formats: string[]; onMore(): void; paging: boolean;
+function Results({ run, schema, cancelling, formats, onMore, paging, stages }: {
+  stages: string[]; run: Run | null; schema: string; cancelling: boolean; formats: string[]; onMore(): void; paging: boolean;
 }) {
   const [format, setFormat] = useState("csv");
   const chosen = formats.includes(format) ? format : formats[0];
@@ -191,7 +192,7 @@ function Results({ run, schema, cancelling, formats, onMore, paging }: {
             <span className={`q-status q-${tone}`} role="status">● {label}</span>
             <span className="q-meta">
               {run.status === "succeeded" && run.rowCount !== undefined && `${run.rowCount} ROWS · `}
-              {run.elapsedMs !== undefined && `${duration(run.elapsedMs)} · `}{run.stage.toUpperCase()}{run.schema && ` · ${run.schema}`}
+              {run.elapsedMs !== undefined && `${duration(run.elapsedMs)} · `}{run.stage.toUpperCase()}<span className="depth" data-depth={depthOf(Math.max(0, stages.indexOf(run.stage)), stages.length)} />{run.schema && ` · ${run.schema}`}
             </span>
           </>
         )}
@@ -365,8 +366,7 @@ export function QueryWorkspace() {
   const header = (
     <div className="q-head">
       <div>
-        <h1>Query your lakehouse</h1>
-        <p className="lede">Run ad-hoc SQL on your lakehouse.</p>
+        <h1>Queries</h1>
       </div>
       <EngineBadge />
     </div>
@@ -434,7 +434,7 @@ export function QueryWorkspace() {
         </section>
         <Explorer key={stage} stage={stage} schema={schema} search={search} onSearch={setSearch} onSchemas={setSchemas} />
       </div>
-      <Results run={run} schema={schema} cancelling={cancelling} formats={formats} onMore={more} paging={paging} />
+      <Results stages={caps.stages.map((s) => s.stage)} run={run} schema={schema} cancelling={cancelling} formats={formats} onMore={more} paging={paging} />
     </>
   );
 }

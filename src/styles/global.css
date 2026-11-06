@@ -20,7 +20,8 @@
 
 body {
   margin: 0;
-  background: var(--olf-bg-base);
+  background: var(--olf-bg-base) var(--olf-bg-sky) no-repeat;
+  min-height: 100vh;
   color: var(--olf-text-primary);
   font: var(--olf-text-body) / var(--olf-leading-body) var(--olf-font-body);
   -webkit-font-smoothing: antialiased;
