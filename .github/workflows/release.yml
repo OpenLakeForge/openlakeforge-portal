@@ -20,6 +20,8 @@ env:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # A healthy release takes about 4 minutes; fail fast instead of hanging for hours.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
