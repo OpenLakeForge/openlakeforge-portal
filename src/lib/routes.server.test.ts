@@ -7,7 +7,7 @@ import { loadRoutes, parseRoutes, sections, signOutUrl } from "./routes.server";
 const routes = {
   "stage/prod/orchestration": { stage: "prod", name: "orchestration", url: "http://dagster-prod.olf.localhost" },
   "stage/dev/orchestration": { stage: "dev", name: "orchestration", url: "http://dagster-dev.olf.localhost" },
-  "shared/query": { stage: "shared", name: "query", url: "https://trino.olf.localhost" },
+  "stage/dev/query": { stage: "dev", name: "query", url: "https://trino-dev.olf.localhost" },
   "shared/new_thing": { stage: "shared", name: "new_thing", url: "http://new.olf.localhost" },
 };
 
@@ -26,10 +26,10 @@ describe("sections", () => {
   });
 
   it("presents known services by capability and falls back to a monogram", () => {
-    const shared = sections(parseRoutes(routes))[0].services;
-    const query = shared.find((s) => s.name === "query");
+    const [shared, dev] = sections(parseRoutes(routes)).map((s) => s.services);
+    const query = dev.find((s) => s.name === "query");
     const unknown = shared.find((s) => s.name === "new_thing");
-    expect(query).toMatchObject({ title: "Query", host: "trino.olf.localhost", logo: "/logos/trino.svg" });
+    expect(query).toMatchObject({ title: "Query", host: "trino-dev.olf.localhost", logo: "/logos/trino.svg" });
     expect(unknown).toMatchObject({ title: "New Thing", monogram: "Ne", summary: "", logo: undefined });
   });
 });

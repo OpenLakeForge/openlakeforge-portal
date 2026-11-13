@@ -14,7 +14,7 @@ import { loader as shellLoader } from "./shell";
 
 const file = join(mkdtempSync(join(tmpdir(), "olf-portal-")), "routes.json");
 const write = (routes: unknown) => writeFileSync(file, typeof routes === "string" ? routes : JSON.stringify(routes));
-const trino = { stage: "shared", name: "query", url: "https://trino.olf.localhost" };
+const governance = { stage: "shared", name: "governance_service", url: "https://openmetadata.olf.localhost" };
 const signOut = { stage: "shared", name: "sign-out", url: "http://oauth2.olf.localhost/oauth2/sign_out" };
 const dagster = (stage: string) => ({ stage, name: "orchestration", url: `http://d-${stage}.olf.localhost` });
 
@@ -46,7 +46,7 @@ describe("entry points", () => {
 
   it("never caches the pages that show the routes", () => {
     vi.stubEnv("OLF_ROUTES_FILE", file);
-    write({ "shared/query": trino });
+    write({ "shared/governance_service": governance });
     expect(services().headers.get("Cache-Control")).toBe("no-store");
     expect(shell().headers.get("Cache-Control")).toBe("no-store");
   });
@@ -55,11 +55,11 @@ describe("entry points", () => {
 describe("loaders", () => {
   it("expose only what the pages render, and re-read the file each time", () => {
     vi.stubEnv("OLF_ROUTES_FILE", file);
-    write({ "shared/query": trino, "shared/sign-out": signOut });
+    write({ "shared/governance_service": governance, "shared/sign-out": signOut });
     expect(Object.keys(services().data).sort()).toEqual(["problem", "stages"]);
     expect(JSON.stringify(services().data)).not.toContain(file);
     expect(shell().data.signOut).toBe(signOut.url);
-    write({ "shared/query": trino, "stage/dev/orchestration": dagster("dev") });
+    write({ "shared/governance_service": governance, "stage/dev/orchestration": dagster("dev") });
     expect(services().data.stages.map((s) => s.stage)).toEqual(["shared", "dev"]);
     expect(shell().data.signOut).toBeUndefined();
   });
@@ -82,19 +82,19 @@ describe("services page", () => {
   };
 
   it("groups Shared, then DEV, UAT, PROD, only the stages present", () => {
-    const stages = stagesOf({ "shared/query": trino, "p": dagster("prod"), "d": dagster("dev"), "u": dagster("uat") });
+    const stages = stagesOf({ "shared/governance_service": governance, "p": dagster("prod"), "d": dagster("dev"), "u": dagster("uat") });
     render(<Services stages={stages} />);
     expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Shared", "DEV", "UAT", "PROD"]);
-    const only = stagesOf({ "shared/query": trino, "p": dagster("prod") });
+    const only = stagesOf({ "shared/governance_service": governance, "p": dagster("prod") });
     expect(only.map((s) => s.heading)).toEqual(["Shared", "PROD"]);
   });
 
   it("lists each service as a link that opens in a new tab, with no hero or counters", () => {
-    render(<Services stages={stagesOf({ "shared/query": trino })} />);
+    render(<Services stages={stagesOf({ "shared/governance_service": governance })} />);
     const link = within(screen.getByRole("region", { name: "Shared" })).getByRole("link");
-    expect(link).toHaveAttribute("href", trino.url);
+    expect(link).toHaveAttribute("href", governance.url);
     expect(link).toHaveAttribute("target", "_blank");
-    expect(link).toHaveAccessibleName(/Query/);
+    expect(link).toHaveAccessibleName(/Governance/);
     expect(screen.queryByText(/\d+\s*(routes|services)/i)).toBeNull();
   });
 

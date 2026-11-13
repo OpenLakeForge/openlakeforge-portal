@@ -76,7 +76,8 @@ Terraform module: contract ref → stage, service name and URL.
 ```json
 {
   "stage/dev/orchestration": { "stage": "dev", "name": "orchestration", "url": "http://dagster-dev.olf.localhost" },
-  "shared/query": { "stage": "shared", "name": "query", "url": "http://trino.olf.localhost" }
+  "stage/dev/query": { "stage": "dev", "name": "query", "url": "http://trino-dev.olf.localhost" },
+  "shared/governance_service": { "stage": "shared", "name": "governance_service", "url": "http://openmetadata.olf.localhost" }
 }
 ```
 

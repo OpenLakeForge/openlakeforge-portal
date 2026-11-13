@@ -33,7 +33,7 @@ export type RoutesResult = { routes: Record<string, Route>; problem?: undefined 
 const presentation: Record<string, { title: string; summary: string; logo: string }> = {
   orchestration: { title: "Orchestration", summary: "Runs, schedules and asset lineage.", logo: "/logos/dagster.svg" },
   reporting: { title: "Reporting", summary: "Dashboards over the Gold marts.", logo: "/logos/superset.png" },
-  query: { title: "Query", summary: "SQL over every Iceberg table.", logo: "/logos/trino.svg" },
+  query: { title: "Query", summary: "SQL over this stage's Iceberg tables.", logo: "/logos/trino.svg" },
   governance_service: { title: "Governance", summary: "Catalog, glossary and column-level lineage.", logo: "/logos/openmetadata.svg" },
   admin: { title: "Admin", summary: "Members and roles, managed as GitHub teams.", logo: "/logos/github.svg" },
 };
