@@ -20,7 +20,8 @@
 
 body {
   margin: 0;
-  background: var(--olf-bg-base) var(--olf-bg-sky) no-repeat;
+  /* One flat colour: the site's sky gradient is for its hero, not a tool's page. */
+  background: var(--olf-bg-base);
   min-height: 100vh;
   color: var(--olf-text-primary);
   font: var(--olf-text-body) / var(--olf-leading-body) var(--olf-font-body);
