@@ -197,8 +197,8 @@ like a lake. Dark is the default (the deep lake); light follows the OS.
   the logo's ripples (`shallows`). Status colours are the only non-blue hues.
 - **Type:** Fraunces (soft, wonky) for the one display line, Space Grotesk for
   headings, Inter for text, JetBrains Mono for code, labels and hosts.
-- **Motifs:** the site's depth markers and lake-bed contours stay on the site;
-  the portal is a tool, so its pages sit on one flat dark blue.
+- **Motifs:** lake-bed contours behind the page title, on one flat dark blue. The
+  site's depth markers stay on the site.
 
 The source of truth is the [Figma design system](https://www.figma.com/design/40rDaa8G9IWLD26TYjcIRz).
 `src/styles/tokens.css` mirrors its variables one to one, so components only

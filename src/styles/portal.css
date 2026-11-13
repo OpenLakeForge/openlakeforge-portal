@@ -96,6 +96,21 @@
   .main { padding: var(--olf-space-6) var(--olf-space-4) var(--olf-space-12); }
 }
 
+/* Lake-bed contours behind the page header: behind the text (z-index -1 inside .main), clipped by the svg. */
+.contours {
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  right: 0;
+  width: 42rem;
+  height: 28rem;
+  color: var(--olf-contour);
+  opacity: var(--contour-opacity);
+  mask-image: radial-gradient(ellipse at 65% 40%, #000 30%, transparent 72%); /* no hard edge where the svg ends */
+  pointer-events: none;
+}
+@media (max-width: 48rem) { .contours { display: none; } }
+
 /* Service card */
 .card {
   display: block;
