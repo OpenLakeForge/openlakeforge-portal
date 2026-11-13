@@ -98,13 +98,6 @@ describe("services page", () => {
     expect(screen.queryByText(/\d+\s*(routes|services)/i)).toBeNull();
   });
 
-  it("draws the depth contours as a hidden, decorative svg", () => {
-    const { container } = render(<Services stages={[]} />);
-    const contours = container.querySelector("svg.contours");
-    expect(contours).toHaveAttribute("aria-hidden", "true");
-    expect(contours?.querySelectorAll("path").length).toBeGreaterThan(0);
-  });
-
   it("says why there are no services, for a malformed or a missing file", () => {
     render(<Services stages={[]} problem="Cannot read the routes file /x." />);
     expect(screen.getByText("Cannot read the routes file /x.")).toBeInTheDocument();

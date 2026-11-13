@@ -83,24 +83,6 @@
   text-transform: uppercase;
   color: var(--olf-title-accent);
 }
-/* Stage depth ("DEV · 10m"), drawn here so it stays out of the text and the accessible name. */
-[data-depth]::after { content: " · " attr(data-depth) / ""; color: var(--olf-text-muted); text-transform: none; }
-
-/* A static depth ruler on the right edge; the page keeps clear of it. */
-.main::after {
-  content: "";
-  position: absolute;
-  inset: 0 0 0 auto;
-  width: 1.5rem;
-  border-left: 1px solid var(--olf-hairline);
-  background:
-    repeating-linear-gradient(to bottom, var(--olf-text-muted) 0 1px, transparent 1px 5rem) right / 1rem 100% no-repeat,
-    repeating-linear-gradient(to bottom, var(--olf-hairline) 0 1px, transparent 1px 1rem) right / 0.5rem 100% no-repeat;
-  pointer-events: none;
-}
-@media (max-width: 64rem) { .main::after { display: none; } }
-@media (min-width: 64rem) { .main { padding-right: var(--olf-space-12); } }
-
 @media (max-width: 48rem) {
   .app { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; }
   .app-bar { padding: 0 var(--olf-space-4); }
@@ -113,21 +95,6 @@
   }
   .main { padding: var(--olf-space-6) var(--olf-space-4) var(--olf-space-12); }
 }
-
-/* Lake-bed contours behind the page header: behind the text (z-index -1 inside .main), clipped by the svg. */
-.contours {
-  position: absolute;
-  z-index: -1;
-  top: 0;
-  right: 0;
-  width: 42rem;
-  height: 28rem;
-  color: var(--olf-contour);
-  opacity: var(--contour-opacity);
-  mask-image: radial-gradient(ellipse at 65% 40%, #000 30%, transparent 72%); /* no hard edge where the svg ends */
-  pointer-events: none;
-}
-@media (max-width: 48rem) { .contours { display: none; } }
 
 /* Service card */
 .card {
