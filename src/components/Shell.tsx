@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { NavLink } from "react-router";
+import { getFileCapabilities } from "../lib/files-api";
 
 /** The OpenLakeForge mark: navy anvil (light on dark themes), azure ripples. */
 function Mark() {
@@ -31,15 +32,28 @@ export function Header({ signOut }: { signOut?: string }) {
 const items = [
   { to: "/services", label: "Services", icon: "/icons/services.svg" },
   { to: "/queries", label: "Queries", icon: "/icons/search.svg" },
+  { to: "/files", label: "Files", icon: "/icons/folder-open.svg" },
 ];
+/** Files is offered only when the API reports a stage the person may browse. Server render and the first
+ * paint leave it out, so a viewer never sees an item that then disappears. */
+function useFilesAccess() {
+  const [allowed, setAllowed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    getFileCapabilities().then((c) => live && setAllowed(c.stages.length > 0), () => live && setAllowed(false));
+    return () => { live = false; };
+  }, []);
+  return allowed;
+}
 
 /** The shared layout: top bar, sidebar navigation, and a slot for the page. */
 export function AppShell({ signOut, children }: { signOut?: string; children: ReactNode }) {
+  const files = useFilesAccess();
   return (
     <div className="app">
       <Header signOut={signOut} />
       <nav className="sidebar" aria-label="Primary">
-        {items.map(({ to, label, icon }) => (
+        {items.filter((i) => i.to !== "/files" || files).map(({ to, label, icon }) => (
           <NavLink key={to} to={to} className="nav-item">
             <img src={icon} alt="" width="16" height="16" loading="lazy" />
             {label}

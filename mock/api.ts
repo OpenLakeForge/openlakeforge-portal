@@ -2,6 +2,7 @@
 // /api/v1 contract of platform-api (discovery.py, queries.py). Dev only: vite.config.ts mounts it when
 // OLF_MOCK_API=1 (loaded with ssrLoadModule, never imported), and nothing under src/ imports it, so it can never reach build/.
 // Special SQL (see README): syntax_error, slow, big, and write keywords.
+// Files routes (#1114) keep an in-memory object store, so upload, folders, rename and delete change the listings.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 
@@ -128,9 +129,13 @@ async function route(req: IncomingMessage, url: URL): Promise<{ status?: number;
   if (parts[0] === "query-capabilities" && method === "GET") {
     return { json: { query_available: true, stages: STAGES.map((stage) => ({ stage, query: { engine: "trino", available: true, export_formats: ["csv", "json"] } })) } };
   }
+  if (parts[0] === "file-capabilities" && method === "GET") {
+    return { json: { stages: [{ stage: "dev", operations: FILE_OPS }], max_upload_bytes: MAX_UPLOAD } };
+  }
   if (parts[0] !== "stages" || !parts[1]) throw new HttpError(404, "Not Found");
   const stage = parts[1];
   if (!STAGES.includes(stage)) throw new HttpError(404, `stage '${stage}' offers no query`);
+  if (parts[2] === "buckets") return filesRoute(req, url, parts);
   if (parts[2] === "schemas" && method === "GET") {
     const schemas = schemasOf(stage);
     if (parts.length === 3) { const p = page(Object.keys(schemas), url); return { json: { schemas: p.items, next_cursor: p.next } }; }
@@ -187,4 +192,129 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     res.writeHead(e.status, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ detail: e.detail }));
   }
+}
+
+// ── Files (openlakeforge #1114): an in-memory object store per bucket ─────────────────────────────────
+
+const FILE_OPS = ["list_buckets", "list_objects", "download_object", "upload_object", "create_folder", "rename_object", "delete_objects"];
+const MAX_UPLOAD = 5 * 1024 * 1024; // small, so the "too large" refusal is easy to try
+const MAX_RENAME = 1000;
+type Stored = { size: number; modified: string; content: string };
+const store = new Map<string, Map<string, Stored>>(); // bucket -> key -> object (stage dev only)
+{
+  const put = (bucket: string, key: string, size: number, modified: string) => {
+    if (!store.has(bucket)) store.set(bucket, new Map());
+    store.get(bucket)!.set(key, { size, modified, content: `mock content of ${key}\n` });
+  };
+  for (const bucket of ["openlakeforge-dev-bronze", "openlakeforge-dev-silver", "openlakeforge-dev-gold"]) store.set(bucket, new Map());
+  const b = "openlakeforge-dev-bronze";
+  for (const day of ["14", "15", "16"]) put(b, `raw/orders/2026-11-${day}/part-0001.parquet`, 12_400_000, `2026-11-${day}T09:30:00Z`);
+  put(b, "raw/orders/_manifest.json", 2150, "2026-11-16T09:42:00Z");
+  put(b, "raw/orders/orders_2026-11-16.parquet", 50_540_000, "2026-11-16T09:41:00Z");
+  put(b, "raw/orders/orders.avsc", 3480, "2026-10-03T14:05:00Z");
+  put(b, "raw/customers/customers.csv", 880_000, "2026-11-10T07:00:00Z");
+  for (let i = 1; i <= 120; i++) put("openlakeforge-dev-silver", `events/e-${String(i).padStart(4, "0")}.json`, 1000 + i, "2026-11-12T10:00:00Z");
+}
+const BUCKET_CREATED = "2026-09-02T08:00:00Z";
+
+function filesBucket(stage: string, name: string) {
+  if (stage !== "dev") throw new HttpError(403, `You have no file access on stage '${stage}'.`);
+  const objects = store.get(name);
+  if (!objects) throw new HttpError(404, `bucket '${name}' not found`);
+  return objects;
+}
+
+function listObjects(objects: Map<string, Stored>, url: URL) {
+  const prefix = url.searchParams.get("prefix") ?? "";
+  const limit = Number(url.searchParams.get("limit") ?? 100);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new HttpError(422, "limit must be between 1 and 1000");
+  const after = url.searchParams.get("cursor");
+  const entries = new Map<string, { folder: boolean; key: string; obj?: Stored }>();
+  for (const [key, obj] of objects) {
+    if (!key.startsWith(prefix)) continue;
+    const rest = key.slice(prefix.length);
+    if (!rest) continue; // a folder's own marker
+    const slash = rest.indexOf("/");
+    if (slash >= 0) entries.set(prefix + rest.slice(0, slash + 1), { folder: true, key: prefix + rest.slice(0, slash + 1) });
+    else entries.set(key, { folder: false, key, obj });
+  }
+  const last = after ? Buffer.from(after, "base64url").toString() : undefined;
+  const sorted = [...entries.values()].sort((x, y) => (x.key < y.key ? -1 : 1)).filter((e) => last === undefined || e.key > last);
+  const pageOf = sorted.slice(0, limit);
+  return {
+    prefix,
+    folders: pageOf.filter((e) => e.folder).map((e) => ({ prefix: e.key })),
+    files: pageOf.filter((e) => !e.folder).map((e) => ({ key: e.key, size: e.obj!.size, last_modified: e.obj!.modified })),
+    next_cursor: sorted.length > limit ? Buffer.from(pageOf.at(-1)!.key).toString("base64url") : null,
+  };
+}
+
+async function rawBody(req: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks);
+}
+
+async function filesRoute(req: IncomingMessage, url: URL, parts: string[]): Promise<{ status?: number; json?: unknown; raw?: [string, string, string] }> {
+  const method = req.method ?? "GET";
+  const stage = parts[1];
+  if (parts.length === 3 && parts[2] === "buckets" && method === "GET") {
+    if (stage !== "dev") throw new HttpError(403, `You have no file access on stage '${stage}'.`);
+    return { json: { buckets: [...store.keys()].map((name) => ({ name, created_at: BUCKET_CREATED })) } };
+  }
+  if (parts[2] !== "buckets" || !parts[3]) throw new HttpError(404, "Not Found");
+  const objects = filesBucket(stage, parts[3]);
+  const key = url.searchParams.get("key") ?? "";
+  if (parts[4] === "objects" && parts.length === 5 && method === "GET") return { json: listObjects(objects, url) };
+  if (parts[4] === "objects" && parts[5] === "content") {
+    if (!key || key.endsWith("/")) throw new HttpError(422, "key must name an object");
+    if (method === "GET") {
+      const obj = objects.get(key);
+      if (!obj) throw new HttpError(404, `object '${key}' not found`);
+      return { raw: ["application/octet-stream", `attachment; filename="${key.split("/").pop()}"`, obj.content] };
+    }
+    if (method === "PUT") {
+      const data = await rawBody(req);
+      if (data.length > MAX_UPLOAD) throw new HttpError(413, `the upload exceeds the ${MAX_UPLOAD} byte limit`);
+      if (objects.has(key) && url.searchParams.get("overwrite") !== "true") throw new HttpError(409, `object '${key}' already exists`);
+      objects.set(key, { size: data.length, modified: new Date().toISOString(), content: data.toString("utf8") });
+      return { status: 201, json: { key, size: data.length } };
+    }
+  }
+  if (parts[4] === "folders" && method === "POST") {
+    const b = await body(req);
+    const prefix = b.prefix;
+    if (typeof prefix !== "string" || !prefix.endsWith("/") || prefix === "/") throw new HttpError(422, "prefix must end with /");
+    if ([...objects.keys()].some((k) => k.startsWith(prefix))) throw new HttpError(409, `folder '${prefix}' already exists`);
+    objects.set(prefix, { size: 0, modified: new Date().toISOString(), content: "" });
+    return { status: 201, json: { prefix } };
+  }
+  if (parts[4] === "objects" && parts[5] === "rename" && method === "POST") {
+    const b = await body(req);
+    const { from, to } = b;
+    if (typeof from !== "string" || typeof to !== "string" || from.endsWith("/") !== to.endsWith("/")) {
+      throw new HttpError(422, "from and to must both end with / (a folder) or neither (a file)");
+    }
+    const moving = [...objects.keys()].filter((k) => (from.endsWith("/") ? k.startsWith(from) : k === from));
+    if (!moving.length) throw new HttpError(404, `'${from}' not found`);
+    if (moving.length > MAX_RENAME) throw new HttpError(422, `renaming moves more than ${MAX_RENAME} objects`);
+    if ([...objects.keys()].some((k) => (to.endsWith("/") ? k.startsWith(to) : k === to))) throw new HttpError(409, `'${to}' already exists`);
+    for (const k of moving) {
+      const dest = to + k.slice(from.length);
+      objects.set(dest, objects.get(k)!);
+      objects.delete(k);
+    }
+    return { json: { moved: moving.length } };
+  }
+  if (parts[4] === "objects" && parts[5] === "delete" && method === "POST") {
+    const b = await body(req);
+    if (!Array.isArray(b.keys) || b.keys.some((k) => typeof k !== "string")) throw new HttpError(422, "keys must be a list of strings");
+    const deleted: string[] = [];
+    for (const k of b.keys as string[]) {
+      for (const have of [...objects.keys()]) if (k.endsWith("/") ? have.startsWith(k) : have === k) objects.delete(have);
+      deleted.push(k);
+    }
+    return { json: { deleted, errors: [] } };
+  }
+  throw new HttpError(404, "Not Found");
 }

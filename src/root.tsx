@@ -4,6 +4,7 @@ import tokens from "./styles/tokens.css?inline";
 import global from "./styles/global.css?inline";
 import portal from "./styles/portal.css?inline";
 import queries from "./styles/queries.css?inline";
+import files from "./styles/files.css?inline";
 
 // OpenLakeForge's e2e check counts the href attributes on the landing page as
 // routes, so the CSS is inlined rather than linked. <Scripts/> hydrates the
@@ -18,7 +19,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="color-scheme" content="dark light" />
         <Meta />
-        <style dangerouslySetInnerHTML={{ __html: [fonts, tokens, global, portal, queries].join("\n") }} />
+        <style dangerouslySetInnerHTML={{ __html: [fonts, tokens, global, portal, queries, files].join("\n") }} />
       </head>
       <body>
         {children}

@@ -6,6 +6,7 @@ export default [
   layout("routes/shell.tsx", [
     route("services", "routes/services.tsx"),
     route("queries", "routes/queries.tsx"),
+    route("files", "routes/files.tsx"),
   ]),
   // OpenLakeForge's Logout redirects to exactly /signed-out.html, outside the sign-in perimeter.
   route("signed-out.html", "routes/signed-out.tsx"),
