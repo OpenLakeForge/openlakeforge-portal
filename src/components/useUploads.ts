@@ -82,7 +82,12 @@ export function useUploads(maxBytes: number, onUploaded: (target: UploadTarget) 
     setItems(queue.current);
   }, []);
 
-  useEffect(() => () => abort.current?.abort(), []);
+  // Leaving the page drops what is queued first, so aborting the running upload cannot start the next one.
+  useEffect(() => () => {
+    queue.current = queue.current.filter((i) => i.status !== "queued");
+    files.current.clear();
+    abort.current?.abort();
+  }, []);
 
   const active = items.some((i) => i.status === "queued" || i.status === "uploading");
   return { items, active, add, cancel, clear };

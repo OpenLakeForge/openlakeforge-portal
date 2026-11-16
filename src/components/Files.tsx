@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import {
   ApiError, baseName, createFolder, deleteObjects, downloadUrl, getFileCapabilities, listBuckets, listObjects, messageOf, parentPrefix,
@@ -95,7 +95,10 @@ function BucketsCard({ stage, buckets, find, onRefresh }: { stage: string; bucke
 // ── browse ──────────────────────────────────────────────────────────────────
 
 type Listing = { key: string; status: "loading" | "ok" | "error"; folders: Folder[]; files: FileObject[]; next: string | null; error?: string };
-type Dialog = null | { kind: "folder" } | { kind: "upload" } | { kind: "rename"; item: Item } | { kind: "delete"; items: Item[] };
+type Loc = { stage: string; bucket: string; prefix: string };
+type Kind = { kind: "folder" } | { kind: "upload" } | { kind: "rename"; item: Item } | { kind: "delete"; items: Item[] };
+// The place a dialog opened on travels with it, so confirming acts there whatever is browsed by then.
+type Dialog = null | (Kind & { at: Loc });
 
 function Browse({ stage, bucket, prefix, ops, uploads, uploaded }: {
   stage: string; bucket: string; prefix: string; ops: FileOperation[];
@@ -107,15 +110,18 @@ function Browse({ stage, bucket, prefix, ops, uploads, uploaded }: {
   const listPrefix = prefix + q; // a typed prefix narrows the listing on the server, so paging stays right
   const where = `${stage}|${bucket}|${listPrefix}`;
   const [reload, setReload] = useState(0);
-  const [listing, setListing] = useState<Listing>({ key: "", status: "loading", folders: [], files: [], next: null });
+  const [stored, setListing] = useState<Listing>({ key: "", status: "loading", folders: [], files: [], next: null });
+  // Rows of another place are never shown, not even for the frame before the effect below resets them.
+  const listing: Listing = stored.key === where ? stored : { key: where, status: "loading", folders: [], files: [], next: null };
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [sort, setSort] = useState<Sort>("asc");
   const [dialog, setDialog] = useState<Dialog>(null);
+  const show = (k: Kind) => setDialog({ ...k, at: { stage, bucket, prefix } });
   const [note, setNote] = useState("");
   const [dragging, setDragging] = useState(false);
   const can = (op: FileOperation) => ops.includes(op);
 
-  useEffect(() => { setFind(""); setSelected(new Set()); }, [stage, bucket, prefix]);
+  useEffect(() => { setFind(""); setSelected(new Set()); setDialog(null); }, [stage, bucket, prefix]); // a pending dialog belongs to the place it opened on
   useEffect(() => {
     if (!note) return;
     const t = setTimeout(() => setNote(""), 2500);
@@ -133,13 +139,22 @@ function Browse({ stage, bucket, prefix, ops, uploads, uploaded }: {
     return () => { live = false; };
   }, [where, reload, uploaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const paging = useRef(false); // set synchronously, so a second click in the same tick is refused
+  const [loadingMore, setLoadingMore] = useState(false);
   async function more() {
-    if (!listing.next) return;
+    const cursor = listing.next;
+    if (!cursor || paging.current) return;
+    paging.current = true;
+    setLoadingMore(true);
     try {
-      const p = await listObjects(stage, bucket, listPrefix, listing.next);
-      setListing((cur) => (cur.key === where ? { ...cur, folders: [...cur.folders, ...p.folders], files: [...cur.files, ...p.files], next: p.next_cursor } : cur));
+      const p = await listObjects(stage, bucket, listPrefix, cursor);
+      // Only the response to the cursor the list still waits on is appended; a stale one is dropped.
+      setListing((cur) => (cur.key === where && cur.next === cursor ? { ...cur, folders: [...cur.folders, ...p.folders], files: [...cur.files, ...p.files], next: p.next_cursor } : cur));
     } catch (e) {
       setListing((cur) => ({ ...cur, error: messageOf(e) }));
+    } finally {
+      paging.current = false;
+      setLoadingMore(false);
     }
   }
 
@@ -166,8 +181,8 @@ function Browse({ stage, bucket, prefix, ops, uploads, uploaded }: {
     const chosen = items.filter((i) => keys.includes(i.key));
     if (!chosen.length) return;
     if (a === "download") chosen.filter((i) => !i.folder).forEach((i) => startDownload(downloadUrl(stage, bucket, i.key)));
-    else if (a === "rename" && chosen.length === 1) setDialog({ kind: "rename", item: chosen[0] });
-    else if (a === "delete") setDialog({ kind: "delete", items: chosen });
+    else if (a === "rename" && chosen.length === 1) show({ kind: "rename", item: chosen[0] });
+    else if (a === "delete") show({ kind: "delete", items: chosen });
     else if (a === "copy") {
       navigator.clipboard.writeText(`s3://${bucket}/${chosen[0].key}`).then(() => setNote("S3 URI copied"), () => setNote("Copy failed"));
     }
@@ -175,7 +190,7 @@ function Browse({ stage, bucket, prefix, ops, uploads, uploaded }: {
 
   function openUpload(files?: File[]) {
     if (!uploads.active) uploads.clear();
-    setDialog({ kind: "upload" });
+    show({ kind: "upload" });
     if (files?.length) uploads.add(files, { stage, bucket, prefix });
   }
 
@@ -234,7 +249,7 @@ function Browse({ stage, bucket, prefix, ops, uploads, uploaded }: {
           </span>
           <span className="q-spacer" />
           {uploads.active && dialog?.kind !== "upload" && (
-            <button type="button" className="f-text-btn" onClick={() => setDialog({ kind: "upload" })}>
+            <button type="button" className="f-text-btn" onClick={() => show({ kind: "upload" })}>
               Uploading {uploads.items.filter((i) => i.status === "queued" || i.status === "uploading").length}…
             </button>
           )}
@@ -243,7 +258,7 @@ function Browse({ stage, bucket, prefix, ops, uploads, uploaded }: {
             {can("download_object") && <button type="button" className="f-btn f-outline" disabled={!onlyFiles} onClick={() => act("download", picked.map((i) => i.key))}><Icon name="download" size={14} />Download</button>}
             {can("rename_object") && <button type="button" className="f-btn f-outline" disabled={picked.length !== 1} onClick={() => act("rename", [picked[0].key])}><Icon name="pencil" size={14} />Rename</button>}
             {can("delete_objects") && <button type="button" className="f-btn f-danger" disabled={picked.length === 0} onClick={() => act("delete", picked.map((i) => i.key))}>Delete</button>}
-            {can("create_folder") && <button type="button" className="f-btn f-outline" onClick={() => setDialog({ kind: "folder" })}><Icon name="plus" size={14} />Create folder</button>}
+            {can("create_folder") && <button type="button" className="f-btn f-outline" onClick={() => show({ kind: "folder" })}><Icon name="plus" size={14} />Create folder</button>}
             {can("upload_object") && <button type="button" className="f-btn f-primary" onClick={() => openUpload()}><Icon name="upload" size={14} />Upload</button>}
           </div>
         </div>
@@ -259,7 +274,7 @@ function Browse({ stage, bucket, prefix, ops, uploads, uploaded }: {
             <Icon name="folder" size={28} />
             <p>Empty folder</p>
             <div className="f-empty-actions">
-              {can("create_folder") && <button type="button" className="f-btn f-outline" onClick={() => setDialog({ kind: "folder" })}><Icon name="plus" size={14} />Create folder</button>}
+              {can("create_folder") && <button type="button" className="f-btn f-outline" onClick={() => show({ kind: "folder" })}><Icon name="plus" size={14} />Create folder</button>}
               {can("upload_object") && <button type="button" className="f-btn f-primary" onClick={() => openUpload()}><Icon name="upload" size={14} />Upload</button>}
             </div>
           </div>
@@ -272,34 +287,34 @@ function Browse({ stage, bucket, prefix, ops, uploads, uploaded }: {
             linkTo={(p) => link(p)} allowed={rowAllowed} onAction={act} />
         )}
         {listing.next && (
-          <p className="f-foot"><button type="button" className="q-link" onClick={more}>Load more</button></p>
+          <p className="f-foot"><button type="button" className="q-link" onClick={more} disabled={loadingMore}>Load more</button></p>
         )}
       </section>
 
       {dialog?.kind === "folder" && (
-        <NewFolderDialog prefix={prefix} onClose={() => setDialog(null)}
-          create={async (name) => { await createFolder(stage, bucket, `${prefix}${name}/`); refresh(); }} />
+        <NewFolderDialog prefix={dialog.at.prefix} onClose={() => setDialog(null)}
+          create={async (name) => { await createFolder(dialog.at.stage, dialog.at.bucket, `${dialog.at.prefix}${name}/`); refresh(); }} />
       )}
       {dialog?.kind === "rename" && (
         <RenameDialog item={dialog.item} onClose={() => setDialog(null)}
           rename={async (name) => {
             const { item } = dialog;
-            await renameObject(stage, bucket, item.key, `${parentPrefix(item.key)}${name}${item.folder ? "/" : ""}`);
+            await renameObject(dialog.at.stage, dialog.at.bucket, item.key, `${parentPrefix(item.key)}${name}${item.folder ? "/" : ""}`);
             setSelected(new Set());
             refresh();
           }} />
       )}
       {dialog?.kind === "delete" && (
-        <DeleteDialog items={dialog.items} base={prefix} onClose={() => setDialog(null)}
+        <DeleteDialog items={dialog.items} base={dialog.at.prefix} onClose={() => setDialog(null)}
           remove={async () => {
-            const r = await deleteObjects(stage, bucket, dialog.items.map((i) => i.key));
+            const r = await deleteObjects(dialog.at.stage, dialog.at.bucket, dialog.items.map((i) => i.key));
             setSelected(new Set());
             refresh();
             return r.errors;
           }} />
       )}
       {dialog?.kind === "upload" && (
-        <UploadDialog prefix={prefix} items={uploads.items} add={(f) => uploads.add(f, { stage, bucket, prefix })} cancel={uploads.cancel}
+        <UploadDialog prefix={dialog.at.prefix} items={uploads.items} add={(f) => uploads.add(f, dialog.at)} cancel={uploads.cancel}
           onHide={() => setDialog(null)} />
       )}
     </>

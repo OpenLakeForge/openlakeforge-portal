@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, useLocation } from "react-router";
+import { MemoryRouter, useLocation, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Files } from "./Files";
 import { AppShell } from "./Shell";
@@ -430,5 +430,84 @@ describe("navigation item", () => {
     await waitFor(() => expect(calls).toHaveLength(1));
     await new Promise((r) => setTimeout(r, 20));
     expect(nav().queryByRole("link", { name: "Files" })).toBeNull();
+  });
+});
+
+describe("review fixes", () => {
+  it("closes a pending dialog when browser Back changes the bucket", async () => {
+    const other = "openlakeforge-dev-silver";
+    const calls = api({ ...base, [`GET /api/v1/stages/dev/buckets/${other}/objects`]: { body: listing({ prefix: "", folders: [], files: [{ key: "_manifest.json", size: 5, last_modified: "2026-11-16T09:42:00Z" }] }) } });
+    function Back() {
+      const nav = useNavigate();
+      return <button type="button" onClick={() => nav(-1)}>go back</button>;
+    }
+    render(
+      <MemoryRouter initialEntries={[`/files?stage=dev&bucket=${BUCKET}`, `/files?stage=dev&bucket=${other}`]} initialIndex={1}>
+        <Files /><Back />
+      </MemoryRouter>,
+    );
+    await screen.findByText("_manifest.json");
+    await pick("_manifest.json");
+    await userEvent.click(button("Delete"));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await userEvent.click(button("go back"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(calls.some((c) => c.method === "POST")).toBe(false);
+  });
+
+  it("sends one request for a cursor however often Load more is clicked", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const calls = api({
+      ...base,
+      [`GET ${objects}`]: async (url) => {
+        if (!url.searchParams.get("cursor")) return { body: listing({ next_cursor: "c1" }) };
+        await gate;
+        return { body: listing({ folders: [], files: [{ key: "raw/orders/z.txt", size: 1, last_modified: "2026-11-16T09:00:00Z" }], next_cursor: null }) };
+      },
+    });
+    open(browse);
+    const more = await screen.findByRole("button", { name: "Load more" });
+    fireEvent.click(more);
+    fireEvent.click(more);
+    expect(more).toBeDisabled();
+    release();
+    expect(await screen.findByText("z.txt")).toBeInTheDocument();
+    expect(calls.filter((c) => c.url.searchParams.get("cursor") === "c1")).toHaveLength(1);
+    expect(screen.getAllByText("z.txt")).toHaveLength(1);
+  });
+
+  it("opens the row menu above the trigger when there is no room below", async () => {
+    api(base);
+    open(browse);
+    await screen.findByText("_manifest.json");
+    vi.stubGlobal("innerHeight", 300);
+    const trigger = screen.getByRole("button", { name: "Actions for _manifest.json" });
+    trigger.getBoundingClientRect = () => ({ top: 260, bottom: 290, left: 0, right: 400, width: 30, height: 30, x: 0, y: 260, toJSON() {} });
+    const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(150);
+    await userEvent.click(trigger);
+    expect(screen.getByRole("menu").style.top).toBe("106px"); // 260 - 150 - 4, not 294 (below)
+    height.mockRestore();
+  });
+});
+
+describe("stale rows", () => {
+  it("never shows the previous folder's rows under the new folder's names", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    api({
+      ...base,
+      [`GET ${objects}`]: async (url) => {
+        if (url.searchParams.get("prefix") === "raw/") { await gate; return { body: listing({ prefix: "raw/", folders: [{ prefix: "raw/orders/" }], files: [] }) }; }
+        return { body: listing() };
+      },
+    });
+    open(browse);
+    await screen.findByText("_manifest.json");
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole("link", { name: "raw" }));
+    expect(screen.queryByText("_manifest.json")).toBeNull();
+    expect(screen.queryByText("orders/2026-11-14/")).toBeNull();
+    release();
+    expect(await screen.findByText("orders/")).toBeInTheDocument();
   });
 });

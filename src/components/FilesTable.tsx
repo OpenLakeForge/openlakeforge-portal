@@ -7,18 +7,23 @@ import { Icon } from "./FilesIcons";
 export type RowAction = "download" | "rename" | "copy" | "delete";
 export type Sort = "asc" | "desc";
 
-type MenuState = { key: string; x: number; y: number } | null;
+type MenuState = { key: string; x: number; y: number; top: number } | null;
 
 /** The row ⋯ menu: fixed-position so the card's clipping cannot cut it off. */
 function RowMenu({ item, at, allowed, onPick, onClose }: {
-  item: Item; at: { x: number; y: number }; allowed: Record<RowAction, boolean>; onPick(a: RowAction): void; onClose(): void;
+  item: Item; at: { x: number; y: number; top: number }; allowed: Record<RowAction, boolean>; onPick(a: RowAction): void; onClose(): void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const entries: [RowAction, string, Parameters<typeof Icon>[0]["name"]][] = [
     ["download", "Download", "download"], ["rename", "Rename", "pencil"], ["copy", "Copy S3 URI", "copy"], ["delete", "Delete", "trash"],
   ];
   const shown = entries.filter(([a]) => allowed[a] && !(a === "download" && item.folder));
-  useLayoutEffect(() => { ref.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus(); }, []);
+  useLayoutEffect(() => {
+    const el = ref.current!;
+    // Not enough room below the trigger: open above it, and never past the top of the viewport.
+    if (at.y + el.offsetHeight > window.innerHeight - 8) el.style.top = `${Math.max(8, at.top - el.offsetHeight - 4)}px`;
+    el.querySelector<HTMLElement>("[role=menuitem]")?.focus();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const away = (e: Event) => { const t = e.target as HTMLElement; if (!ref.current?.contains(t) && !t.closest?.(".f-more")) onClose(); };
     document.addEventListener("mousedown", away);
@@ -86,7 +91,7 @@ export function FilesTable({ base, items, selected, onSelect, onToggleAll, sort,
   function openMenu(item: Item, el: HTMLElement) {
     const r = el.getBoundingClientRect();
     const width = 176;
-    setMenu({ key: item.key, x: Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8)), y: r.bottom + 4 });
+    setMenu({ key: item.key, x: Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8)), y: r.bottom + 4, top: r.top });
   }
   const menuItem = menu && items.find((i) => i.key === menu.key);
 

@@ -35,12 +35,13 @@ test("a data-engineer sees Files under Queries and browses to a folder", async (
   await expect(page).toHaveURL(new RegExp(`bucket=${BRONZE}&prefix=raw%2Forders%2F$`));
   const crumbs = page.getByRole("navigation", { name: "Breadcrumb" });
   await expect(crumbs).toContainText("Buckets/" + BRONZE + "/raw/orders");
+  await expect(page.getByText("orders.avsc", { exact: true })).toBeVisible(); // the listing has loaded
   const names = await page.getByRole("row").locator("td:nth-child(2)").allTextContents();
   expect(names).toEqual(["2026-11-14/", "2026-11-15/", "2026-11-16/", "_manifest.json", "orders_2026-11-16.parquet", "orders.avsc"]);
 
   // Back, forward and reload keep the place.
   await page.goBack();
-  await expect(page.getByRole("link", { name: "orders/" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "orders/", exact: true })).toBeVisible();
   await page.goForward();
   await page.reload();
   await expect(page.getByText("_manifest.json", { exact: true })).toBeVisible();
