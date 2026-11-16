@@ -47,7 +47,7 @@ function Header() {
         <p className="f-sub">Browse and manage your lakehouse buckets.</p>
       </div>
       <div className="q-engine">
-        <span className="icon" aria-hidden="true"><Icon name="database" size={20} /></span>
+        <img className="icon logo" src="/logos/seaweedfs.png" alt="" width="40" height="40" loading="lazy" />
         <span><strong>SeaweedFS</strong><span className="label">Object storage</span></span>
       </div>
     </div>

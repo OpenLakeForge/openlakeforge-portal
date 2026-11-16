@@ -119,8 +119,7 @@
 .f-failed { padding-left: var(--olf-space-4); }
 
 .f-delete-list { margin: 0; padding: var(--olf-space-2) var(--olf-space-3); list-style: none; border-radius: var(--olf-radius-sm); background: var(--olf-bg-code); max-height: 14rem; overflow: auto; }
-.f-delete-list li { display: flex; align-items: center; gap: var(--olf-space-2); min-height: 1.75rem; font-size: 0.75rem; color: var(--olf-text-inverse); }
-:root[data-theme="light"] .f-delete-list li { color: var(--abyss-100); }
+.f-delete-list li { display: flex; align-items: center; gap: var(--olf-space-2); min-height: 1.75rem; font-size: 0.75rem; color: var(--abyss-100); }
 .f-delete-list .f-meta { color: var(--abyss-400); }
 
 .f-drop { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--olf-space-2); height: 8rem; border: 1px dashed var(--olf-border-strong); border-radius: var(--olf-radius-md); color: var(--olf-highlight); font-size: 0.8125rem; }
