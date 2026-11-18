@@ -42,6 +42,9 @@ function Overview({ health, now }: { health: StageHealth; now: number }) {
   const integration = (n: Integration["name"]) => health.integrations.find((i) => i.name === n);
   const services = health.services.map((s) => ({ ...s, shown: effective(s, now) }));
   const ready = services.filter((s) => s.shown === "healthy").length;
+  // An expired probe is no evidence: the stage reads at least unknown, and a worse API rollup always stands.
+  const expired = services.filter((s) => s.shown !== s.state).length;
+  const stageState = expired ? worst([health.state, "unknown"]) : health.state;
   const servicesGap = absent(integration("services"));
   const servicesState = servicesGap ?? (services.length ? worst(services.map((s) => s.shown)) : "unknown");
   const pipelinesGap = absent(integration("dagster"));
@@ -54,10 +57,10 @@ function Overview({ health, now }: { health: StageHealth; now: number }) {
 
   return (
     <>
-      <section className="mon-banner" data-state={health.state} aria-labelledby="mon-banner-h">
+      <section className="mon-banner" data-state={stageState} aria-labelledby="mon-banner-h">
         <div>
-          <h2 id="mon-banner-h"><StatusBadge state={health.state} /> {stage} {TITLE[health.state]}</h2>
-          <p>{pipelinesLine} · {servicesLine}</p>
+          <h2 id="mon-banner-h"><StatusBadge state={stageState} /> {stage} {TITLE[stageState]}</h2>
+          <p>{pipelinesLine} · {servicesLine}{expired ? ` · ${expired} service answer${expired === 1 ? "" : "s"} expired` : ""}</p>
         </div>
       </section>
 
@@ -142,7 +145,9 @@ export function Monitoring({ stages }: { stages: string[] }) {
     const ctl = new AbortController();
     setLoad((l) => (l.status === "ok" && l.data.stage === stage ? l : { status: "loading" }));
     getStageHealth(stage, ctl.signal).then(
-      (data) => { const at = Date.now(); setLoad({ status: "ok", data, at }); setLastGood(at); setNow(at); },
+      (data) => {
+        if (ctl.signal.aborted) return; // the stage changed or the page left: this answer is not for it
+        const at = Date.now(); setLoad({ status: "ok", data, at }); setLastGood(at); setNow(at); },
       (e) => { if (!ctl.signal.aborted) setLoad({ status: "error", error: e instanceof ApiError ? e : new ApiError(0, String(e)) }); },
     );
     const refresh = setTimeout(retry, REFRESH_MS);

@@ -46,9 +46,15 @@ export async function getStageHealth(stage: string, signal?: AbortSignal): Promi
     if ((e as Error)?.name === "AbortError") throw e;
     throw new ApiError(0, explain(0, stage));
   }
-  const body = await res.json().catch(() => undefined);
+  // A cancelled read is cancelled, not an empty answer: rethrow it so the caller drops the result.
+  const body = await res.json().catch((e) => {
+    if (signal?.aborted || (e as Error)?.name === "AbortError") throw e;
+    return undefined;
+  });
   const detail = typeof body?.detail === "string" ? body.detail : undefined;
   if (!res.ok) throw new ApiError(res.status, explain(res.status, stage, detail));
+  // A 200 without a readable StageHealth is no evidence either.
+  if (typeof body?.stage !== "string" || typeof body?.state !== "string") throw new ApiError(res.status, explain(500, stage));
   return body as StageHealth;
 }
 

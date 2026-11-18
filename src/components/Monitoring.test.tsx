@@ -3,7 +3,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { HealthState, StageHealth } from "../lib/health-api";
+import { getStageHealth, type HealthState, type StageHealth } from "../lib/health-api";
 import { Monitoring } from "./Monitoring";
 import { StatusBadge } from "./StatusBadge";
 
@@ -75,10 +75,19 @@ describe("overview", () => {
     const stale = svc("trino.readiness", "healthy", { observed_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-01T00:01:00Z" });
     api(() => ({ body: health({ services: [stale] }) }));
     open();
-    await screen.findByRole("heading", { name: /PROD/ });
+    expect(await screen.findByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
+    expect(screen.queryByText(/is healthy/)).toBeNull();
+    expect(screen.getByText(/1 service answer expired/)).toBeInTheDocument();
     expect(serviceRow("Trino")).toHaveTextContent("Unknown");
     expect(serviceRow("Trino")).toHaveTextContent(/Stale: no fresh answer/);
     expect(within(screen.getByRole("region", { name: "Services summary" })).getByText("0 of 1")).toBeInTheDocument();
+  });
+
+  it("keeps a worse API rollup when a probe has expired", async () => {
+    const stale = svc("trino.readiness", "healthy", { observed_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-01T00:01:00Z" });
+    api(() => ({ body: health({ state: "critical", services: [stale] }) }));
+    open();
+    expect(await screen.findByRole("heading", { level: 2, name: "Critical PROD needs attention" })).toBeInTheDocument();
   });
 
   it("reads unknown, with the API's reason, when Dagster cannot be read", async () => {
@@ -137,6 +146,44 @@ describe("unavailable and absent", () => {
     open([]);
     expect(screen.getByText("This deployment has no stage to monitor yet.")).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("drops an answer whose body was still arriving when the stage changed", async () => {
+    // dev's headers arrive, then its body only ends when the request is aborted, as fetch does on a switch.
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init: RequestInit = {}) => {
+      // prod answers a little later, so a stale dev result would render on its own first.
+      if (input.endsWith("/prod/health")) return new Promise((done) => setTimeout(() => done(new Response(JSON.stringify(health()))), 100));
+      return {
+        ok: true, status: 200,
+        json: () => new Promise((_, reject) => init.signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))),
+      } as unknown as Response;
+    }));
+    open(["dev", "prod"], "/monitoring?stage=dev");
+    await screen.findByText("Reading DEV health…");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Stage" }), "prod");
+    expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("rethrows a cancelled body read instead of answering undefined", async () => {
+    const ctl = new AbortController();
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true, status: 200,
+      // Like a real body stream: an already-aborted read rejects at once, a later abort rejects it then.
+      json: () => new Promise((_, reject) => {
+        const fail = () => reject(new DOMException("aborted", "AbortError"));
+        if (ctl.signal.aborted) fail(); else ctl.signal.addEventListener("abort", fail);
+      }),
+    })));
+    const read = getStageHealth("dev", ctl.signal);
+    ctl.abort();
+    await expect(read).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("does not take a 200 without a StageHealth as an answer", async () => {
+    api(() => ({ body: {} }));
+    open();
+    expect(await screen.findByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
   });
 
   it("switches stage from the selector and asks the API for it", async () => {
