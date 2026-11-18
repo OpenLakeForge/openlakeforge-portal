@@ -138,6 +138,7 @@ async function route(req: IncomingMessage, url: URL): Promise<{ status?: number;
   if (!STAGES.includes(stage)) throw new HttpError(404, `stage '${stage}' offers no query`);
   if (parts[2] === "buckets") return filesRoute(req, url, parts);
   if (parts[2] === "health" && parts.length === 3 && method === "GET") return { json: stageHealth(stage) };
+  if (parts[2] === "health" && parts[3] === "pipelines" && parts.length === 4 && method === "GET") return { json: pipelinesHealth(stage) };
   if (parts[2] === "schemas" && method === "GET") {
     const schemas = schemasOf(stage);
     if (parts.length === 3) { const p = page(Object.keys(schemas), url); return { json: { schemas: p.items, next_cursor: p.next } }; }
@@ -331,7 +332,7 @@ function stageHealth(stage: string) {
   const prod = stage === "prod";
   return {
     stage, state: prod ? "critical" : "unknown", evaluated_at: iso(-18),
-    pipelines: prod ? [{ job: "sales_orders", state: "critical" }, { job: "crm_accounts", state: "healthy" }, { job: "finance_ledger", state: "disabled" }] : [],
+    pipelines: prod ? PROD_PIPELINES.map(({ job, state }) => ({ job, state })) : [],
     services: [
       prod ? svc("dagster.read-api", "dagster-graphql", "healthy", "Dagster GraphQL answers")
         : svc("dagster.read-api", "dagster-graphql", "unknown", "the Dagster GraphQL API did not answer"),
@@ -347,6 +348,88 @@ function stageHealth(stage: string) {
       prod ? { name: "quality", status: "available", reason: "read from the stage's quality manifests" }
         : { name: "quality", status: "not_provided", reason: "no quality manifest reader is configured for this stage" },
       { name: "metrics", status: "not_provided", reason: "no metrics source is connected to the API" },
+    ],
+  };
+}
+
+// ── Pipeline health (openlakeforge #1127): PipelinesHealth. prod has a failed run with a failed blocking quality
+// check, a missed run, a stopped schedule whose last run warned on quality, and one healthy pipeline. dev answers
+// 200 with Dagster unavailable and no pipelines, as the API does when Dagster cannot be read.
+
+const PROD_PIPELINES = [
+  { job: "sales_orders", state: "critical" },
+  { job: "crm_accounts", state: "critical" },
+  { job: "finance_ledger", state: "warning" },
+  { job: "web_events", state: "healthy" },
+] as const;
+
+function pipelinesHealth(stage: string) {
+  const now = Date.now();
+  const iso = (offset: number) => new Date(now + offset * 1000).toISOString();
+  const secs = (offset: number) => Math.round(now / 1000 + offset);
+  const H = 3600;
+  const run = (job: string, id: string, status: string, ago: number, took = 240) =>
+    ({ run_id: id, job_name: job, status, created_at: secs(-ago), started_at: secs(-ago + 5), ended_at: secs(-ago + took), tags: {} });
+  const signal = (kind: string, state: string, reason: string, r: { run_id: string; ended_at: number } | null, maxAge: number | null) => {
+    const observed = r ? r.ended_at * 1000 : now;
+    return { kind, state, reason, run: r?.run_id ?? null, observed_at: new Date(observed).toISOString(), expires_at: maxAge === null ? null : new Date(observed + maxAge * 1000).toISOString() };
+  };
+  const daily = 24 * H + 900;
+  const dagster = stage === "prod"
+    ? { name: "dagster", status: "available", reason: "read from Dagster" }
+    : { name: "dagster", status: "unavailable", reason: "Dagster could not be read" };
+  const integrations = [
+    dagster,
+    { name: "services", status: "unavailable", reason: "service signals are served by the stage health route" },
+    stage === "prod" ? { name: "quality", status: "available", reason: "read from the stage's quality manifests" }
+      : { name: "quality", status: "not_provided", reason: "no quality manifest reader is configured for this stage" },
+    { name: "metrics", status: "not_provided", reason: "no metrics source is connected to the API" },
+  ];
+  const thresholds = { run_max_age_seconds: 7 * 24 * H, schedule_max_age_seconds: 300, schedule_grace_seconds: 900, run_window: 25 };
+  if (stage !== "prod") return { stage, evaluated_at: iso(-18), thresholds, integrations, pipelines: [] };
+
+  const salesFail = run("sales_orders", "c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21", "FAILURE", 40 * 60, 120);
+  const salesOk = run("sales_orders", "7a1f02de-93c4-4f0a-8d55-0b9e4c2a6f10", "SUCCESS", 23 * H);
+  const crmOk = run("crm_accounts", "4be0c1a9-2d7f-4c63-a1e8-5f3b9d0e7c42", "SUCCESS", 23 * H + 30 * 60);
+  const ledger = run("finance_ledger", "e5d27b8c-0f41-4a9e-b6c3-1d8a2f7e9b05", "SUCCESS", 2 * 24 * H);
+  const web = run("web_events", "0d9c3e7a-6b28-4f15-a3d0-8e1c5b2f4a67", "SUCCESS", 25 * 60, 60);
+  const health = (job: string, latest: ReturnType<typeof run>, success: ReturnType<typeof run> | null, failed: number,
+    schedule: { name: string | null; status: string; last_expected_at: string | null }, signals: unknown[]) => ({
+    job, state: PROD_PIPELINES.find((p) => p.job === job)!.state, latest_run: latest, last_success: success, failed_runs: failed, schedule,
+    freshness: { last_success_at: success ? new Date(success.ended_at * 1000).toISOString() : null, age_seconds: success ? secs(0) - success.ended_at : null },
+    signals,
+  });
+  return {
+    stage, evaluated_at: iso(-18), thresholds, integrations,
+    pipelines: [
+      health("sales_orders", salesFail, salesOk, 1, { name: "sales_orders_daily", status: "running", last_expected_at: iso(-45 * 60) }, [
+        signal("execution", "critical", "latest run failed", salesFail, daily),
+        signal("latest_success", "healthy", "a successful run is on record", salesOk, daily),
+        { ...signal("expected_run", "healthy", "the expected run started", null, 300) },
+        signal("freshness", "critical", "no run succeeded since the previous due time plus its grace", salesOk, null),
+        signal("quality", "critical", "a blocking quality check failed", salesFail, daily),
+      ]),
+      health("crm_accounts", crmOk, crmOk, 0, { name: "crm_accounts_daily", status: "running", last_expected_at: iso(-35 * 60) }, [
+        signal("execution", "healthy", "latest run succeeded", crmOk, daily),
+        signal("latest_success", "healthy", "a successful run is on record", crmOk, daily),
+        signal("expected_run", "critical", "an expected run did not start", null, 300),
+        signal("freshness", "critical", "no run succeeded since the previous due time plus its grace", crmOk, null),
+        signal("quality", "healthy", "quality checks passed", crmOk, daily),
+      ]),
+      health("finance_ledger", ledger, ledger, 0, { name: "finance_ledger_daily", status: "stopped", last_expected_at: null }, [
+        signal("execution", "healthy", "latest run succeeded", ledger, 7 * 24 * H),
+        signal("latest_success", "healthy", "a successful run is on record", ledger, 7 * 24 * H),
+        signal("expected_run", "disabled", "schedule is stopped", null, 300),
+        { ...signal("freshness", "disabled", "schedule is stopped", null, null), observed_at: null },
+        signal("quality", "warning", "quality checks warned", ledger, 7 * 24 * H),
+      ]),
+      health("web_events", web, web, 0, { name: "web_events_hourly", status: "running", last_expected_at: iso(-25 * 60) }, [
+        signal("execution", "healthy", "latest run succeeded", web, H + 900),
+        signal("latest_success", "healthy", "a successful run is on record", web, H + 900),
+        signal("expected_run", "healthy", "the expected run started", null, 300),
+        signal("freshness", "healthy", "a run succeeded since the previous due time", web, null),
+        signal("quality", "healthy", "quality checks passed", web, H + 900),
+      ]),
     ],
   };
 }
