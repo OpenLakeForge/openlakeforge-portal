@@ -51,7 +51,13 @@ function Overview({ health, pipesLoad, now, retry }: { health: StageHealth; pipe
   // A stage with no Dagster at all (a 404, and /health says Dagster is disabled) is not a gap in the evidence.
   const noDagster = !p.ok && p.state === "disabled" && integration("dagster")?.status === "disabled";
   const pipesGap = (!p.ok && !noDagster) || (p.ok && p.expired > 0);
-  const stageState = expired || pipesGap ? worst([health.state, "unknown"]) : health.state;
+  // The two reads are separate evaluations: a pipeline verdict worse than /health's rollup (a run that failed in
+  // between) still colours the stage, and a worse /health answer always stands.
+  const stageState = worst([
+    health.state,
+    ...(expired || pipesGap ? ["unknown" as const] : []),
+    ...(p.ok ? p.pipelines.map((x) => x.shown) : []),
+  ]);
   const servicesGap = absent(integration("services"));
   const servicesState = servicesGap ?? (services.length ? worst(services.map((s) => s.shown)) : "unknown");
   const metrics = integration("metrics");

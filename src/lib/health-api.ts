@@ -107,8 +107,36 @@ export async function getStageHealth(stage: string, signal?: AbortSignal): Promi
 /** Each pipeline's latest run, last success, failed runs, schedule and signals. A stage without Dagster is a 404. */
 export async function getPipelinesHealth(stage: string, signal?: AbortSignal): Promise<PipelinesHealth> {
   const body = await read("health/pipelines", stage, signal);
-  if (!Array.isArray(body.pipelines) || !Array.isArray(body.integrations)) throw new ApiError(200, explain(500, stage));
-  return body as PipelinesHealth;
+  // Every field the page renders is checked here: a malformed 200 is a failed pipelines read (Unknown, Retry), never
+  // a crash of the whole view and never a partial answer.
+  if (!isPipelinesHealth(body)) throw new ApiError(200, explain(500, stage));
+  return body;
+}
+
+type Json = Record<string, unknown>;
+const STATES = new Set<unknown>(["healthy", "warning", "critical", "unknown", "disabled"]);
+const isObject = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
+const isText = (v: unknown) => typeof v === "string";
+const isTextOrNull = (v: unknown) => v === null || typeof v === "string";
+const isNumber = (v: unknown) => typeof v === "number" && Number.isFinite(v);
+const isNumberOrNull = (v: unknown) => v === null || isNumber(v);
+const isRunOrNull = (v: unknown) =>
+  v === null || (isObject(v) && isText(v.run_id) && isText(v.status) && isNumber(v.created_at) && isNumberOrNull(v.started_at) && isNumberOrNull(v.ended_at));
+const isSignal = (v: unknown) =>
+  isObject(v) && isText(v.kind) && STATES.has(v.state) && isText(v.reason) && isTextOrNull(v.run) && isTextOrNull(v.observed_at) && isTextOrNull(v.expires_at);
+const isPipeline = (v: unknown) =>
+  isObject(v) && isText(v.job) && STATES.has(v.state) && isNumber(v.failed_runs) && isRunOrNull(v.latest_run) && isRunOrNull(v.last_success)
+  && isObject(v.schedule) && ["running", "stopped", "absent"].includes(v.schedule.status as string) && isTextOrNull(v.schedule.name) && isTextOrNull(v.schedule.last_expected_at)
+  && isObject(v.freshness) && isTextOrNull(v.freshness.last_success_at) && isNumberOrNull(v.freshness.age_seconds)
+  && Array.isArray(v.signals) && v.signals.every(isSignal);
+const isIntegration = (v: unknown) => isObject(v) && isText(v.name) && isText(v.status) && isText(v.reason);
+
+/** Whether `body` is a PipelinesHealth with every nested field the page reads. */
+export function isPipelinesHealth(body: unknown): body is PipelinesHealth {
+  return isObject(body) && isText(body.stage) && isText(body.evaluated_at)
+    && isObject(body.thresholds) && isNumber(body.thresholds.run_window)
+    && Array.isArray(body.integrations) && body.integrations.every(isIntegration)
+    && Array.isArray(body.pipelines) && body.pipelines.every(isPipeline);
 }
 
 const SEVERITY: Record<HealthState, number> = { disabled: 0, healthy: 1, unknown: 2, warning: 3, critical: 4 };

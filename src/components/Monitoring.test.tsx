@@ -277,6 +277,39 @@ describe("pipelines and needs attention", () => {
     expect(attentionRow("Pipelines cannot be read")).toHaveTextContent("Unknown");
   });
 
+  it.each([
+    ["no thresholds", (b: PipelinesHealth) => { delete (b as Partial<PipelinesHealth>).thresholds; }],
+    ["a pipeline without signals", (b: PipelinesHealth) => { delete (b.pipelines[0] as Partial<PipelineHealth>).signals; }],
+    ["a pipeline without a schedule", (b: PipelinesHealth) => { delete (b.pipelines[0] as Partial<PipelineHealth>).schedule; }],
+    ["a pipeline without freshness", (b: PipelinesHealth) => { delete (b.pipelines[0] as Partial<PipelineHealth>).freshness; }],
+    ["a signal without a state", (b: PipelinesHealth) => { delete (b.pipelines[0].signals[0] as Partial<HealthSignal>).state; }],
+    ["a latest run without an id", (b: PipelinesHealth) => { b.pipelines[0].latest_run = { status: "FAILURE" } as PipelineHealth["latest_run"]; }],
+  ])("reads a pipelines answer with %s as a failed read, and keeps the stage's own answer", async (_, spoil) => {
+    const body = pipes();
+    spoil(body);
+    api(() => ({ body: health() }), () => ({ body }));
+    open();
+    expect(await screen.findByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
+    expect(attentionRow("Pipelines cannot be read")).toHaveTextContent("Unknown");
+    expect(within(screen.getByRole("region", { name: "What needs attention" })).getByRole("button", { name: /Retry/ })).toBeInTheDocument();
+    expect(serviceRow("Trino")).toHaveTextContent("Healthy");
+  });
+
+  it("lets a critical pipeline colour the stage when /health still says healthy", async () => {
+    const failed = pipeline("sales_orders", { state: "critical", signals: [sig("execution", "critical", { reason: "latest run failed" })] });
+    api(() => ({ body: health({ state: "healthy" }) }), () => ({ body: pipes({ pipelines: [failed] }) }));
+    open();
+    expect(await screen.findByRole("heading", { level: 2, name: "Critical PROD needs attention" })).toBeInTheDocument();
+    expect(screen.queryByText(/is healthy/)).toBeNull();
+  });
+
+  it("keeps a worse /health answer over milder pipeline verdicts", async () => {
+    const warned = pipeline("sales_orders", { state: "warning", signals: [sig("quality", "warning")] });
+    api(() => ({ body: health({ state: "critical" }) }), () => ({ body: pipes({ pipelines: [warned] }) }));
+    open();
+    expect(await screen.findByRole("heading", { level: 2, name: "Critical PROD needs attention" })).toBeInTheDocument();
+  });
+
   it("treats a stage without Dagster as monitoring off, not as a gap", async () => {
     const integrations = health().integrations.map((i) => (i.name === "dagster" ? { ...i, status: "disabled" as const, reason: "no Dagster is configured for this stage" } : i));
     api(() => ({ body: health({ pipelines: [], integrations }) }), () => ({ status: 404, body: { detail: "no Dagster is configured for stage 'prod'" } }));
