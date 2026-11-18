@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
-import { ApiError, effective, getStageHealth, worst, type HealthState, type Integration, type StageHealth } from "../lib/health-api";
+import { ApiError, effective, getPipelinesHealth, getStageHealth, worst, type HealthState, type Integration, type StageHealth } from "../lib/health-api";
+import { absent, NeedsAttention, pipes, PipelinesCard, PipelinesTable, pipesLine, type PipesLoad } from "./MonitoringPipelines";
 import { StatusBadge } from "./StatusBadge";
 
 const REFRESH_MS = 30_000;
-/** How long one health read may take before the page calls the API unreachable. */
+/** How long one snapshot (the stage and pipelines reads, together) may take before the page calls the API unreachable. */
 export const DEADLINE_MS = 10_000;
 const timedOut = () =>
   new ApiError(0, `The monitoring API did not answer within ${DEADLINE_MS / 1000} s, so nothing on this page can be shown as healthy.`);
@@ -31,40 +32,42 @@ export function ago(iso: string | null, now: number): string {
 }
 const clock = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-/** An integration that gives no evidence: disabled on purpose, or unknown because it could not be read. */
-const absent = (i?: Integration): HealthState | undefined =>
-  !i || i.status === "available" ? undefined : i.status === "unavailable" ? "unknown" : "disabled";
-
 const TITLE: Record<HealthState, string> = {
   healthy: "is healthy", warning: "needs attention", critical: "needs attention", unknown: "status unknown", disabled: "monitoring is off",
 };
 
-type Load = { status: "loading" } | { status: "ok"; data: StageHealth; at: number } | { status: "error"; error: ApiError };
+type Load = { status: "loading" } | { status: "ok"; data: StageHealth; pipes: PipesLoad; at: number } | { status: "error"; error: ApiError };
+const retryable = (e: ApiError) => !(e.status === 401 || e.status === 403 || e.status === 404);
 
-function Overview({ health, now }: { health: StageHealth; now: number }) {
+function Overview({ health, pipesLoad, now, retry }: { health: StageHealth; pipesLoad: PipesLoad; now: number; retry: { onRetry(): void; lastGood?: number } }) {
   const stage = health.stage.toUpperCase();
   const integration = (n: Integration["name"]) => health.integrations.find((i) => i.name === n);
   const services = health.services.map((s) => ({ ...s, shown: effective(s, now) }));
   const ready = services.filter((s) => s.shown === "healthy").length;
   // An expired probe is no evidence: the stage reads at least unknown, and a worse API rollup always stands.
   const expired = services.filter((s) => s.shown !== s.state).length;
-  const stageState = expired ? worst([health.state, "unknown"]) : health.state;
+  const p = pipes(pipesLoad, now);
+  // A pipelines answer that is missing or has expired signals is no evidence either: the stage reads at least unknown.
+  // A stage with no Dagster at all (a 404, and /health says Dagster is disabled) is not a gap in the evidence.
+  const noDagster = !p.ok && p.state === "disabled" && integration("dagster")?.status === "disabled";
+  const pipesGap = (!p.ok && !noDagster) || (p.ok && p.expired > 0);
+  const stageState = expired || pipesGap ? worst([health.state, "unknown"]) : health.state;
   const servicesGap = absent(integration("services"));
   const servicesState = servicesGap ?? (services.length ? worst(services.map((s) => s.shown)) : "unknown");
-  const pipelinesGap = absent(integration("dagster"));
-  const failing = health.pipelines.filter((p) => p.state === "critical").length;
-  const pipelinesState = pipelinesGap ?? (health.pipelines.length ? worst(health.pipelines.map((p) => p.state)) : "unknown");
   const metrics = integration("metrics");
   const metricsGap = absent(metrics);
   const servicesLine = servicesGap ? "service probes give no answer" : `${ready} of ${services.length} services ready`;
-  const pipelinesLine = pipelinesGap ? "pipelines cannot be read" : `${failing} pipeline${failing === 1 ? "" : "s"} failing`;
+  const pipelinesLine = noDagster ? "no Dagster on this stage" : pipesLine(p);
 
   return (
     <>
       <section className="mon-banner" data-state={stageState} aria-labelledby="mon-banner-h">
         <div>
           <h2 id="mon-banner-h"><StatusBadge state={stageState} /> {stage} {TITLE[stageState]}</h2>
-          <p>{pipelinesLine} · {servicesLine}{expired ? ` · ${expired} service answer${expired === 1 ? "" : "s"} expired` : ""}</p>
+          <p>
+            {pipelinesLine} · {servicesLine}{expired ? ` · ${expired} service answer${expired === 1 ? "" : "s"} expired` : ""}
+            {p.ok && p.expired ? ` · ${p.expired} pipeline signal${p.expired === 1 ? "" : "s"} expired` : ""}
+          </p>
         </div>
       </section>
 
@@ -76,14 +79,11 @@ function Overview({ health, now }: { health: StageHealth; now: number }) {
             : <p className="mon-value"><strong>{ready} of {services.length}</strong> ready</p>}
           <p className="mon-note">{servicesGap ? integration("services")?.reason : services.map((s) => SERVICE_NAMES[s.component] ?? s.component).join(", ")}</p>
         </section>
-        <section className="mon-card" aria-label="Pipelines summary">
-          <div className="mon-card-top"><h2 className="label">Pipelines</h2><StatusBadge state={pipelinesState} /></div>
-          {pipelinesGap
-            ? <p className="mon-value"><strong>—</strong></p>
-            : <p className="mon-value"><strong>{failing} failed</strong> of {health.pipelines.length}</p>}
-          <p className="mon-note">{pipelinesGap ? integration("dagster")?.reason : health.pipelines.length ? health.pipelines.map((p) => p.job).join(", ") : "No pipelines have run on this stage yet."}</p>
-        </section>
+        <PipelinesCard p={p} now={now} />
       </div>
+
+      <NeedsAttention p={p} now={now} stage={health.stage} retry={!p.ok && p.error && retryable(p.error) ? retry : undefined} />
+      {p.ok && <PipelinesTable p={p} now={now} />}
 
       <section className="q-card mon-list" aria-labelledby="mon-services-h">
         <div className="f-card-head">
@@ -140,6 +140,7 @@ export function Monitoring({ stages }: { stages: string[] }) {
   const stage = asked && stages.includes(asked) ? asked : stages[0];
   const [load, setLoad] = useState<Load>({ status: "loading" });
   const [lastGood, setLastGood] = useState<number>();
+  const [lastGoodPipes, setLastGoodPipes] = useState<number>();
   const [now, setNow] = useState(() => Date.now());
   const [attempt, setAttempt] = useState(0);
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
@@ -156,15 +157,39 @@ export function Monitoring({ stages }: { stages: string[] }) {
       done = true;
       clearTimeout(deadline);
       setLoad(next);
-      if (next.status === "ok") { setLastGood(next.at); setNow(next.at); }
+      if (next.status === "ok") {
+        setLastGood(next.at);
+        setNow(next.at);
+        if (next.pipes.status === "ok") setLastGoodPipes(next.at);
+      }
       refresh = setTimeout(retry, REFRESH_MS);
     };
-    // A request past its deadline is unreachable: Unknown with Retry, and the old snapshot goes.
-    const deadline = setTimeout(() => { settle({ status: "error", error: timedOut() }); ctl.abort(); }, DEADLINE_MS);
+    // A snapshot past its deadline is unreachable: Unknown with Retry, and the old snapshot goes. When the stage
+    // answered in time but its pipelines did not, only the pipelines read as unreachable.
+    let stageAnswered = false;
+    let pipesLate: () => void = () => {};
+    const lateness = new Promise<PipesLoad>((resolve) => { pipesLate = () => resolve({ status: "error", error: timedOut() }); });
+    const deadline = setTimeout(() => {
+      pipesLate();
+      if (!stageAnswered) settle({ status: "error", error: timedOut() });
+      ctl.abort();
+    }, DEADLINE_MS);
+    const failure = (e: unknown) => (e instanceof ApiError ? e : new ApiError(0, String(e)));
     setLoad((l) => (l.status === "ok" && l.data.stage === stage ? l : { status: "loading" }));
+    const pipesRead = Promise.race([
+      getPipelinesHealth(stage, ctl.signal).then(
+        (data): PipesLoad => ({ status: "ok", data }),
+        (e): PipesLoad => ({ status: "error", error: failure(e) }),
+      ),
+      lateness,
+    ]);
     getStageHealth(stage, ctl.signal).then(
-      (data) => settle({ status: "ok", data, at: Date.now() }),
-      (e) => settle({ status: "error", error: e instanceof ApiError ? e : new ApiError(0, String(e)) }),
+      async (data) => {
+        stageAnswered = true;
+        const pipesLoad = await pipesRead;
+        settle({ status: "ok", data, pipes: pipesLoad, at: Date.now() });
+      },
+      (e) => settle({ status: "error", error: failure(e) }),
     );
     return () => { done = true; ctl.abort(); clearTimeout(deadline); clearTimeout(refresh); };
   }, [stage, attempt, retry]);
@@ -174,7 +199,7 @@ export function Monitoring({ stages }: { stages: string[] }) {
     return () => clearInterval(tick);
   }, []);
 
-  const pick = (s: string) => { setLastGood(undefined); setParams({ stage: s }); };
+  const pick = (s: string) => { setLastGood(undefined); setLastGoodPipes(undefined); setParams({ stage: s }); };
 
   return (
     <>
@@ -205,7 +230,7 @@ export function Monitoring({ stages }: { stages: string[] }) {
           </div>
           {load.status === "loading" && <p className="mon-loading" role="status">Reading {stage.toUpperCase()} health…</p>}
           {load.status === "error" && <Unavailable stage={stage} error={load.error} lastGood={lastGood} onRetry={retry} />}
-          {load.status === "ok" && <Overview health={load.data} now={now} />}
+          {load.status === "ok" && <Overview health={load.data} pipesLoad={load.pipes} now={now} retry={{ onRetry: retry, lastGood: lastGoodPipes }} />}
         </>
       )}
     </>

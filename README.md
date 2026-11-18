@@ -57,7 +57,7 @@ never contain it. These words in the SQL pick a behaviour:
 
 Export (CSV, JSON), cancel and the schema and table search all work. The
 browser tests in `e2e/` (Playwright) run against this mock: `npm run test:ui`.
-They save full-page screenshots of `/services`, `/queries` and `/files` (dark, light and
+They save full-page screenshots of `/services`, `/queries`, `/files` and `/monitoring` (dark, light and
 390 px wide) in `test-results/screenshots/` for review; CI uploads them as the
 `ui-review` artifact. In a sandbox whose Chromium is not the revision Playwright
 expects, set `PW_CHROMIUM` to its path. Locally run `npx playwright install chromium` once.
@@ -70,10 +70,15 @@ new folder, rename and delete really change the listings (they reset when the de
 to see the portal as a viewer, make `GET /api/v1/file-capabilities` return `{"stages": []}` (the
 browser tests do this with `page.route`) and the Files item disappears.
 
-The Monitoring page (`/monitoring`) reads `GET /api/v1/stages/{stage}/health` from the same mock. `prod` needs
-attention (a failed pipeline, a log spool past its limit, metrics not connected) and `dev` reads unknown because
-Dagster cannot be read. No backend state is ever shown green: an unreachable API, an expired probe answer or a
-missing source reads Unknown or Disabled.
+The Monitoring page (`/monitoring`) reads `GET /api/v1/stages/{stage}/health` and
+`GET /api/v1/stages/{stage}/health/pipelines` from the same mock, together, within one 10 s deadline. `prod` needs
+attention: `sales_orders` failed with a failed blocking quality check, `crm_accounts` missed its run,
+`finance_ledger`'s schedule is stopped and its last run warned on quality, `web_events` is healthy, the log spool is
+past its limit and metrics are not connected. "Needs attention" lists each warning or critical pipeline signal in
+the API's words; the Pipelines table lists every job. `dev` reads unknown because Dagster cannot be read. No backend
+state is ever shown green: an unreachable API, an expired probe or pipeline signal, or a missing source reads Unknown
+or Disabled. When only the pipelines read fails, the stage's own answer stays and the pipelines read Unknown, with
+Retry and the last good snapshot time.
 
 ## Routes are a deploy-time parameter
 
@@ -185,7 +190,7 @@ src/
   root.tsx                 HTML shell (inlined CSS), error boundary
   routes.ts                route table
   routes/files.tsx         the Files explorer (buckets, folders, upload, rename, delete)
-  routes/monitoring.tsx    Monitoring overview: platform health per stage, from the Platform API
+  routes/monitoring.tsx    Monitoring overview: platform and pipeline health per stage, from the Platform API
   routes/home.tsx          the index: server loader reads the routes file per request, no-store
   routes/signed-out.tsx    where Logout lands, outside the perimeter
   routes/healthz.ts        liveness endpoint for the container

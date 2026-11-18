@@ -51,3 +51,14 @@
 .f-scroll:focus-visible { outline: 2px solid var(--olf-highlight); outline-offset: 2px; }
 .mon-loading { color: var(--olf-text-secondary); }
 .q-engine > .icon { display: grid; } /* the clock tile centres its icon, as the logo tiles do */
+
+/* Needs attention: what happened (the rule's verdict) over the API's own reason, in mono as in the frame. */
+.mon-attention tbody th { white-space: normal; min-width: 16rem; padding-block: 0.5rem; }
+.mon-attention td:nth-child(3) { min-width: 0; white-space: nowrap; }
+.mon-what { display: block; }
+.mon-why { display: block; margin-top: 0.1875rem; color: var(--olf-text-muted); font-weight: 400; font-size: 0.6875rem; overflow-wrap: anywhere; }
+.mon-why .f-btn { margin-top: var(--olf-space-2); }
+.mon-job { color: var(--olf-accent); }
+.mon-table tbody th.mon-clear { color: var(--olf-text-secondary); font-weight: 400; }
+.mon-pipes td:nth-child(3) { min-width: 0; white-space: nowrap; }
+.mon-list + .mon-list { margin-top: var(--olf-space-5); }
