@@ -4,6 +4,10 @@ import { ApiError, effective, getStageHealth, worst, type HealthState, type Inte
 import { StatusBadge } from "./StatusBadge";
 
 const REFRESH_MS = 30_000;
+/** How long one health read may take before the page calls the API unreachable. */
+export const DEADLINE_MS = 10_000;
+const timedOut = () =>
+  new ApiError(0, `The monitoring API did not answer within ${DEADLINE_MS / 1000} s, so nothing on this page can be shown as healthy.`);
 
 /** The probe components the API reports (platform-api service_probes.py), in words. Others show their raw name. */
 const SERVICE_NAMES: Record<string, string> = {
@@ -143,15 +147,26 @@ export function Monitoring({ stages }: { stages: string[] }) {
   useEffect(() => {
     if (!stage) return;
     const ctl = new AbortController();
+    // Each request settles once: an answer, a failure, its own deadline, or a silent cancel (stage switch, unmount).
+    // The next refresh is scheduled only once it has settled, so a stalled read is never restarted unreported.
+    let done = false;
+    let refresh: ReturnType<typeof setTimeout> | undefined;
+    const settle = (next: Load) => {
+      if (done) return;
+      done = true;
+      clearTimeout(deadline);
+      setLoad(next);
+      if (next.status === "ok") { setLastGood(next.at); setNow(next.at); }
+      refresh = setTimeout(retry, REFRESH_MS);
+    };
+    // A request past its deadline is unreachable: Unknown with Retry, and the old snapshot goes.
+    const deadline = setTimeout(() => { settle({ status: "error", error: timedOut() }); ctl.abort(); }, DEADLINE_MS);
     setLoad((l) => (l.status === "ok" && l.data.stage === stage ? l : { status: "loading" }));
     getStageHealth(stage, ctl.signal).then(
-      (data) => {
-        if (ctl.signal.aborted) return; // the stage changed or the page left: this answer is not for it
-        const at = Date.now(); setLoad({ status: "ok", data, at }); setLastGood(at); setNow(at); },
-      (e) => { if (!ctl.signal.aborted) setLoad({ status: "error", error: e instanceof ApiError ? e : new ApiError(0, String(e)) }); },
+      (data) => settle({ status: "ok", data, at: Date.now() }),
+      (e) => settle({ status: "error", error: e instanceof ApiError ? e : new ApiError(0, String(e)) }),
     );
-    const refresh = setTimeout(retry, REFRESH_MS);
-    return () => { ctl.abort(); clearTimeout(refresh); };
+    return () => { done = true; ctl.abort(); clearTimeout(deadline); clearTimeout(refresh); };
   }, [stage, attempt, retry]);
 
   useEffect(() => {

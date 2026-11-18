@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getStageHealth, type HealthState, type StageHealth } from "../lib/health-api";
-import { Monitoring } from "./Monitoring";
+import { DEADLINE_MS, Monitoring } from "./Monitoring";
 import { StatusBadge } from "./StatusBadge";
 
 const soon = () => new Date(Date.now() + 40_000).toISOString();
@@ -36,7 +36,7 @@ const open = (stages = ["dev", "prod"], entry = "/monitoring?stage=prod") =>
 const banner = () => screen.getByRole("heading", { level: 2, name: /PROD/ });
 const serviceRow = (name: string) => within(screen.getByRole("region", { name: "Service health" })).getByRole("row", { name: new RegExp(name) });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("MON / Status badge", () => {
   it.each([
@@ -193,5 +193,48 @@ describe("unavailable and absent", () => {
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Stage" }), "prod");
     expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
     expect(fetch.mock.calls.map(([u]) => u)).toEqual(["/api/v1/stages/dev/health", "/api/v1/stages/prod/health"]);
+  });
+});
+
+describe("a health read that never answers", () => {
+  /** A fetch that never answers on its own and, like the real one, rejects once aborted. */
+  const stall = (_: string, init: RequestInit = {}) => new Promise<Response>((_, reject) => {
+    const fail = () => reject(new DOMException("aborted", "AbortError"));
+    if (init.signal?.aborted) fail(); else init.signal?.addEventListener("abort", fail);
+  });
+  const advance = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
+
+  it("on a first visit reads Unknown with Retry at the deadline, then refreshes only after that", async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(stall);
+    vi.stubGlobal("fetch", fetch);
+    open();
+    await advance(DEADLINE_MS - 1);
+    expect(screen.getByText("Reading PROD health…")).toBeInTheDocument();
+    await advance(1);
+    expect(screen.getByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(`did not answer within ${DEADLINE_MS / 1000} s`);
+    expect(screen.getByRole("button", { name: /Retry/ })).toBeInTheDocument();
+    await advance(30_000 - 1);
+    expect(fetch).toHaveBeenCalledTimes(1); // no refresh while the stalled read was pending, nor before 30 s after it
+    await advance(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("after a good snapshot, drops it for Unknown when a refresh stalls", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    vi.stubGlobal("fetch", vi.fn((input: string, init?: RequestInit) =>
+      calls++ === 0 ? Promise.resolve(new Response(JSON.stringify(health()))) : stall(input, init)));
+    open();
+    await advance(0);
+    expect(screen.getByRole("heading", { level: 2, name: "Healthy PROD is healthy" })).toBeInTheDocument();
+    await advance(30_000); // the refresh starts and stalls; its effect (and deadline) run when act ends
+    expect(calls).toBe(2);
+    await advance(DEADLINE_MS);
+    expect(screen.getByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Last good snapshot");
+    expect(screen.queryByText("Healthy")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Service health" })).toBeNull();
   });
 });
