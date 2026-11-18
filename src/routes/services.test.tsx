@@ -32,7 +32,7 @@ afterEach(() => vi.unstubAllEnvs());
 const renderAt = (path: string, page: React.ReactNode, signOutUrl?: string) => {
   const Stub = createRoutesStub([{
     Component: () => <AppShell signOut={signOutUrl}>{page}</AppShell>,
-    children: [{ path: "/services" }, { path: "/queries" }],
+    children: [{ path: "/services" }, { path: "/monitoring" }, { path: "/queries" }],
   }]);
   return render(<Stub initialEntries={[path]} />);
 };
@@ -114,11 +114,11 @@ describe("services page", () => {
 });
 
 describe("app shell", () => {
-  it("offers exactly Services and Queries, with the current one marked", async () => {
+  it("offers exactly Services, Monitoring and Queries, with the current one marked", async () => {
     renderAt("/queries", <Queries />);
     const nav = await screen.findByRole("navigation", { name: "Primary" });
     const links = within(nav).getAllByRole("link");
-    expect(links.map((l) => [l.textContent, l.getAttribute("href")])).toEqual([["Services", "/services"], ["Queries", "/queries"]]);
+    expect(links.map((l) => [l.textContent, l.getAttribute("href")])).toEqual([["Services", "/services"], ["Monitoring", "/monitoring"], ["Queries", "/queries"]]);
     expect(within(nav).getByRole("link", { name: "Queries" })).toHaveAttribute("aria-current", "page");
     expect(within(nav).getByRole("link", { name: "Services" })).not.toHaveAttribute("aria-current");
   });

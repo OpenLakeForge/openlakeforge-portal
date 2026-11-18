@@ -19,7 +19,7 @@ async function openOrders(page: Page) {
 
 test("a data-engineer sees Files under Queries and browses to a folder", async ({ page }) => {
   await page.goto("/services");
-  await expect(nav(page).getByRole("link")).toHaveText(["Services", "Queries", "Files"]);
+  await expect(nav(page).getByRole("link")).toHaveText(["Services", "Monitoring", "Queries", "Files"]);
   await nav(page).getByRole("link", { name: "Files" }).click();
   await expect(page).toHaveURL(/\/files$/);
   await expect(page.getByRole("heading", { name: "Files", level: 1 })).toBeVisible();

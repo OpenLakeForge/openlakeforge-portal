@@ -418,7 +418,7 @@ describe("navigation item", () => {
     api(base);
     shell();
     expect(await nav().findByRole("link", { name: "Files" })).toHaveAttribute("href", "/files");
-    expect(nav().getAllByRole("link").map((l) => l.textContent)).toEqual(["Services", "Queries", "Files"]);
+    expect(nav().getAllByRole("link").map((l) => l.textContent)).toEqual(["Services", "Monitoring", "Queries", "Files"]);
   });
 
   it.each([

@@ -1,0 +1,150 @@
+// @vitest-environment jsdom
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { HealthState, StageHealth } from "../lib/health-api";
+import { Monitoring } from "./Monitoring";
+import { StatusBadge } from "./StatusBadge";
+
+const soon = () => new Date(Date.now() + 40_000).toISOString();
+const svc = (component: string, state: HealthState, over = {}) => ({
+  component, source: "x", state, reason: `${component} says ${state}`,
+  observed_at: new Date().toISOString(), expires_at: soon(), max_age_seconds: 60, ...over,
+});
+const available = ["dagster", "services", "quality"].map((name) => ({ name, status: "available", reason: "read" }));
+const health = (over: Partial<StageHealth> = {}): StageHealth => ({
+  stage: "prod", state: "healthy", evaluated_at: new Date().toISOString(),
+  pipelines: [{ job: "sales_orders", state: "healthy" }],
+  services: [svc("trino.readiness", "healthy"), svc("polaris.readiness", "healthy")],
+  integrations: [...available, { name: "metrics", status: "not_provided", reason: "no metrics source is connected to the API" }] as StageHealth["integrations"],
+  ...over,
+});
+
+function api(reply: (stage: string) => { status?: number; body?: unknown } | "down") {
+  const fetch = vi.fn(async (input: string) => {
+    const stage = /stages\/([^/]+)\/health$/.exec(input)?.[1] ?? "";
+    const r = reply(stage);
+    if (r === "down") throw new TypeError("Failed to fetch");
+    return new Response(JSON.stringify(r.body ?? {}), { status: r.status ?? 200 });
+  });
+  vi.stubGlobal("fetch", fetch);
+  return fetch;
+}
+const open = (stages = ["dev", "prod"], entry = "/monitoring?stage=prod") =>
+  render(<MemoryRouter initialEntries={[entry]}><Monitoring stages={stages} /></MemoryRouter>);
+const banner = () => screen.getByRole("heading", { level: 2, name: /PROD/ });
+const serviceRow = (name: string) => within(screen.getByRole("region", { name: "Service health" })).getByRole("row", { name: new RegExp(name) });
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe("MON / Status badge", () => {
+  it.each([
+    ["healthy", "Healthy"], ["warning", "Warning"], ["critical", "Critical"], ["unknown", "Unknown"], ["disabled", "Disabled"],
+  ] as const)("%s reads %s, with a decorative dot", (state, word) => {
+    const { container } = render(<StatusBadge state={state} />);
+    const badge = container.querySelector(".mon-badge")!;
+    expect(badge).toHaveTextContent(word);
+    expect(badge).toHaveAttribute("data-state", state);
+    expect(badge.querySelector(".mon-dot")).toHaveAttribute("aria-hidden", "true");
+  });
+});
+
+describe("overview", () => {
+  it("shows a healthy stage, its services and the absent metrics as Disabled", async () => {
+    api(() => ({ body: health() }));
+    open();
+    expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
+    expect(screen.getByText("0 pipelines failing · 2 of 2 services ready")).toBeInTheDocument();
+    expect(serviceRow("Trino")).toHaveTextContent("Healthy");
+    expect(serviceRow("Resource metrics")).toHaveTextContent("Disabled");
+    expect(serviceRow("Resource metrics")).toHaveTextContent("no metrics source is connected to the API");
+    expect(screen.getByRole("status")).toHaveTextContent(/Checked \d+ s ago/);
+  });
+
+  it("names failures and keeps the API's critical rollup", async () => {
+    api(() => ({ body: health({ state: "critical", pipelines: [{ job: "sales_orders", state: "critical" }, { job: "crm", state: "healthy" }] }) }));
+    open();
+    expect(await screen.findByRole("heading", { name: "Critical PROD needs attention" })).toBeInTheDocument();
+    const pipelines = screen.getByRole("region", { name: "Pipelines summary" });
+    expect(pipelines).toHaveTextContent("1 failed of 2");
+    expect(within(pipelines).getByText("Critical")).toBeInTheDocument();
+  });
+
+  it("never shows an expired healthy answer as healthy", async () => {
+    const stale = svc("trino.readiness", "healthy", { observed_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-01T00:01:00Z" });
+    api(() => ({ body: health({ services: [stale] }) }));
+    open();
+    await screen.findByRole("heading", { name: /PROD/ });
+    expect(serviceRow("Trino")).toHaveTextContent("Unknown");
+    expect(serviceRow("Trino")).toHaveTextContent(/Stale: no fresh answer/);
+    expect(within(screen.getByRole("region", { name: "Services summary" })).getByText("0 of 1")).toBeInTheDocument();
+  });
+
+  it("reads unknown, with the API's reason, when Dagster cannot be read", async () => {
+    const integrations = health().integrations.map((i) => (i.name === "dagster" ? { ...i, status: "unavailable" as const, reason: "Dagster could not be read" } : i));
+    api(() => ({ body: health({ state: "unknown", pipelines: [], integrations }) }));
+    open();
+    expect(await screen.findByRole("heading", { name: "Unknown PROD status unknown" })).toBeInTheDocument();
+    const pipelines = screen.getByRole("region", { name: "Pipelines summary" });
+    expect(within(pipelines).getByText("Unknown")).toBeInTheDocument();
+    expect(pipelines).toHaveTextContent("Dagster could not be read");
+    expect(pipelines).not.toHaveTextContent(/failed/);
+  });
+
+  it("shows an absent service list as a gap, not as zero healthy", async () => {
+    const integrations = health().integrations.map((i) => (i.name === "services" ? { ...i, status: "disabled" as const, reason: "no service probes are configured" } : i));
+    api(() => ({ body: health({ services: [], integrations }) }));
+    open();
+    await screen.findByRole("heading", { name: /PROD/ });
+    expect(serviceRow("Service probes")).toHaveTextContent("Disabled");
+    expect(serviceRow("Service probes")).toHaveTextContent("no service probes are configured");
+    expect(screen.getByText(/service probes give no answer/)).toBeInTheDocument();
+  });
+});
+
+describe("unavailable and absent", () => {
+  it("shows unknown, never green, when the API is down, and retries", async () => {
+    let down = true;
+    const fetch = api(() => (down ? "down" : { body: health() }));
+    open();
+    expect(await screen.findByRole("heading", { name: "Unknown PROD status unknown" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("nothing on this page can be shown as healthy");
+    expect(screen.queryByText("Healthy")).toBeNull();
+    down = false;
+    await userEvent.click(screen.getByRole("button", { name: /Retry/ }));
+    expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("says a 5xx is not health either", async () => {
+    api(() => ({ status: 502, body: { detail: "bad gateway" } }));
+    open();
+    expect(await screen.findByRole("alert")).toHaveTextContent("The monitoring API failed (502)");
+    expect(banner()).toHaveTextContent("Unknown");
+  });
+
+  it("shows a refused stage as not available, with the API's words and no retry", async () => {
+    api(() => ({ status: 403, body: { detail: "role analyst may not call get_stage_health" } }));
+    open();
+    expect(await screen.findByRole("alert")).toHaveTextContent("role analyst may not call get_stage_health");
+    expect(banner()).toHaveTextContent("Disabled");
+    expect(screen.queryByRole("button", { name: /Retry/ })).toBeNull();
+  });
+
+  it("says so when there is no stage, and calls nothing", () => {
+    const fetch = api(() => ({ body: health() }));
+    open([]);
+    expect(screen.getByText("This deployment has no stage to monitor yet.")).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("switches stage from the selector and asks the API for it", async () => {
+    const fetch = api((stage) => ({ body: health({ stage }) }));
+    open(["dev", "prod"], "/monitoring");
+    expect(await screen.findByRole("heading", { name: "Healthy DEV is healthy" })).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Stage" }), "prod");
+    expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
+    expect(fetch.mock.calls.map(([u]) => u)).toEqual(["/api/v1/stages/dev/health", "/api/v1/stages/prod/health"]);
+  });
+});

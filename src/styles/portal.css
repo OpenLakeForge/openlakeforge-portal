@@ -89,6 +89,7 @@
   .pill { display: none; }
   .sidebar {
     flex-direction: row;
+    flex-wrap: wrap; /* four items do not fit one row at 390 px */
     padding: var(--olf-space-2) var(--olf-space-4);
     border-right: 0;
     border-bottom: 1px solid var(--olf-border-subtle);

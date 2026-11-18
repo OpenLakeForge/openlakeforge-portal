@@ -1,0 +1,53 @@
+/* Monitoring. Layout from the Figma "Screens — v0.4 · Monitoring" frames, on the Deep Water tokens (reuses q-* and f-* pieces). */
+
+/* MON / Status badge: tint fill and state colour; Disabled is an outline with a hollow dot. Unknown is grey, never green. */
+.mon-badge {
+  --mon: var(--olf-success);
+  display: inline-flex; align-items: center; gap: 0.375rem; flex: none;
+  padding: 0.1875rem 0.5625rem 0.1875rem 0.5rem; border: 1px solid transparent; border-radius: var(--olf-radius-full);
+  background: var(--olf-tint-success); color: var(--mon);
+  font: 500 0.625rem / 1.3 var(--olf-font-mono); letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap;
+}
+.mon-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.mon-badge[data-state="warning"] { --mon: var(--olf-warning); background: var(--olf-tint-warning); }
+.mon-badge[data-state="critical"] { --mon: var(--olf-danger); background: var(--olf-tint-danger); }
+.mon-badge[data-state="unknown"] { --mon: var(--olf-text-secondary); background: var(--olf-tint-neutral); }
+.mon-badge[data-state="disabled"] { --mon: var(--olf-text-muted); background: none; border-color: var(--olf-border-default); }
+.mon-badge[data-state="disabled"] .mon-dot { background: none; box-shadow: inset 0 0 0 1.25px currentColor; }
+
+/* Stage banner: a 4px accent in the stage's state colour. */
+.mon-banner {
+  --accent: var(--olf-success);
+  display: flex; margin: 0 0 var(--olf-space-5); overflow: hidden;
+  border: 1px solid var(--olf-border-default); border-left: 4px solid var(--accent); border-radius: var(--olf-radius-lg);
+  background: var(--olf-bg-surface);
+}
+.mon-banner[data-state="warning"] { --accent: var(--olf-warning); }
+.mon-banner[data-state="critical"] { --accent: var(--olf-danger); }
+.mon-banner[data-state="unknown"], .mon-banner[data-state="disabled"] { --accent: var(--olf-border-strong); }
+.mon-banner > div { display: flex; flex-direction: column; align-items: flex-start; gap: 0.375rem; padding: 1.125rem var(--olf-space-5); }
+.mon-banner h2 { display: flex; flex-wrap: wrap; align-items: center; gap: var(--olf-space-3); margin: 0; font: 700 1.25rem / 1.3 var(--olf-font-heading); }
+.mon-banner p { margin: 0; color: var(--olf-text-secondary); font-size: 0.875rem; }
+.mon-state .f-btn { margin-top: var(--olf-space-2); }
+
+/* Summary cards */
+.mon-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: var(--olf-space-4); margin-bottom: var(--olf-space-5); }
+.mon-card {
+  display: flex; flex-direction: column; gap: var(--olf-space-2); padding: 1.125rem var(--olf-space-5);
+  border: 1px solid var(--olf-border-default); border-radius: var(--olf-radius-lg); background: var(--olf-bg-surface);
+}
+.mon-card-top { display: flex; align-items: center; justify-content: space-between; gap: var(--olf-space-3); }
+.mon-card-top h2 { margin: 0; font-size: 0.6875rem; }
+.mon-value { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.625rem; margin: 0; color: var(--olf-text-secondary); font-size: 0.8125rem; }
+.mon-value strong { color: var(--olf-text-primary); font: 700 1.75rem / 1.2 var(--olf-font-heading); }
+.mon-note { margin: 0; color: var(--olf-text-muted); font-size: 0.75rem; overflow-wrap: anywhere; }
+
+/* Services table */
+.mon-list .f-card-head { background: var(--olf-bg-raised); }
+.mon-table td, .mon-table tbody th { height: 3.25rem; border-top: 1px solid var(--olf-border-subtle); }
+.mon-table tbody th { border-bottom: 0; color: var(--olf-text-primary); font: 600 0.8125rem var(--olf-font-body); letter-spacing: 0; text-transform: none; }
+.mon-table td { color: var(--olf-text-secondary); font-size: 0.8125rem; }
+.mon-table td:nth-child(3) { white-space: normal; min-width: 16rem; }
+.f-scroll:focus-visible { outline: 2px solid var(--olf-highlight); outline-offset: 2px; }
+.mon-loading { color: var(--olf-text-secondary); }
+.q-engine > .icon { display: grid; } /* the clock tile centres its icon, as the logo tiles do */

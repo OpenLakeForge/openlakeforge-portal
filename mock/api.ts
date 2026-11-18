@@ -2,6 +2,7 @@
 // /api/v1 contract of platform-api (discovery.py, queries.py). Dev only: vite.config.ts mounts it when
 // OLF_MOCK_API=1 (loaded with ssrLoadModule, never imported), and nothing under src/ imports it, so it can never reach build/.
 // Special SQL (see README): syntax_error, slow, big, and write keywords.
+// Health (#1127): prod needs attention (a failed pipeline, a stale log spool), dev cannot read Dagster (unknown).
 // Files routes (#1114) keep an in-memory object store, so upload, folders, rename and delete change the listings.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -136,6 +137,7 @@ async function route(req: IncomingMessage, url: URL): Promise<{ status?: number;
   const stage = parts[1];
   if (!STAGES.includes(stage)) throw new HttpError(404, `stage '${stage}' offers no query`);
   if (parts[2] === "buckets") return filesRoute(req, url, parts);
+  if (parts[2] === "health" && parts.length === 3 && method === "GET") return { json: stageHealth(stage) };
   if (parts[2] === "schemas" && method === "GET") {
     const schemas = schemasOf(stage);
     if (parts.length === 3) { const p = page(Object.keys(schemas), url); return { json: { schemas: p.items, next_cursor: p.next } }; }
@@ -317,4 +319,34 @@ async function filesRoute(req: IncomingMessage, url: URL, parts: string[]): Prom
     return { json: { deleted, errors: [] } };
   }
   throw new HttpError(404, "Not Found");
+}
+
+// ── Health (openlakeforge #1127): StageHealth, fresh on every call ────────────────────────────────────────
+
+function stageHealth(stage: string) {
+  const now = Date.now();
+  const iso = (offset: number) => new Date(now + offset * 1000).toISOString();
+  const svc = (component: string, source: string, state: string, reason: string) =>
+    ({ component, source, state, reason, observed_at: iso(-18), expires_at: iso(42), max_age_seconds: 60 });
+  const prod = stage === "prod";
+  return {
+    stage, state: prod ? "critical" : "unknown", evaluated_at: iso(-18),
+    pipelines: prod ? [{ job: "sales_orders", state: "critical" }, { job: "crm_accounts", state: "healthy" }, { job: "finance_ledger", state: "disabled" }] : [],
+    services: [
+      prod ? svc("dagster.read-api", "dagster-graphql", "healthy", "Dagster GraphQL answers")
+        : svc("dagster.read-api", "dagster-graphql", "unknown", "the Dagster GraphQL API did not answer"),
+      svc("trino.readiness", "trino-http", "healthy", "Coordinator accepts queries"),
+      svc("polaris.readiness", "polaris-http", "healthy", "Catalog API responds"),
+      svc("object-store.list", "s3", "healthy", "Buckets reachable"),
+      prod ? svc("log-archive.spool-age", "log-collector", "warning", "No durable write for 12 min (limit 10 min)")
+        : svc("log-archive.spool-age", "log-collector", "healthy", "Last durable write 42 s ago"),
+    ],
+    integrations: [
+      prod ? { name: "dagster", status: "available", reason: "read from Dagster" } : { name: "dagster", status: "unavailable", reason: "Dagster could not be read" },
+      { name: "services", status: "available", reason: "probed in the stage namespace" },
+      prod ? { name: "quality", status: "available", reason: "read from the stage's quality manifests" }
+        : { name: "quality", status: "not_provided", reason: "no quality manifest reader is configured for this stage" },
+      { name: "metrics", status: "not_provided", reason: "no metrics source is connected to the API" },
+    ],
+  };
 }
