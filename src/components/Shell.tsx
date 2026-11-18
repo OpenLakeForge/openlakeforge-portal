@@ -31,6 +31,7 @@ export function Header({ signOut }: { signOut?: string }) {
 // the e2e check counts every href on the page as a route.
 const items = [
   { to: "/services", label: "Services", icon: "/icons/services.svg" },
+  { to: "/monitoring", label: "Monitoring", icon: "/icons/activity.svg" },
   { to: "/queries", label: "Queries", icon: "/icons/search.svg" },
   { to: "/files", label: "Files", icon: "/icons/folder-open.svg" },
 ];

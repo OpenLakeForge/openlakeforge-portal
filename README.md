@@ -70,6 +70,11 @@ new folder, rename and delete really change the listings (they reset when the de
 to see the portal as a viewer, make `GET /api/v1/file-capabilities` return `{"stages": []}` (the
 browser tests do this with `page.route`) and the Files item disappears.
 
+The Monitoring page (`/monitoring`) reads `GET /api/v1/stages/{stage}/health` from the same mock. `prod` needs
+attention (a failed pipeline, a log spool past its limit, metrics not connected) and `dev` reads unknown because
+Dagster cannot be read. No backend state is ever shown green: an unreachable API, an expired probe answer or a
+missing source reads Unknown or Disabled.
+
 ## Routes are a deploy-time parameter
 
 The image is the same for every cluster. The routes are not baked in: they
@@ -180,6 +185,7 @@ src/
   root.tsx                 HTML shell (inlined CSS), error boundary
   routes.ts                route table
   routes/files.tsx         the Files explorer (buckets, folders, upload, rename, delete)
+  routes/monitoring.tsx    Monitoring overview: platform health per stage, from the Platform API
   routes/home.tsx          the index: server loader reads the routes file per request, no-store
   routes/signed-out.tsx    where Logout lands, outside the perimeter
   routes/healthz.ts        liveness endpoint for the container

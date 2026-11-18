@@ -5,6 +5,7 @@ export default [
   index("routes/home.tsx"),
   layout("routes/shell.tsx", [
     route("services", "routes/services.tsx"),
+    route("monitoring", "routes/monitoring.tsx"),
     route("queries", "routes/queries.tsx"),
     route("files", "routes/files.tsx"),
   ]),
