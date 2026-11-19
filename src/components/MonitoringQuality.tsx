@@ -2,7 +2,7 @@
 // GET /api/v1/stages/{stage}/health/quality. Counts are the API's; `counts: null` is unknown and never shown as zeros.
 
 import { ApiError, worst, type HealthState, type QualityCounts, type StageQualityHealth } from "../lib/health-api";
-import { absent, when, type Part } from "./MonitoringPipelines";
+import { absent, RunLink, when, type Part } from "./MonitoringPipelines";
 import { StatusBadge } from "./StatusBadge";
 
 /** What the page knows about quality: the answer and its state, or a gap with its reason. */
@@ -58,7 +58,7 @@ export function QualityCard({ q, retry }: { q: Quality; retry?(): void }) {
   );
 }
 
-export function QualityTable({ q, now }: { q: Extract<Quality, { ok: true }>; now: number }) {
+export function QualityTable({ q, now, stage }: { q: Extract<Quality, { ok: true }>; now: number; stage: string }) {
   const rows = q.data.pipelines;
   if (!rows.length) return null;
   return (
@@ -73,7 +73,7 @@ export function QualityTable({ q, now }: { q: Extract<Quality, { ok: true }>; no
           <tbody>
             {rows.map((x) => (
               <tr key={x.job}>
-                <th scope="row"><span className="f-mono">{x.domain ? `${x.domain} · ` : ""}{x.product}</span></th>
+                <th scope="row"><span className="f-mono">{x.domain ? `${x.domain} · ` : ""}{x.product ?? x.job}</span></th>
                 <td><StatusBadge state={x.state} /></td>
                 <td>
                   <span className="mon-what">
@@ -82,7 +82,7 @@ export function QualityTable({ q, now }: { q: Extract<Quality, { ok: true }>; no
                   </span>
                   <span className="mon-why f-mono">{x.complete === false ? `not every result is in yet · ${x.reason}` : x.reason}</span>
                 </td>
-                <td className="f-mono">{x.run_id ? `${when(x.observed_at, now)} · run ${x.run_id.slice(0, 8)}` : "No run"}</td>
+                <td className="f-mono">{x.run_id ? <>{when(x.observed_at, now)} · <RunLink stage={stage} run={x.run_id} /></> : "No run"}</td>
               </tr>
             ))}
           </tbody>

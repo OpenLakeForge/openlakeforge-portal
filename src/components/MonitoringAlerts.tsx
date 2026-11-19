@@ -4,7 +4,7 @@
 
 import { ApiError, worst, type AlertDelivery, type HealthState, type StageAlertIncidents } from "../lib/health-api";
 import { ago } from "./Monitoring";
-import { when, type Part } from "./MonitoringPipelines";
+import { RunLink, when, type Part } from "./MonitoringPipelines";
 import { StatusBadge } from "./StatusBadge";
 
 export type Alerts =
@@ -27,7 +27,7 @@ export function alerts(load: Part<StageAlertIncidents>): Alerts {
 }
 
 const plural = (n: number | null, word: string) => `${n} ${n === 1 ? word : `${word}s`}`;
-const DELIVERY: Record<AlertDelivery["status"], string> = {
+export const DELIVERY: Record<AlertDelivery["status"], string> = {
   pending: "Pending", delivered: "Delivered", undeliverable: "Undeliverable", unrouted: "Unrouted", unknown: "Unknown",
 };
 
@@ -54,7 +54,7 @@ export function AlertsCard({ a, now }: { a: Alerts; now: number }) {
   );
 }
 
-export function IncidentsTable({ a, now, retry }: { a: Alerts; now: number; retry?(): void }) {
+export function IncidentsTable({ a, now, retry, stage }: { a: Alerts; now: number; retry?(): void; stage: string }) {
   const rows = a.ok ? a.data.incidents : [];
   return (
     <section className="q-card mon-list" aria-labelledby="mon-incidents-h">
@@ -74,8 +74,19 @@ export function IncidentsTable({ a, now, retry }: { a: Alerts; now: number; retr
             {rows.map((i) => (
               <tr key={i.id}>
                 <td><StatusBadge state={i.severity} /></td>
-                <th scope="row"><span className="mon-what">{i.summary}</span><span className="mon-why f-mono">{i.condition}</span></th>
-                <td className="f-mono mon-job">{[i.domain, i.product, i.table].filter(Boolean).join(" · ") || i.component || "—"}</td>
+                <th scope="row">
+                  <span className="mon-what">{i.summary}</span><span className="mon-why f-mono">{i.condition}</span>
+                  {i.run_ids.length > 0 && (
+                    <span className="mon-why run-ids">
+                      {i.run_ids.slice(-3).map((r, n) => <span key={r}>{n ? " · " : ""}<RunLink stage={stage} run={r} /></span>)}
+                      {i.run_ids.length > 3 ? ` · +${i.run_ids.length - 3} earlier` : ""}
+                    </span>
+                  )}
+                </th>
+                <td className="f-mono mon-job">
+                  {[i.domain, i.product, i.table].filter(Boolean).join(" · ") || i.component || "—"}
+                  {i.job && !i.product && <span className="mon-why">job {i.job}</span>}
+                </td>
                 <td className="f-mono">{when(i.opened_at, now)}<span className="mon-why">last seen {ago(i.last_seen_at, now)}</span></td>
                 <td>
                   <span className="mon-delivery" data-status={i.delivery.status}>{DELIVERY[i.delivery.status]}</span>

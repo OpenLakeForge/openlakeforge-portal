@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  getStageHealth, type AlertIncident, type HealthSignal, type HealthState, type MonitoringCapabilities, type MonitoringStage, type PipelineHealth,
+  getStageHealth, type AlertIncident, type HealthSignal, type HealthWindow, type HealthState, type MonitoringCapabilities, type MonitoringStage, type PipelineHealth,
   type PipelineQuality, type PipelinesHealth, type QualityCounts, type StageAlertIncidents, type StageHealth, type StageQualityHealth,
 } from "../lib/health-api";
 import { DEADLINE_MS, Monitoring } from "./Monitoring";
@@ -30,21 +30,24 @@ const health = (over: Partial<StageHealth> = {}): StageHealth => ({
 });
 
 const sig = (kind: HealthSignal["kind"], state: HealthState, over: Partial<HealthSignal> = {}): HealthSignal => ({
-  kind, state, reason: `${kind} says ${state}`, run: null, observed_at: new Date().toISOString(), expires_at: soon(), ...over,
+  kind, state, reason: `${kind} says ${state}`, run: null, observed_at: new Date().toISOString(), expires_at: soon(), due: null, ...over,
 });
 const run = (job: string, status: string, id = `${job}-run-0001`) => {
   const t = Date.now() / 1000 - 600;
   return { run_id: id, job_name: job, status, created_at: t, started_at: t, ended_at: t + 60, tags: {} };
 };
 const pipeline = (job: string, over: Partial<PipelineHealth> = {}): PipelineHealth => ({
-  job, state: "healthy", latest_run: run(job, "SUCCESS"), last_success: run(job, "SUCCESS"), failed_runs: 0,
+  job, domain: null, product: null, state: "healthy", latest_run: run(job, "SUCCESS"), last_success: run(job, "SUCCESS"), failed_runs: 0, covered_from: null,
   schedule: { name: `${job}_daily`, status: "running", last_expected_at: new Date(Date.now() - 900_000).toISOString() },
   freshness: { last_success_at: new Date(Date.now() - 540_000).toISOString(), age_seconds: 540 },
   signals: [sig("execution", "healthy"), sig("latest_success", "healthy"), sig("expected_run", "healthy"), sig("freshness", "healthy", { expires_at: null })],
   ...over,
 });
+const windowOf = (over: Partial<HealthWindow> = {}): HealthWindow => ({
+  range: "24h", from: new Date(Date.now() - 86_400_000).toISOString(), to: new Date().toISOString(), covered_from: null, ...over,
+});
 const pipes = (over: Partial<PipelinesHealth> = {}): PipelinesHealth => ({
-  stage: "prod", evaluated_at: new Date().toISOString(),
+  stage: "prod", evaluated_at: new Date().toISOString(), window: windowOf(), failed_runs: 0,
   thresholds: { run_max_age_seconds: 604800, schedule_max_age_seconds: 300, schedule_grace_seconds: 900, run_window: 25 },
   integrations: available as PipelinesHealth["integrations"], pipelines: [pipeline("sales_orders")], ...over,
 });
@@ -238,15 +241,107 @@ describe("pipelines and needs attention", () => {
     expect(summary).toHaveTextContent("1 failed of 3 · 1 missed");
   });
 
+  it("links each signal's run and each pipeline's latest run to its Failed-run screen", async () => {
+    api(() => ({ body: health({ state: "critical" }) }), () => ({ body: troubled() }));
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    const href = `/monitoring/prod/runs/${failedRun.run_id}`;
+    expect(within(attentionRow("Run failed")).getByRole("link", { name: "Open run c94cbcb0" })).toHaveAttribute("href", href);
+    expect(within(pipelineRow("sales_orders")).getByRole("link", { name: "Open run c94cbcb0" })).toHaveAttribute("href", href);
+    expect(within(pipelineRow("sales_orders")).getByRole("link").textContent).toBe("c94cbcb0");
+  });
+
+  it("shows when a missed expected run was due, from the signal's own `due`", async () => {
+    const due = new Date(Date.now() - 1_800_000);
+    const missed = pipes({
+      pipelines: [pipeline("crm_accounts", {
+        state: "critical",
+        schedule: { name: "crm_daily", status: "running", last_expected_at: new Date(Date.now() - 600_000).toISOString() },
+        signals: [sig("expected_run", "critical", { reason: "an expected run did not start", due: due.toISOString() })],
+      })],
+    });
+    api(() => ({ body: health({ state: "critical" }) }), () => ({ body: missed }));
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    const hhmm = due.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    expect(attentionRow("Expected run did not start")).toHaveTextContent(`due ${hhmm}`);
+  });
+
+  it("falls back to the schedule's last tick, without the word due, when the API sends no `due`", async () => {
+    api(() => ({ body: health({ state: "critical" }) }), () => ({ body: troubled() }));
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    expect(attentionRow("Expected run did not start")).not.toHaveTextContent("due");
+  });
+
   it("shows each pipeline's latest run, last success, schedule and failed runs", async () => {
     api(() => ({ body: health({ state: "critical" }) }), () => ({ body: troubled() }));
     open();
     await screen.findByRole("region", { name: "Pipeline health" });
     expect(pipelineRow("sales_orders")).toHaveTextContent("Critical");
     expect(pipelineRow("sales_orders")).toHaveTextContent(/Failed · .* · c94cbcb0/);
-    expect(pipelineRow("sales_orders")).toHaveTextContent("2 of last 25");
+    expect(pipelineRow("sales_orders")).toHaveTextContent("2 failed in last 24h");
     expect(pipelineRow("erp_inventory")).toHaveTextContent("Disabled");
     expect(pipelineRow("erp_inventory")).toHaveTextContent("erp_daily · stopped");
+  });
+
+  it("reads a failed-run count that could not be read as Unknown, never 0", async () => {
+    api(() => ({ body: health() }), () => ({ body: pipes({ failed_runs: null, pipelines: [pipeline("sales_orders", { failed_runs: null })] }) }));
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    const cell = pipelineRow("sales_orders").querySelectorAll("td")[4];
+    expect(cell).toHaveTextContent("Unknown");
+    expect(cell).toHaveTextContent("the count of failed runs could not be read");
+    expect(cell).not.toHaveTextContent("0");
+  });
+
+  it("says where the count starts when the API's run read stopped short of the window", async () => {
+    const from = new Date(Date.now() - 3_600_000);
+    api(() => ({ body: health() }), () => ({
+      body: pipes({ window: windowOf({ covered_from: from.toISOString() }), pipelines: [pipeline("sales_orders", { failed_runs: 3, covered_from: from.toISOString() })] }),
+    }));
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    const hhmm = from.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    expect(pipelineRow("sales_orders")).toHaveTextContent(`3 failed since ${hhmm}`);
+    expect(pipelineRow("sales_orders")).toHaveTextContent("the run read stopped short of the last 24h");
+    expect(pipelineRow("sales_orders")).not.toHaveTextContent("in last 24h");
+  });
+
+  it("names the window's range from the API", async () => {
+    api(() => ({ body: health() }), () => ({ body: pipes({ window: windowOf({ range: "7d" }), pipelines: [pipeline("sales_orders", { failed_runs: 4 })] }) }));
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    expect(pipelineRow("sales_orders")).toHaveTextContent("4 failed in last 7d");
+  });
+
+  it("keeps the run-window wording for an API from before the window (no `window`, `covered_from` or stage count)", async () => {
+    const { window: _w, failed_runs: _f, ...older } = pipes({ pipelines: [pipeline("sales_orders", { failed_runs: 2 })] });
+    const pipelines = older.pipelines.map(({ covered_from: _c, ...p }) => p);
+    api(() => ({ body: health() }), () => ({ body: { ...older, pipelines } }));
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    expect(pipelineRow("sales_orders")).toHaveTextContent("2 of last 25 runs");
+  });
+
+  it("reads a pipelines answer with `window: null` as no window, in the run-window wording", async () => {
+    api(() => ({ body: health() }), () => ({ body: { ...pipes({ pipelines: [pipeline("sales_orders", { failed_runs: 2 })] }), window: null } }));
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    expect(pipelineRow("sales_orders")).toHaveTextContent("2 of last 25 runs");
+  });
+
+  it("accepts a stage health answer with `window: null`", async () => {
+    api(() => ({ body: { ...health(), window: null, failed_runs: null } }));
+    open();
+    expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
+    expect(await getStageHealth("prod")).toMatchObject({ window: null });
+  });
+
+  it("does not take a window that is not a HealthWindow as an answer", async () => {
+    api(() => ({ body: health() }), () => ({ body: { ...pipes(), window: { range: "24h" } } }));
+    open();
+    expect(await screen.findByText(/Pipelines cannot be read/)).toBeInTheDocument();
   });
 
   it("says nothing needs attention only when every pipeline signal is current and fine", async () => {
@@ -760,12 +855,22 @@ describe("alert incidents", () => {
   const table = () => screen.getByRole("region", { name: "Open alert incidents" });
   const urls = (fetch: ReturnType<typeof vi.fn>) => fetch.mock.calls.map(([u]) => u as string);
   const incident = (id: string, delivery: AlertIncident["delivery"], over: Partial<AlertIncident> = {}): AlertIncident => ({
-    id, condition: "failed_run", severity: "critical", domain: "sales", product: "orders", table: null, component: null,
+    id, condition: "failed_run", severity: "critical", job: null, domain: "sales", product: "orders", table: null, component: null,
     opened_at: new Date(Date.now() - 3_600_000).toISOString(), last_seen_at: new Date(Date.now() - 120_000).toISOString(),
     summary: `incident ${id}`, run_ids: [], delivery, ...over,
   });
   const show = (body: StageAlertIncidents | Reply) =>
     api(() => ({ body: health() }), undefined, undefined, { alerts: () => ("state" in (body as object) ? { body } : body as Reply) });
+
+  it("links an incident's runs to their Failed-run screen and names its job", async () => {
+    show(incidentsOf({ incidents: [incident("a", { status: "delivered", event: "opened", attempts: 1, receivers: 1, delivered: 1 }, {
+      run_ids: ["c94cbcb0-5d1e-4a8e"], job: "sales_orders", product: null, domain: null,
+    })] }));
+    open();
+    const row = await within(await screen.findByRole("region", { name: "Open alert incidents" })).findByRole("row", { name: /incident a/ });
+    expect(within(row).getByRole("link", { name: "Open run c94cbcb0" })).toHaveAttribute("href", "/monitoring/prod/runs/c94cbcb0-5d1e-4a8e");
+    expect(row).toHaveTextContent("job sales_orders");
+  });
 
   it.each([
     ["pending", { status: "pending", event: "opened", attempts: 1, receivers: 2, delivered: 0 }, "Pending", "opened notification · 0 of 2 receivers · 1 attempt"],
