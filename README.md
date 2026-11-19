@@ -79,7 +79,9 @@ last quality publication, or "unknown" when the API has none. `prod` needs
 attention: `sales_orders` failed with a failed blocking quality check, `crm_accounts` missed its run,
 `finance_ledger`'s schedule is stopped and its last run warned on quality, `web_events` is healthy, the log spool is
 past its limit and metrics are not connected. "Needs attention" lists each warning or critical pipeline signal in
-the API's words; the Pipelines table lists every job. `dev` reads unknown because Dagster cannot be read. No backend
+the API's words; the Pipelines table lists every job, with its failed runs in the API's 24 h window
+(openlakeforge#1319): `crm_accounts`' count could not be read, so it reads Unknown (never 0), and `web_events`' run read
+stopped short of the window, so its count says where it starts. `dev` reads unknown because Dagster cannot be read. No backend
 state is ever shown green: an unreachable API, an expired probe or pipeline signal, or a missing source reads Unknown
 or Disabled. When only the pipelines read fails, the stage's own answer stays and the pipelines read Unknown, with
 Retry and the last good snapshot time.

@@ -22,13 +22,14 @@ const failureOf = (over: Partial<RunFailure> = {}): RunFailure => ({
   ...over,
 });
 const pipelineOf = (over: Partial<PipelineHealth> = {}): PipelineHealth => ({
-  job: "sales_orders", domain: "sales", product: "orders", state: "critical", latest_run: runBody, last_success: null, failed_runs: 1,
+  job: "sales_orders", domain: "sales", product: "orders", state: "critical", latest_run: runBody, last_success: null, failed_runs: 1, covered_from: null,
   schedule: { name: "sales_daily", status: "running", last_expected_at: null }, freshness: { last_success_at: null, age_seconds: null },
   signals: [{ kind: "execution", state: "critical", reason: "latest run failed", run: RUN, observed_at: new Date().toISOString(), expires_at: soon(), due: null }],
   ...over,
 });
 const pipesOf = (p: PipelineHealth[] = [pipelineOf()]): PipelinesHealth => ({
-  stage: "prod", evaluated_at: new Date().toISOString(),
+  stage: "prod", evaluated_at: new Date().toISOString(), failed_runs: 1,
+  window: { range: "24h", from: new Date(Date.now() - 86_400_000).toISOString(), to: new Date().toISOString(), covered_from: null },
   thresholds: { run_max_age_seconds: 1, schedule_max_age_seconds: 1, schedule_grace_seconds: 1, run_window: 25 },
   integrations: [{ name: "dagster", status: "available", reason: "read" }], pipelines: p,
 });

@@ -4,7 +4,7 @@
 
 import {
   ApiError, effective, worst,
-  type HealthSignal, type HealthState, type Integration, type PipelineHealth, type PipelinesHealth,
+  type HealthSignal, type HealthState, type HealthWindow, type Integration, type PipelineHealth, type PipelinesHealth,
 } from "../lib/health-api";
 import { Link } from "react-router";
 import { StatusBadge } from "./StatusBadge";
@@ -17,7 +17,7 @@ type Signal = HealthSignal & { shown: HealthState };
 export type Pipeline = Omit<PipelineHealth, "signals"> & { signals: Signal[]; shown: HealthState };
 /** What the page knows about pipelines: their list, or a gap with its reason and the state that gap reads as. */
 export type Pipes =
-  | { ok: true; pipelines: Pipeline[]; runWindow: number; failed: number; missed: number; quality: { warning: number; critical: number }; expired: number }
+  | { ok: true; pipelines: Pipeline[]; runWindow: number; window: HealthWindow | null; failed: number; missed: number; quality: { warning: number; critical: number }; expired: number }
   | { ok: false; state: HealthState; reason: string; error?: ApiError; off?: boolean };
 
 const denied = (e: ApiError) => e.status === 401 || e.status === 403 || e.status === 404;
@@ -43,7 +43,7 @@ export function pipes(load: PipesLoad, now: number): Pipes {
   });
   const count = (kind: HealthSignal["kind"], state: HealthState) => pipelines.filter((p) => of(p, kind)?.shown === state).length;
   return {
-    ok: true, pipelines, expired, runWindow: load.data.thresholds.run_window,
+    ok: true, pipelines, expired, runWindow: load.data.thresholds.run_window, window: load.data.window ?? null,
     failed: count("execution", "critical"), missed: count("expected_run", "critical"),
     quality: { warning: count("quality", "warning"), critical: count("quality", "critical") },
   };
@@ -174,6 +174,18 @@ export function NeedsAttention({ p, now, stage, retry }: { p: Pipes; now: number
   );
 }
 
+/** A pipeline's failed-run count in the API's window, as words. Null is unknown, never 0. A count whose read stopped
+ * short of the window's start says where it starts (the pipeline's `covered_from`). An older API without `window` counts the last `run_window` runs. */
+export function failedRuns(x: Pick<PipelineHealth, "failed_runs" | "covered_from">, p: Pick<Extract<Pipes, { ok: true }>, "window" | "runWindow">, now: number):
+  { text: string; why?: string } {
+  if (x.failed_runs === null) return { text: "Unknown", why: "the count of failed runs could not be read" };
+  if (!p.window) return { text: `${x.failed_runs} of last ${p.runWindow} runs` };
+  // The pipeline's own `covered_from`: the window's is about the stage's sum, and a job with none counts the whole window.
+  const from = x.covered_from;
+  if (from) return { text: `${x.failed_runs} failed since ${when(from, now)}`, why: `the run read stopped short of the last ${p.window.range}` };
+  return { text: `${x.failed_runs} failed in last ${p.window.range}` };
+}
+
 const SCHEDULE: Record<PipelineHealth["schedule"]["status"], string> = { running: "running", stopped: "stopped", absent: "No schedule" };
 const RUN_WORD: Record<string, string> = { SUCCESS: "Succeeded", FAILURE: "Failed", CANCELED: "Canceled", CANCELING: "Canceling", STARTED: "Running", QUEUED: "Queued", STARTING: "Starting", NOT_STARTED: "Not started" };
 
@@ -200,7 +212,10 @@ export function PipelinesTable({ p, now, stage }: { p: Extract<Pipes, { ok: true
                   <td>{run ? <>{RUN_WORD[run.status] ?? run.status} · {when(run.ended_at ?? run.started_at ?? run.created_at, now)} · <RunLink stage={stage} run={run.run_id} label={short(run.run_id)} /></> : "No run in the window"}</td>
                   <td>{x.freshness.last_success_at ? when(x.freshness.last_success_at, now) : "None on record"}</td>
                   <td>{x.schedule.status === "absent" ? SCHEDULE.absent : <><span className="f-mono">{x.schedule.name}</span> · {SCHEDULE[x.schedule.status]}</>}</td>
-                  <td className="f-mono">{x.failed_runs} of last {p.runWindow}</td>
+                  <td className="f-mono">{(() => {
+                    const f = failedRuns(x, p, now);
+                    return <>{f.text}{f.why && <span className="mon-why">{f.why}</span>}</>;
+                  })()}</td>
                 </tr>
               );
             })}

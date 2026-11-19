@@ -412,8 +412,8 @@ function stageHealth(stage: string) {
   };
   const prod = stage === "prod";
   return {
-    stage, state: prod ? "critical" : "unknown", evaluated_at: iso(-18),
-    pipelines: prod ? PROD_PIPELINES.map(({ job, state }) => ({ job, state })) : [],
+    stage, state: prod ? "critical" : "unknown", evaluated_at: iso(-18), window: healthWindow(now, null), failed_runs: null,
+    pipelines: prod ? PROD_PIPELINES.map(({ job, state }) => ({ job, domain: SCOPES[job]?.[0] ?? null, product: SCOPES[job]?.[1] ?? null, state, failed_runs: PROD_FAILED_RUNS[job][0] })) : [],
     services: [
       prod ? svc("dagster.read-api", "dagster-graphql", "healthy", "Dagster GraphQL answers")
         : svc("dagster.read-api", "dagster-graphql", "unknown", "the Dagster GraphQL API did not answer"),
@@ -447,6 +447,17 @@ function stageHealth(stage: string) {
 /** Each job's domain and data product, from its definition's tags (#1272); web_events declares no product. */
 const SCOPES: Record<string, [string, string]> = { sales_orders: ["sales", "orders"], crm_accounts: ["crm", "accounts"], finance_ledger: ["finance", "ledger"] };
 
+/** Each prod job's failed runs in the window and, when its bounded read stopped short of the window, how many seconds
+ * ago its count starts. crm_accounts' count could not be read (null, shown Unknown, never 0), so the stage sum is null
+ * too; web_events runs hourly and its read reached its cap 6 h back. */
+const PROD_FAILED_RUNS: Record<string, [number | null, number | null]> = {
+  sales_orders: [1, null], crm_accounts: [null, null], finance_ledger: [0, null], web_events: [0, 6 * 3600],
+};
+const healthWindow = (now: number, coveredFrom: number | null) => ({
+  range: "24h", from: new Date(now - 24 * 3600 * 1000).toISOString(), to: new Date(now).toISOString(),
+  covered_from: coveredFrom === null ? null : new Date(now - coveredFrom * 1000).toISOString(),
+});
+
 const PROD_PIPELINES = [
   { job: "sales_orders", state: "critical" },
   { job: "crm_accounts", state: "critical" },
@@ -477,44 +488,48 @@ function pipelinesHealth(stage: string) {
     { name: "metrics", status: "not_provided", reason: "no metrics source is connected to the API" },
   ];
   const thresholds = { run_max_age_seconds: 7 * 24 * H, schedule_max_age_seconds: 300, schedule_grace_seconds: 900, run_window: 25 };
-  if (stage !== "prod") return { stage, evaluated_at: iso(-18), thresholds, integrations, pipelines: [] };
+  // The counts cover the default 24h window (openlakeforge#1319); the state and signals are never windowed.
+  const window = healthWindow(now, null);
+  if (stage !== "prod") return { stage, evaluated_at: iso(-18), window, failed_runs: null, thresholds, integrations, pipelines: [] };
 
   const salesFail = run("sales_orders", "c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21", "FAILURE", 40 * 60, 120);
   const salesOk = run("sales_orders", "7a1f02de-93c4-4f0a-8d55-0b9e4c2a6f10", "SUCCESS", 23 * H);
   const crmOk = run("crm_accounts", "4be0c1a9-2d7f-4c63-a1e8-5f3b9d0e7c42", "SUCCESS", 23 * H + 30 * 60);
   const ledger = run("finance_ledger", "e5d27b8c-0f41-4a9e-b6c3-1d8a2f7e9b05", "SUCCESS", 2 * 24 * H);
   const web = run("web_events", "0d9c3e7a-6b28-4f15-a3d0-8e1c5b2f4a67", "SUCCESS", 25 * 60, 60);
-  const health = (job: string, latest: ReturnType<typeof run>, success: ReturnType<typeof run> | null, failed: number,
+  const health = (job: string, latest: ReturnType<typeof run>, success: ReturnType<typeof run> | null, failed: number | null,
     schedule: { name: string | null; status: string; last_expected_at: string | null }, signals: unknown[]) => ({
-    job, domain: SCOPES[job]?.[0] ?? null, product: SCOPES[job]?.[1] ?? null, state: PROD_PIPELINES.find((p) => p.job === job)!.state, latest_run: latest, last_success: success, failed_runs: failed, schedule,
+    job, domain: SCOPES[job]?.[0] ?? null, product: SCOPES[job]?.[1] ?? null, state: PROD_PIPELINES.find((p) => p.job === job)!.state, latest_run: latest, last_success: success,
+    failed_runs: failed, covered_from: PROD_FAILED_RUNS[job]?.[1] === null ? null : iso(-PROD_FAILED_RUNS[job][1]!), schedule,
     freshness: { last_success_at: success ? new Date(success.ended_at * 1000).toISOString() : null, age_seconds: success ? secs(0) - success.ended_at : null },
     signals,
   });
   return {
-    stage, evaluated_at: iso(-18), thresholds, integrations,
+    // web_events' read stopped short, so the window's own covered_from (which bounds the stage's sum) is set too.
+    stage, evaluated_at: iso(-18), window: healthWindow(now, 6 * 3600), failed_runs: null, thresholds, integrations,
     pipelines: [
-      health("sales_orders", salesFail, salesOk, 1, { name: "sales_orders_daily", status: "running", last_expected_at: iso(-45 * 60) }, [
+      health("sales_orders", salesFail, salesOk, PROD_FAILED_RUNS.sales_orders[0], { name: "sales_orders_daily", status: "running", last_expected_at: iso(-45 * 60) }, [
         signal("execution", "critical", "latest run failed", salesFail, daily),
         signal("latest_success", "healthy", "a successful run is on record", salesOk, daily),
         { ...signal("expected_run", "healthy", "the expected run started", null, 300) },
         signal("freshness", "critical", "no run succeeded since the previous due time plus its grace", salesOk, null),
         signal("quality", "critical", "a blocking quality check failed", salesFail, daily),
       ]),
-      health("crm_accounts", crmOk, crmOk, 0, { name: "crm_accounts_daily", status: "running", last_expected_at: iso(-35 * 60) }, [
+      health("crm_accounts", crmOk, crmOk, PROD_FAILED_RUNS.crm_accounts[0], { name: "crm_accounts_daily", status: "running", last_expected_at: iso(-35 * 60) }, [
         signal("execution", "healthy", "latest run succeeded", crmOk, daily),
         signal("latest_success", "healthy", "a successful run is on record", crmOk, daily),
         { ...signal("expected_run", "critical", "an expected run did not start", null, 300), due: iso(-35 * 60) },
         signal("freshness", "critical", "no run succeeded since the previous due time plus its grace", crmOk, null),
         signal("quality", "healthy", "quality checks passed", crmOk, daily),
       ]),
-      health("finance_ledger", ledger, ledger, 0, { name: "finance_ledger_daily", status: "stopped", last_expected_at: null }, [
+      health("finance_ledger", ledger, ledger, PROD_FAILED_RUNS.finance_ledger[0], { name: "finance_ledger_daily", status: "stopped", last_expected_at: null }, [
         signal("execution", "healthy", "latest run succeeded", ledger, 7 * 24 * H),
         signal("latest_success", "healthy", "a successful run is on record", ledger, 7 * 24 * H),
         signal("expected_run", "disabled", "schedule is stopped", null, 300),
         { ...signal("freshness", "disabled", "schedule is stopped", null, null), observed_at: null },
         signal("quality", "warning", "quality checks warned", ledger, 7 * 24 * H),
       ]),
-      health("web_events", web, web, 0, { name: "web_events_hourly", status: "running", last_expected_at: iso(-25 * 60) }, [
+      health("web_events", web, web, PROD_FAILED_RUNS.web_events[0], { name: "web_events_hourly", status: "running", last_expected_at: iso(-25 * 60) }, [
         signal("execution", "healthy", "latest run succeeded", web, H + 900),
         signal("latest_success", "healthy", "a successful run is on record", web, H + 900),
         signal("expected_run", "healthy", "the expected run started", null, 300),

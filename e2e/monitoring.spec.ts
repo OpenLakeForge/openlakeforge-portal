@@ -63,6 +63,11 @@ test("PROD's needs-attention table names each failing signal, worst first, and t
   await expect(pipelines(page).getByRole("row")).toHaveCount(5);
   await expect(pipelines(page).getByRole("row", { name: /finance_ledger/ })).toContainText("finance_ledger_daily · stopped");
   await expect(pipelines(page).getByRole("row", { name: /web_events/ })).toContainText("Healthy");
+  // Failed runs are counted in the API's 24h window: an unreadable count is Unknown, never 0, and a read that stopped
+  // short of the window says where its count starts.
+  await expect(pipelines(page).getByRole("row", { name: /sales_orders/ })).toContainText("1 failed in last 24h");
+  await expect(pipelines(page).getByRole("row", { name: /crm_accounts/ })).toContainText("the count of failed runs could not be read");
+  await expect(pipelines(page).getByRole("row", { name: /web_events/ })).toContainText(/0 failed since .*the run read stopped short of the last 24h/);
   await expect(page.getByRole("region", { name: "Pipelines summary" })).toContainText("1 failed of 4 · 1 missed");
 });
 

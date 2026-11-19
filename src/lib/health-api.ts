@@ -31,10 +31,20 @@ export type ServiceHealth = {
   /** The component's own evidence of its last success (`log-archive.newest-object`, `quality-sync.publication`); null when there is none. */
   last_success_at: string | null;
 };
+/** The range the health routes' counts cover, ending now (openlakeforge#1319). */
+export type HealthRange = "1h" | "6h" | "24h" | "7d";
+/** The span the counts cover: runs created after `from`, up to `to`. `covered_from` is set when the API's bounded
+ * Dagster read stopped short of `from`: the counts then start there, never at the window's start. A state and its
+ * signals are never windowed. */
+export type HealthWindow = { range: string; from: string; to: string; covered_from: string | null };
 export type StageHealth = {
   stage: string;
   state: HealthState;
   evaluated_at: string;
+  /** Null from an API before openlakeforge#1319, which counts no window. */
+  window?: HealthWindow | null;
+  /** Failed runs over every pipeline in the window; null when any count could not be read, never 0. */
+  failed_runs?: number | null;
   pipelines: { job: string; state: HealthState }[];
   services: ServiceHealth[];
   integrations: Integration[];
@@ -70,8 +80,12 @@ export type PipelineHealth = {
   state: HealthState;
   latest_run: Run | null;
   last_success: Run | null;
-  /** Failed runs among the `thresholds.run_window` most recent. A missed run is the `expected_run` signal. */
-  failed_runs: number;
+  /** Failed runs created in the window (openlakeforge#1319), or, from an older API with no `window`, among the
+   * `thresholds.run_window` most recent. Null when the count could not be read, never 0. A missed run is the
+   * `expected_run` signal. */
+  failed_runs: number | null;
+  /** Set when this job's bounded read did not reach back to the window's start: `failed_runs` counts from here on. */
+  covered_from: string | null;
   schedule: { name: string | null; status: "running" | "stopped" | "absent"; last_expected_at: string | null };
   freshness: { last_success_at: string | null; age_seconds: number | null };
   signals: HealthSignal[];
@@ -79,6 +93,10 @@ export type PipelineHealth = {
 export type PipelinesHealth = {
   stage: string;
   evaluated_at: string;
+  /** Null from an API before openlakeforge#1319: its counts are over the last `thresholds.run_window` runs. */
+  window: HealthWindow | null;
+  /** Failed runs over every pipeline in the window; null when any count could not be read, never 0. */
+  failed_runs: number | null;
   thresholds: { run_max_age_seconds: number; schedule_max_age_seconds: number; schedule_grace_seconds: number; run_window: number };
   integrations: Integration[];
   pipelines: PipelineHealth[];
@@ -149,10 +167,14 @@ export async function getPipelinesHealth(stage: string, signal?: AbortSignal): P
   // a crash of the whole view and never a partial answer.
   if (!isPipelinesHealth(body)) throw new ApiError(200, explain(500, stage));
   // `due`, `domain` and `product` are additive (#1272, #1273): an API from before them answers none, which is null.
+  // `window`, `failed_runs` (stage) and `covered_from` are additive too (#1319): absent is an older API, read as null.
   return {
     ...body,
+    window: body.window ?? null,
+    failed_runs: body.failed_runs ?? null,
     pipelines: body.pipelines.map((p) => ({
-      ...p, domain: p.domain ?? null, product: p.product ?? null, signals: p.signals.map((s) => ({ ...s, due: s.due ?? null })),
+      ...p, domain: p.domain ?? null, product: p.product ?? null, covered_from: p.covered_from ?? null,
+      signals: p.signals.map((s) => ({ ...s, due: s.due ?? null })),
     })),
   };
 }
@@ -172,10 +194,11 @@ const isSignal = (v: unknown) =>
   isObject(v) && isText(v.kind) && STATES.has(v.state) && isText(v.reason) && isTextOrNull(v.run) && isTextOrNull(v.observed_at) && isTextOrNull(v.expires_at)
   && isOptional(isTextOrNull)(v.due);
 const isPipeline = (v: unknown) =>
-  isObject(v) && isText(v.job) && isOptional(isTextOrNull)(v.domain) && isOptional(isTextOrNull)(v.product) && STATES.has(v.state) && isNumber(v.failed_runs) && isRunOrNull(v.latest_run) && isRunOrNull(v.last_success)
+  isObject(v) && isText(v.job) && isOptional(isTextOrNull)(v.domain) && isOptional(isTextOrNull)(v.product) && STATES.has(v.state) && isNumberOrNull(v.failed_runs) && isOptional(isTextOrNull)(v.covered_from) && isRunOrNull(v.latest_run) && isRunOrNull(v.last_success)
   && isObject(v.schedule) && ["running", "stopped", "absent"].includes(v.schedule.status as string) && isTextOrNull(v.schedule.name) && isTextOrNull(v.schedule.last_expected_at)
   && isObject(v.freshness) && isTextOrNull(v.freshness.last_success_at) && isNumberOrNull(v.freshness.age_seconds)
   && Array.isArray(v.signals) && v.signals.every(isSignal);
+const isWindow = (v: unknown) => isObject(v) && isText(v.range) && isText(v.from) && isText(v.to) && isTextOrNull(v.covered_from);
 const SOURCE_STATUS = new Set<unknown>(["available", "disabled", "unavailable", "not_provided"]);
 const isIntegration = (v: unknown) => isObject(v) && isText(v.name) && SOURCE_STATUS.has(v.status) && isText(v.reason);
 const isService = (v: unknown) =>
@@ -192,7 +215,8 @@ export function isMonitoringCapabilities(body: unknown): body is MonitoringCapab
 /** Whether `body` is a StageHealth with every nested field the page reads. */
 export function isStageHealth(body: unknown): body is StageHealth {
   return isObject(body) && isText(body.stage) && STATES.has(body.state) && isText(body.evaluated_at)
-    && Array.isArray(body.pipelines) && body.pipelines.every((p) => isObject(p) && isText(p.job) && STATES.has(p.state))
+    && isOptional(isWindow)(body.window) && isOptional(isNumberOrNull)(body.failed_runs)
+    && Array.isArray(body.pipelines) && body.pipelines.every((p) => isObject(p) && isText(p.job) && STATES.has(p.state) && isOptional(isNumberOrNull)(p.failed_runs))
     && Array.isArray(body.services) && body.services.every(isService)
     && Array.isArray(body.integrations) && body.integrations.every(isIntegration);
 }
@@ -201,6 +225,7 @@ export function isStageHealth(body: unknown): body is StageHealth {
 export function isPipelinesHealth(body: unknown): body is PipelinesHealth {
   return isObject(body) && isText(body.stage) && isText(body.evaluated_at)
     && isObject(body.thresholds) && isNumber(body.thresholds.run_window)
+    && isOptional(isWindow)(body.window) && isOptional(isNumberOrNull)(body.failed_runs)
     && Array.isArray(body.integrations) && body.integrations.every(isIntegration)
     && Array.isArray(body.pipelines) && body.pipelines.every(isPipeline);
 }
