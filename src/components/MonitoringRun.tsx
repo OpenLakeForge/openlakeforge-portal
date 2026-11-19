@@ -209,10 +209,15 @@ function Quality({ f, quality, stage, runId, now, retry }: { f?: RunFailure; qua
   const q = f && source(f, "quality");
   const rows = f?.rows;
   const entry = quality.status === "ok" && f ? quality.data.pipelines.find((p) => p.job === f.job) : undefined;
-  const dagster = quality.status === "ok" ? absent(quality.data.integrations.find((i) => i.name === "dagster")) : undefined;
+  // As the overview's quality(): a Dagster that could not be read, or a manifest reader that is not there, gives no
+  // counts at all, and says why, rather than reading as a pipeline with no evidence.
+  const missing = quality.status === "ok"
+    ? (["dagster", "quality"] as const).map((name) => quality.data.integrations.find((i) => i.name === name) ?? { name, status: "unavailable" as const, reason: `the API did not say whether ${name} could be read` })
+        .find((i) => absent(i))
+    : undefined;
   let counts;
   if (quality.status !== "ok") counts = <Gap what="Quality counts" part={quality} retry={retry} />;
-  else if (dagster) counts = <Gap what="Quality counts" part={{ status: "off", state: dagster, reason: quality.data.integrations.find((i) => i.name === "dagster")?.reason ?? "" }} />;
+  else if (missing) counts = <Gap what="Quality counts" part={{ status: "off", state: absent(missing)!, reason: missing.reason }} />;
   else if (!entry) counts = <p className="mon-why">The API reports no quality evidence for this pipeline.</p>;
   else if (entry.run_id !== runId) {
     counts = (
@@ -325,6 +330,13 @@ export function MonitoringRun({ stage, runId, dagster }: { stage: string; runId:
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
   const access = caps.status === "ok" ? caps.data.stages.find((s) => s.stage === stage) : undefined;
 
+  // The clock advances as on the overview, so a healthy pipeline signal that expires while the page is open turns
+  // Unknown: evidence past its expiry is never shown as current.
+  useEffect(() => {
+    const tick = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(tick);
+  }, []);
+
   useEffect(() => {
     const ctl = new AbortController();
     const deadline = setTimeout(() => { ctl.abort(); setCaps({ status: "error", error: timedOut(DEADLINE_MS) }); }, DEADLINE_MS);
@@ -422,7 +434,10 @@ export function MonitoringRun({ stage, runId, dagster }: { stage: string; runId:
     );
   }
 
-  const started = run ? run.started_at ?? run.created_at : undefined;
+  // Only Dagster's own start time is a start: a run with none has not started, or its start is unknown. Its creation
+  // time picks the log archive's day (runDay) and is never shown, or used for a duration, as a start.
+  const started = run?.started_at ?? undefined;
+  const notYet = run && run.started_at === null && ["QUEUED", "NOT_STARTED", "STARTING"].includes(run.status);
   return (
     <>
       <nav aria-label="Breadcrumb">
@@ -456,7 +471,9 @@ export function MonitoringRun({ stage, runId, dagster }: { stage: string; runId:
       {snap && (
         <dl className="run-facts">
           <Fact term="Domain · product">{scope ?? <span className="mon-why">Not known: {scopeWhy}</span>}</Fact>
-          <Fact term="Started">{started !== undefined ? when(started, now) : <span className="mon-why">Not known: {snap.run.status === "error" ? snap.run.error.message : "no start time"}</span>}</Fact>
+          <Fact term="Started">{started !== undefined ? when(started, now)
+            : notYet ? <span className="mon-why">Not started</span>
+            : <span className="mon-why">{run ? "Start unknown: Dagster recorded no start time for this run" : `Not known: ${snap.run.status === "error" ? snap.run.error.message : "no start time"}`}</span>}</Fact>
           <Fact term="Ended">{run?.ended_at != null ? when(run.ended_at, now) : <span className="mon-why">{run ? "Not ended, or no end time recorded" : "Not known"}</span>}</Fact>
           <Fact term="Pipeline now">{shown ? <StatusBadge state={shown} /> : <span className="mon-why">Not known</span>}</Fact>
         </dl>

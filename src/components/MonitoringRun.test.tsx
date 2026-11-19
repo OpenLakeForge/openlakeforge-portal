@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -276,6 +276,55 @@ describe("missing fields", () => {
     const now = screen.getByText("Pipeline now").closest("div")!;
     expect(now).toHaveTextContent("Unknown");
     expect(now).not.toHaveTextContent("Healthy");
+  });
+});
+
+describe("review fixes", () => {
+  const fact = (term: string) => screen.getByText(term, { selector: "dt" }).closest("div")!;
+
+  it("shows a queued run as not started, never its creation as a start, and no duration", async () => {
+    api({ run: () => ({ body: { ...runBody, status: "QUEUED", started_at: null, ended_at: null } }), failure: () => ({ body: failureOf({ status: "QUEUED", steps: [] }) }) });
+    open();
+    await screen.findByText(/Dagster recorded no failed step/);
+    expect(fact("Started")).toHaveTextContent("Not started");
+    expect(document.querySelector(".f-sub")).not.toHaveTextContent("started ");
+    expect(document.querySelector(".f-sub")).toHaveTextContent("is queued");
+    expect(document.querySelector(".f-sub")).not.toHaveTextContent("after");
+  });
+
+  it("says the start is unknown for an ended run with no start, and computes no duration from creation", async () => {
+    api({ run: () => ({ body: { ...runBody, started_at: null } }) });
+    open();
+    await screen.findByText("SchemaMismatchError");
+    expect(fact("Started")).toHaveTextContent("Start unknown: Dagster recorded no start time for this run");
+    expect(document.querySelector(".f-sub")).toHaveTextContent(/^Pipeline sales_orders · failed$/);
+    // The creation time still picks the log archive's day.
+    expect(await screen.findByRole("region", { name: "Run log lines" })).toBeInTheDocument();
+  });
+
+  it("turns Pipeline now Unknown once its healthy signal expires while the page is open", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const expires = new Date(Date.now() + 3_000).toISOString();
+    api({ pipes: () => ({ body: pipesOf([pipelineOf({ state: "healthy", signals: [{ ...pipelineOf().signals[0], state: "healthy", expires_at: expires }] })]) }) });
+    open();
+    await screen.findByText("SchemaMismatchError");
+    expect(fact("Pipeline now")).toHaveTextContent("Healthy");
+    await act(() => vi.advanceTimersByTimeAsync(6_000));
+    expect(fact("Pipeline now")).toHaveTextContent("Unknown");
+    expect(fact("Pipeline now")).not.toHaveTextContent("Healthy");
+  });
+
+  it.each([
+    ["unavailable", "unknown", "the stage's quality manifests could not be read"],
+    ["not_provided", "disabled", "no quality manifest reader is configured for this stage"],
+  ] as const)("shows a %s quality reader in the API's words, not as no evidence", async (status, state, reason) => {
+    const body = { ...qualityOf(), pipelines: [], integrations: [{ name: "dagster", status: "available", reason: "read" }, { name: "quality", status, reason }] };
+    api({ quality: () => ({ body }) });
+    open();
+    await screen.findByText("SchemaMismatchError");
+    expect(card("Data quality")).toHaveTextContent(reason);
+    expect(card("Data quality").querySelector(`.mon-badge[data-state="${state}"]`)).not.toBeNull();
+    expect(card("Data quality")).not.toHaveTextContent("no quality evidence");
   });
 });
 
