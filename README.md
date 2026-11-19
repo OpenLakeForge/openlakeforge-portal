@@ -70,8 +70,12 @@ new folder, rename and delete really change the listings (they reset when the de
 to see the portal as a viewer, make `GET /api/v1/file-capabilities` return `{"stages": []}` (the
 browser tests do this with `page.route`) and the Files item disappears.
 
-The Monitoring page (`/monitoring`) reads `GET /api/v1/stages/{stage}/health` and
-`GET /api/v1/stages/{stage}/health/pipelines` from the same mock, together, within one 10 s deadline. `prod` needs
+The Monitoring page (`/monitoring`) first reads `GET /api/v1/monitoring-capabilities`: it offers only the stages
+listed there, and each panel calls its route only when the role has that operation and the stage has its source.
+It then reads `GET /api/v1/stages/{stage}/health` and
+`GET /api/v1/stages/{stage}/health/pipelines` from the same mock, together, within one 10 s deadline. Service rows
+are grouped by service (the worst row decides), and the banner shows the log archive's last durable write and the
+last quality publication, or "unknown" when the API has none. `prod` needs
 attention: `sales_orders` failed with a failed blocking quality check, `crm_accounts` missed its run,
 `finance_ledger`'s schedule is stopped and its last run warned on quality, `web_events` is healthy, the log spool is
 past its limit and metrics are not connected. "Needs attention" lists each warning or critical pipeline signal in
@@ -79,6 +83,15 @@ the API's words; the Pipelines table lists every job. `dev` reads unknown becaus
 state is ever shown green: an unreachable API, an expired probe or pipeline signal, or a missing source reads Unknown
 or Disabled. When only the pipelines read fails, the stage's own answer stays and the pipelines read Unknown, with
 Retry and the last good snapshot time.
+
+Add `mock=<scenario>` to the page's address (`/monitoring?stage=prod&mock=limited`) to see another role or state;
+the mock reads it from the request's Referer:
+
+| `mock=` | What it shows |
+| --- | --- |
+| `no-access` | `monitoring-capabilities` lists no stage (an analyst): "No monitoring access", and no stage route is called. |
+| `limited` | The role may call `get_stage_health` only: no pipelines read is made, and the panels say why. |
+| `unauthorized` | The capabilities offer the stage but its routes answer 403: the API's words, as Disabled, with no Retry. |
 
 ## Routes are a deploy-time parameter
 

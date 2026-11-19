@@ -8,19 +8,20 @@ import {
 } from "../lib/health-api";
 import { StatusBadge } from "./StatusBadge";
 
-/** The pipelines read of one snapshot: its answer, or why there is none. */
-export type PipesLoad = { status: "ok"; data: PipelinesHealth } | { status: "error"; error: ApiError };
+/** One read of a snapshot: its answer, why it failed, or why it was not made (`off`: no source, or not the role's). */
+export type Part<T> = { status: "ok"; data: T } | { status: "error"; error: ApiError } | { status: "off"; state: HealthState; reason: string };
+export type PipesLoad = Part<PipelinesHealth>;
 
 type Signal = HealthSignal & { shown: HealthState };
 export type Pipeline = Omit<PipelineHealth, "signals"> & { signals: Signal[]; shown: HealthState };
 /** What the page knows about pipelines: their list, or a gap with its reason and the state that gap reads as. */
 export type Pipes =
   | { ok: true; pipelines: Pipeline[]; runWindow: number; failed: number; missed: number; quality: { warning: number; critical: number }; expired: number }
-  | { ok: false; state: HealthState; reason: string; error?: ApiError };
+  | { ok: false; state: HealthState; reason: string; error?: ApiError; off?: boolean };
 
 const denied = (e: ApiError) => e.status === 401 || e.status === 403 || e.status === 404;
 /** An integration that gives no evidence: disabled on purpose, or unknown because it could not be read. */
-export const absent = (i?: Integration): HealthState | undefined =>
+export const absent = (i?: Pick<Integration, "status">): HealthState | undefined =>
   !i || i.status === "available" ? undefined : i.status === "unavailable" ? "unknown" : "disabled";
 
 const of = (p: Pipeline, kind: HealthSignal["kind"]) => p.signals.find((s) => s.kind === kind);
@@ -28,6 +29,7 @@ const of = (p: Pipeline, kind: HealthSignal["kind"]) => p.signals.find((s) => s.
 /** Reads the pipelines answer at `now`: an expired healthy signal reads unknown, and so does the pipeline it is in. */
 export function pipes(load: PipesLoad, now: number): Pipes {
   if (load.status === "error") return { ok: false, state: denied(load.error) ? "disabled" : "unknown", reason: load.error.message, error: load.error };
+  if (load.status === "off") return { ok: false, state: load.state, reason: load.reason, off: true };
   const dagster = load.data.integrations.find((i) => i.name === "dagster");
   const gap = absent(dagster);
   if (gap) return { ok: false, state: gap, reason: dagster?.reason ?? "Dagster could not be read" };
