@@ -6,6 +6,8 @@ const services = (page: Page) => page.getByRole("region", { name: "Service healt
 const row = (page: Page, name: string) => services(page).getByRole("row").filter({ has: page.getByRole("rowheader", { name, exact: true }) });
 const attention = (page: Page) => page.getByRole("region", { name: "What needs attention" });
 const pipelines = (page: Page) => page.getByRole("region", { name: "Pipeline health" });
+const incidents = (page: Page) => page.getByRole("region", { name: "Open alert incidents" });
+const quality = (page: Page) => page.getByRole("region", { name: "Quality by pipeline" });
 
 /** Presses Tab until `target` has focus: the keyboard alone reaches it. */
 async function tabTo(page: Page, target: ReturnType<Page["getByRole"]>, max = 15) {
@@ -77,6 +79,40 @@ test("a pipelines read that fails reads unknown with Retry, and the stage's own 
   await expect(pipelines(page).getByRole("row")).toHaveCount(5);
 });
 
+test("PROD shows quality counts per product, and every open incident with its delivery in words", async ({ page }) => {
+  await page.goto("/monitoring?stage=prod");
+  await expect(page.getByRole("region", { name: "Data quality summary" })).toContainText("2 error 3 warn · 28 passed");
+  await expect(page.getByRole("region", { name: "Data quality summary" })).toContainText("counts from 3 of 4 pipelines");
+  await expect(quality(page).getByRole("row", { name: /crm · crm_accounts/ })).toContainText("Counts unknown");
+  await expect(quality(page).getByRole("row", { name: /finance · finance_ledger/ })).toContainText("Incomplete");
+  await expect(incidents(page).getByRole("row")).toHaveCount(6);
+  for (const word of ["Delivered", "Pending", "Undeliverable", "Unrouted", "Unknown"]) {
+    await expect(incidents(page).locator(".mon-delivery", { hasText: new RegExp(`^${word}$`) })).toHaveCount(1);
+  }
+  await expect(page.getByRole("button", { name: /acknowledge/i })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Alerts summary" })).toContainText("5 open incidents");
+});
+
+test("DEV's stale alert evaluator reads stale, and its quality is not configured", async ({ page }) => {
+  const reads: string[] = [];
+  page.on("request", (r) => reads.push(r.url()));
+  await page.goto("/monitoring?stage=dev");
+  await expect(page.getByRole("note")).toContainText("Stale: the alert evaluator has not run since");
+  await expect(page.getByRole("region", { name: "Data quality summary" })).toContainText("no quality manifest reader is configured for this stage");
+  expect(reads.filter((u) => u.endsWith("/health/quality"))).toEqual([]);
+});
+
+for (const [scenario, row, words] of [
+  ["unavailable", /Incidents cannot be read/, "the alert evaluator has not written a state yet"],
+  ["empty", /No open incidents/, "No open incidents."],
+  ["not-provided", /Alert incidents are not available/, "no alert evaluator, or no key to read its state, is configured"],
+] as const) {
+  test(`incidents read as ${scenario}, never as a quiet stage`, async ({ page }) => {
+    await page.goto(`/monitoring?stage=prod&mock=${scenario}`);
+    await expect(incidents(page).getByRole("row", { name: row })).toContainText(words);
+  });
+}
+
 test("a role with no monitoring access sees a clear state and no health is read", async ({ page }) => {
   const reads: string[] = [];
   page.on("request", (r) => { if (r.url().includes("/api/v1/stages/")) reads.push(r.url()); });
@@ -124,7 +160,7 @@ for (const colorScheme of ["dark", "light"] as const) {
     await expect(pipelines(page)).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
     await expect(nav(page).getByRole("link", { name: "Monitoring" })).toBeVisible();
-    for (const region of [services(page), attention(page), pipelines(page)]) {
+    for (const region of [services(page), attention(page), pipelines(page), incidents(page), quality(page)]) {
       await expect(region).toHaveAttribute("tabindex", "0"); // keyboard users can scroll it
     }
   });
@@ -135,6 +171,10 @@ test("screenshots: monitoring", async ({ page }) => {
     await page.goto("/monitoring?stage=prod");
     await expect(row(page, "Trino")).toBeVisible();
     await expect(pipelines(page)).toBeVisible();
+  });
+  await shoot(page, "monitoring-unavailable", async () => {
+    await page.goto("/monitoring?stage=prod&mock=unavailable");
+    await expect(incidents(page)).toContainText("Incidents cannot be read");
   });
   await shoot(page, "monitoring-dev", async () => {
     await page.goto("/monitoring?stage=dev");
