@@ -3,15 +3,22 @@ import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getStageHealth, type HealthSignal, type HealthState, type PipelineHealth, type PipelinesHealth, type StageHealth } from "../lib/health-api";
+import {
+  getStageHealth, type HealthSignal, type HealthState, type MonitoringCapabilities, type MonitoringStage, type PipelineHealth, type PipelinesHealth, type StageHealth,
+} from "../lib/health-api";
 import { DEADLINE_MS, Monitoring } from "./Monitoring";
 import { StatusBadge } from "./StatusBadge";
 
 const soon = () => new Date(Date.now() + 40_000).toISOString();
-const svc = (component: string, state: HealthState, over = {}) => ({
-  component, source: "x", state, reason: `${component} says ${state}`,
-  observed_at: new Date().toISOString(), expires_at: soon(), max_age_seconds: 60, ...over,
-});
+const SERVICE_NAMES: Record<string, string> = { trino: "Trino", polaris: "Polaris", dagster: "Dagster", "log-archive": "Log archive", "quality-sync": "Quality sync" };
+const svc = (component: string, state: HealthState, over = {}) => {
+  const service = component.split(".")[0];
+  return {
+    component, display_name: `${SERVICE_NAMES[service]} ${component.split(".")[1]}`, service, service_display_name: SERVICE_NAMES[service],
+    source: "x", state, reason: `${component} says ${state}`,
+    observed_at: new Date().toISOString(), expires_at: soon(), max_age_seconds: 60, last_success_at: null, ...over,
+  };
+};
 const available = ["dagster", "services", "quality"].map((name) => ({ name, status: "available", reason: "read" }));
 const health = (over: Partial<StageHealth> = {}): StageHealth => ({
   stage: "prod", state: "healthy", evaluated_at: new Date().toISOString(),
@@ -40,13 +47,29 @@ const pipes = (over: Partial<PipelinesHealth> = {}): PipelinesHealth => ({
   thresholds: { run_max_age_seconds: 604800, schedule_max_age_seconds: 300, schedule_grace_seconds: 900, run_window: 25 },
   integrations: available as PipelinesHealth["integrations"], pipelines: [pipeline("sales_orders")], ...over,
 });
+const ALL_OPS = ["get_stage_health", "get_stage_service_health", "list_pipeline_health", "get_stage_quality_health", "list_logs", "list_alert_incidents"];
+const SOURCES = ["dagster", "services", "quality", "quality-sync", "logs", "metrics", "alerts"] as const;
+/** One stage a role may monitor: every route and every source, unless `over` says otherwise. */
+const access = (stage: string, over: Partial<MonitoringStage> = {}): MonitoringStage => ({
+  stage, operations: ALL_OPS, capabilities: SOURCES.map((name) => ({ name, status: "available", reason: `${name} is configured` })), ...over,
+});
+const caps = (...stages: MonitoringStage[]): MonitoringCapabilities => ({ stages: stages.length ? stages : [access("dev"), access("prod")] });
+const CAPS_URL = "/api/v1/monitoring-capabilities";
+/** Wraps a fetch so the capabilities route answers every stage in full, as for a platform admin. */
+const withCaps = <F extends (input: string, init?: RequestInit) => Promise<unknown>>(f: F) => (input: string, init?: RequestInit) =>
+  input === CAPS_URL ? Promise.resolve(new Response(JSON.stringify(caps()))) : f(input, init);
 type Reply = { status?: number; body?: unknown } | "down";
 
-/** Answers /health with `reply` and /health/pipelines with `pipesReply` (healthy pipelines unless given). */
-function api(reply: (stage: string) => Reply, pipesReply: (stage: string) => Reply = (stage) => ({ body: pipes({ stage }) })) {
+/** Answers /health with `reply`, /health/pipelines with `pipesReply` (healthy pipelines unless given) and the
+ * capabilities with `capsReply` (every stage in full unless given). */
+function api(
+  reply: (stage: string) => Reply,
+  pipesReply: (stage: string) => Reply = (stage) => ({ body: pipes({ stage }) }),
+  capsReply: () => Reply = () => ({ body: caps() }),
+) {
   const fetch = vi.fn(async (input: string) => {
     const [, stage = "", sub] = /stages\/([^/]+)\/health(\/pipelines)?$/.exec(input) ?? [];
-    const r = sub ? pipesReply(stage) : reply(stage);
+    const r = input === CAPS_URL ? capsReply() : sub ? pipesReply(stage) : reply(stage);
     if (r === "down") throw new TypeError("Failed to fetch");
     return new Response(JSON.stringify(r.body ?? {}), { status: r.status ?? 200 });
   });
@@ -358,7 +381,7 @@ describe("unavailable and absent", () => {
 
   it("drops an answer whose body was still arriving when the stage changed", async () => {
     // dev's headers arrive, then its body only ends when the request is aborted, as fetch does on a switch.
-    vi.stubGlobal("fetch", vi.fn(async (input: string, init: RequestInit = {}) => {
+    vi.stubGlobal("fetch", vi.fn(withCaps(async (input: string, init: RequestInit = {}) => {
       // prod answers a little later, so a stale dev result would render on its own first.
       if (input.endsWith("/prod/health")) return new Promise((done) => setTimeout(() => done(new Response(JSON.stringify(health()))), 100));
       if (input.endsWith("/prod/health/pipelines")) return new Response(JSON.stringify(pipes()));
@@ -366,7 +389,7 @@ describe("unavailable and absent", () => {
         ok: true, status: 200,
         json: () => new Promise((_, reject) => init.signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))),
       } as unknown as Response;
-    }));
+    })));
     open(["dev", "prod"], "/monitoring?stage=dev");
     await screen.findByText("Reading DEV health…");
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Stage" }), "prod");
@@ -416,9 +439,10 @@ describe("a health read that never answers", () => {
 
   it("on a first visit reads Unknown with Retry at the deadline, then refreshes only after that", async () => {
     vi.useFakeTimers();
-    const fetch = vi.fn(stall);
+    const fetch = vi.fn(withCaps(stall));
     vi.stubGlobal("fetch", fetch);
     open();
+    await advance(0); // the capabilities answer; the snapshot and its deadline start then
     await advance(DEADLINE_MS - 1);
     expect(screen.getByText("Reading PROD health…")).toBeInTheDocument();
     await advance(1);
@@ -433,9 +457,10 @@ describe("a health read that never answers", () => {
 
   it("shows the stage's answer and reads only the pipelines as unreachable when they alone stall", async () => {
     vi.useFakeTimers();
-    vi.stubGlobal("fetch", vi.fn((input: string, init?: RequestInit) =>
-      input.endsWith("/pipelines") ? stall(input, init) : Promise.resolve(new Response(JSON.stringify(health())))));
+    vi.stubGlobal("fetch", vi.fn(withCaps((input: string, init?: RequestInit) =>
+      input.endsWith("/pipelines") ? stall(input, init) : Promise.resolve(new Response(JSON.stringify(health()))))));
     open();
+    await advance(0); // the capabilities answer; the snapshot and its deadline start then
     await advance(DEADLINE_MS - 1);
     expect(screen.getByText("Reading PROD health…")).toBeInTheDocument();
     await advance(1);
@@ -447,10 +472,10 @@ describe("a health read that never answers", () => {
   it("after a good snapshot, drops it for Unknown when a refresh stalls", async () => {
     vi.useFakeTimers();
     let calls = 0;
-    vi.stubGlobal("fetch", vi.fn((input: string, init?: RequestInit) => {
+    vi.stubGlobal("fetch", vi.fn(withCaps((input: string, init?: RequestInit) => {
       if (input.endsWith("/pipelines")) return Promise.resolve(new Response(JSON.stringify(pipes())));
       return calls++ === 0 ? Promise.resolve(new Response(JSON.stringify(health()))) : stall(input, init);
-    }));
+    })));
     open();
     await advance(0);
     expect(screen.getByRole("heading", { level: 2, name: "Healthy PROD is healthy" })).toBeInTheDocument();
@@ -461,5 +486,143 @@ describe("a health read that never answers", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Last good snapshot");
     expect(screen.queryByText("Healthy")).toBeNull();
     expect(screen.queryByRole("region", { name: "Service health" })).toBeNull();
+  });
+});
+
+describe("monitoring capabilities", () => {
+  const urls = (fetch: ReturnType<typeof vi.fn>) => fetch.mock.calls.map(([u]) => u as string);
+
+  it("shows a clear no-access state for a role with no stage, and reads no health", async () => {
+    const fetch = api(() => ({ body: health() }), undefined, () => ({ body: { stages: [] } }));
+    open();
+    expect(await screen.findByText(/Your role may not monitor any stage/)).toBeInTheDocument();
+    expect(screen.getByText("No monitoring access")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Stage" })).toBeNull();
+    expect(urls(fetch)).toEqual([CAPS_URL]);
+  });
+
+  it("offers only the stages the capabilities list", async () => {
+    api((stage) => ({ body: health({ stage }) }), undefined, () => ({ body: caps(access("dev")) }));
+    open(["dev", "prod"], "/monitoring");
+    expect(await screen.findByRole("heading", { name: "Healthy DEV is healthy" })).toBeInTheDocument();
+    expect(within(screen.getByRole("combobox", { name: "Stage" })).getAllByRole("option").map((o) => o.textContent)).toEqual(["DEV"]);
+  });
+
+  it("refuses a deployed stage the role may not monitor without calling any of its routes", async () => {
+    const fetch = api(() => ({ body: health() }), undefined, () => ({ body: caps(access("dev")) }));
+    open(["dev", "prod"], "/monitoring?stage=prod");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Your role has no monitoring access on stage PROD.");
+    expect(banner()).toHaveTextContent("Disabled");
+    expect(screen.queryByRole("button", { name: /Retry/ })).toBeNull();
+    expect(urls(fetch).filter((u) => u.includes("/prod/"))).toEqual([]);
+  });
+
+  it("does not read pipelines for a role without list_pipeline_health, and says why", async () => {
+    const fetch = api(() => ({ body: health() }), undefined, () => ({ body: caps(access("prod", { operations: ["get_stage_health"] })) }));
+    open();
+    expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument(); // /health's rollup stands
+    expect(attentionRow("Pipeline health is not available")).toHaveTextContent("Your role may not read pipeline health on stage PROD.");
+    expect(attentionRow("Pipeline health is not available")).toHaveTextContent("Disabled");
+    expect(screen.queryByRole("button", { name: /Retry/ })).toBeNull();
+    expect(urls(fetch).some((u) => u.endsWith("/pipelines"))).toBe(false);
+  });
+
+  it("does not read the stage health for a role without get_stage_health, and keeps the panels it may read", async () => {
+    const fetch = api(() => ({ body: health() }), undefined, () => ({ body: caps(access("prod", { operations: ["list_pipeline_health"] })) }));
+    open();
+    expect(await screen.findByRole("heading", { level: 2, name: "Disabled PROD health is not available" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Pipeline health" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Service health" })).toBeNull();
+    expect(healthCalls(fetch)).toEqual([]);
+  });
+
+  it("does not read pipelines on a stage whose Dagster the capabilities call disabled", async () => {
+    const off = { name: "dagster" as const, status: "disabled" as const, reason: "no Dagster is configured for this stage" };
+    const integrations = health().integrations.map((i) => (i.name === "dagster" ? off : i));
+    const capabilities = access("prod").capabilities.map((c) => (c.name === "dagster" ? off : c));
+    const fetch = api(() => ({ body: health({ pipelines: [], integrations }) }), undefined, () => ({ body: caps(access("prod", { capabilities })) }));
+    open();
+    expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
+    expect(screen.getByText(/no Dagster on this stage/)).toBeInTheDocument();
+    expect(attentionRow("Pipeline health is not available")).toHaveTextContent("no Dagster is configured for this stage");
+    expect(urls(fetch).some((u) => u.endsWith("/pipelines"))).toBe(false);
+  });
+
+  it("shows service probes the capabilities call not configured as Disabled, whatever /health lists", async () => {
+    const capabilities = access("prod").capabilities.map((c) => (c.name === "services" ? { ...c, status: "disabled" as const, reason: "no service probes are configured" } : c));
+    api(() => ({ body: health() }), undefined, () => ({ body: caps(access("prod", { capabilities })) }));
+    open();
+    await screen.findByRole("heading", { name: /PROD/ });
+    expect(serviceRow("Service probes")).toHaveTextContent("Disabled");
+    expect(serviceRow("Service probes")).toHaveTextContent("no service probes are configured");
+    expect(within(screen.getByRole("region", { name: "Service health" })).queryByText("Trino")).toBeNull();
+  });
+
+  it.each([
+    ["a 503", { status: 503, body: {} }, "The monitoring API failed (503)"],
+    ["a malformed answer", { body: { stages: [{ stage: "prod", operations: "all" }] } }, "The monitoring API failed (500)"],
+    ["a capability with no status", { body: { stages: [{ stage: "prod", operations: [], capabilities: [{ name: "dagster", reason: "x" }] }] } }, "The monitoring API failed (500)"],
+  ] as const)("reads unknown, never green, on %s, and Retry reads the capabilities again", async (_, reply, words) => {
+    let bad = true;
+    const fetch = api(() => ({ body: health() }), undefined, () => (bad ? reply : { body: caps() }));
+    open();
+    expect(await screen.findByRole("heading", { level: 2, name: "Unknown Monitoring status unknown" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(words);
+    expect(healthCalls(fetch)).toEqual([]);
+    bad = false;
+    await userEvent.click(screen.getByRole("button", { name: /Retry/ }));
+    expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
+  });
+});
+
+describe("services by service", () => {
+  it("groups probe rows by service, reads each group's worst row, and names them as the API does", async () => {
+    api(() => ({
+      body: health({
+        services: [
+          svc("dagster.read-api", "unknown", { display_name: "Dagster API", reason: "the API did not answer" }),
+          svc("dagster.workloads", "healthy", { display_name: "Dagster workloads", reason: "pods ready" }),
+          svc("trino.readiness", "healthy"),
+        ],
+      }),
+    }));
+    open();
+    await screen.findByRole("heading", { name: /PROD/ });
+    const rows = within(screen.getByRole("region", { name: "Service health" })).getAllByRole("row").slice(1);
+    expect(rows.map((r) => r.querySelector("th")?.textContent)).toEqual(["Dagster", "Trino", "Resource metrics"]);
+    expect(within(serviceRow("Dagster")).getAllByText("Unknown")[0]).toHaveClass("mon-badge");
+    expect(serviceRow("Dagster")).toHaveTextContent("Dagster API · Unknown");
+    expect(serviceRow("Dagster")).toHaveTextContent("Dagster workloads · Healthy");
+    expect(screen.queryByText(/dagster\.read-api/)).toBeNull(); // the machine key is never shown
+    expect(screen.getByText(/1 of 2 services ready/)).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Services summary" })).getByText("Unknown")).toBeInTheDocument();
+  });
+
+  it("shows the log archive's last durable write and the last quality publication from last_success_at", async () => {
+    const at = new Date(Date.now() - 180_000).toISOString();
+    api(() => ({ body: health({ services: [svc("log-archive.newest-object", "healthy", { last_success_at: at }), svc("quality-sync.publication", "healthy", { last_success_at: at })] }) }));
+    open();
+    expect(await screen.findByText("Log archive · last durable write 3 min ago · Quality sync · last publication 3 min ago")).toBeInTheDocument();
+  });
+
+  it("reads a null last_success_at as unknown, never as a time", async () => {
+    api(() => ({ body: health({ services: [svc("log-archive.newest-object", "unknown", { last_success_at: null }), svc("trino.readiness", "healthy")] }) }));
+    open();
+    expect(await screen.findByText("Log archive · last durable write unknown")).toBeInTheDocument();
+    expect(screen.queryByText(/last durable write \d/)).toBeNull();
+  });
+
+  it.each([
+    ["no service key", (s: Record<string, unknown>) => { delete s.service; }],
+    ["no display name", (s: Record<string, unknown>) => { delete s.display_name; }],
+    ["a numeric last success", (s: Record<string, unknown>) => { s.last_success_at = 12; }],
+    ["an unknown state", (s: Record<string, unknown>) => { s.state = "green"; }],
+  ])("does not take a service row with %s as an answer", async (_, spoil) => {
+    const body = health();
+    spoil(body.services[0] as unknown as Record<string, unknown>);
+    api(() => ({ body }));
+    open();
+    expect(await screen.findByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
+    expect(screen.queryByText("Healthy")).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 import type { HealthState } from "../lib/health-api";
 
-const LABEL: Record<HealthState, string> = {
+export const LABEL: Record<HealthState, string> = {
   healthy: "Healthy", warning: "Warning", critical: "Critical", unknown: "Unknown", disabled: "Disabled",
 };
 

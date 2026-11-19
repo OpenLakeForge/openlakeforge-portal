@@ -3,6 +3,8 @@
 // OLF_MOCK_API=1 (loaded with ssrLoadModule, never imported), and nothing under src/ imports it, so it can never reach build/.
 // Special SQL (see README): syntax_error, slow, big, and write keywords.
 // Health (#1127): prod needs attention (a failed pipeline, a stale log spool), dev cannot read Dagster (unknown).
+// Monitoring capabilities (#1259) decide what the page calls; `?mock=<scenario>` on the page (read from the Referer)
+// picks another role or state, see MONITORING_SCENARIOS and the README.
 // Files routes (#1114) keep an in-memory object store, so upload, folders, rename and delete change the listings.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -130,6 +132,7 @@ async function route(req: IncomingMessage, url: URL): Promise<{ status?: number;
   if (parts[0] === "query-capabilities" && method === "GET") {
     return { json: { query_available: true, stages: STAGES.map((stage) => ({ stage, query: { engine: "trino", available: true, export_formats: ["csv", "json"] } })) } };
   }
+  if (parts[0] === "monitoring-capabilities" && method === "GET") return { json: monitoringCapabilities(scenarioOf(req)) };
   if (parts[0] === "file-capabilities" && method === "GET") {
     return { json: { stages: [{ stage: "dev", operations: FILE_OPS }], max_upload_bytes: MAX_UPLOAD } };
   }
@@ -137,8 +140,7 @@ async function route(req: IncomingMessage, url: URL): Promise<{ status?: number;
   const stage = parts[1];
   if (!STAGES.includes(stage)) throw new HttpError(404, `stage '${stage}' offers no query`);
   if (parts[2] === "buckets") return filesRoute(req, url, parts);
-  if (parts[2] === "health" && parts.length === 3 && method === "GET") return { json: stageHealth(stage) };
-  if (parts[2] === "health" && parts[3] === "pipelines" && parts.length === 4 && method === "GET") return { json: pipelinesHealth(stage) };
+  if ((parts[2] === "health" || parts[2] === "alerts") && method === "GET") return monitoringRoute(scenarioOf(req), stage, parts.slice(2).join("/"));
   if (parts[2] === "schemas" && method === "GET") {
     const schemas = schemasOf(stage);
     if (parts.length === 3) { const p = page(Object.keys(schemas), url); return { json: { schemas: p.items, next_cursor: p.next } }; }
@@ -322,13 +324,83 @@ async function filesRoute(req: IncomingMessage, url: URL, parts: string[]): Prom
   throw new HttpError(404, "Not Found");
 }
 
+// ── Monitoring capabilities (openlakeforge #1259) and the scenarios a reviewer can pick ───────────────────────
+
+/** `?mock=` on the page: `no-access` (an analyst: no stage), `limited` (a role with get_stage_health only, so no
+ * pipelines read is made) and `unauthorized` (the routes answer 403 although the capabilities offered them). */
+const MONITORING_SCENARIOS = ["no-access", "limited", "unauthorized"] as const;
+type Scenario = (typeof MONITORING_SCENARIOS)[number] | undefined;
+function scenarioOf(req: IncomingMessage): Scenario {
+  let asked: string | null = null;
+  try { asked = new URL(req.headers.referer ?? "").searchParams.get("mock"); } catch { /* no referer */ }
+  return MONITORING_SCENARIOS.find((s) => s === asked);
+}
+
+const MONITORING_OPS = ["get_stage_health", "get_stage_service_health", "list_pipeline_health", "get_stage_quality_health",
+  "list_logs", "list_stage_metrics", "get_stage_metric", "list_alert_incidents"];
+const ROUTE_OPS: Record<string, string> = {
+  health: "get_stage_health", "health/services": "get_stage_service_health", "health/pipelines": "list_pipeline_health",
+  "health/quality": "get_stage_quality_health", "alerts/incidents": "list_alert_incidents",
+};
+
+/** As platform-api builds it from its settings: a data-engineer's view, so logs on dev only. */
+function monitoringCapabilities(scenario: Scenario) {
+  if (scenario === "no-access") return { stages: [] };
+  return {
+    stages: STAGES.map((stage) => ({
+      stage,
+      operations: scenario === "limited" ? ["get_stage_health", "get_stage_service_health"] : MONITORING_OPS.filter((op) => op !== "list_logs" || stage === "dev"),
+      capabilities: [
+        { name: "dagster", status: "available", reason: "a Dagster webserver is configured" },
+        { name: "services", status: "available", reason: "service probes are configured" },
+        stage === "prod" ? { name: "quality", status: "available", reason: "read from the stage's quality manifests" }
+          : { name: "quality", status: "not_provided", reason: "no quality manifest reader is configured for this stage" },
+        stage === "prod" ? { name: "quality-sync", status: "available", reason: "read from the reconciler's quality-sync summary" }
+          : { name: "quality-sync", status: "not_provided", reason: "no quality results are published from this stage" },
+        stage === "dev" ? { name: "logs", status: "available", reason: "a log archive is configured" }
+          : { name: "logs", status: "unavailable", reason: "the platform API holds no object-store key for the log archive" },
+        { name: "metrics", status: "not_provided", reason: "no metrics source is connected to the API" },
+        { name: "alerts", status: "available", reason: "the alert evaluator's state is configured" },
+      ],
+    })),
+  };
+}
+
+/** The monitoring routes, each refused with 403 when the role may not call it, as the permission matrix does. */
+function monitoringRoute(scenario: Scenario, stage: string, path: string): { status?: number; json?: unknown } {
+  const op = ROUTE_OPS[path];
+  if (!op) throw new HttpError(404, "Not Found");
+  const access = monitoringCapabilities(scenario).stages.find((s) => s.stage === stage);
+  if (!access?.operations.includes(op) || scenario === "unauthorized") throw new HttpError(403, `role analyst may not call ${op} on stage '${stage}'`);
+  if (path === "health") return { json: stageHealth(stage) };
+  if (path === "health/services") return { json: { stage, services: stageHealth(stage).services } };
+  if (path === "health/pipelines") return { json: pipelinesHealth(stage) };
+  throw new HttpError(404, "Not Found");
+}
+
 // ── Health (openlakeforge #1127): StageHealth, fresh on every call ────────────────────────────────────────
+
+const SERVICE_LABELS: Record<string, [string, string, string]> = {
+  "dagster.read-api": ["Dagster API", "dagster", "Dagster"],
+  "dagster.workloads": ["Dagster workloads", "dagster", "Dagster"],
+  "trino.readiness": ["Trino coordinator", "trino", "Trino"],
+  "polaris.readiness": ["Polaris catalog", "polaris", "Polaris"],
+  "object-store.list": ["Object storage", "object-store", "Object storage"],
+  "log-archive.spool-age": ["Log spool age", "log-archive", "Log archive"],
+  "log-archive.newest-object": ["Newest archived log", "log-archive", "Log archive"],
+  "quality-sync.publication": ["Quality publication", "quality-sync", "Quality sync"],
+};
 
 function stageHealth(stage: string) {
   const now = Date.now();
   const iso = (offset: number) => new Date(now + offset * 1000).toISOString();
-  const svc = (component: string, source: string, state: string, reason: string) =>
-    ({ component, source, state, reason, observed_at: iso(-18), expires_at: iso(42), max_age_seconds: 60 });
+  const svc = (component: string, source: string, state: string, reason: string, lastSuccess: number | null = null) => {
+    const [display_name, service, service_display_name] = SERVICE_LABELS[component];
+    return {
+      component, display_name, service, service_display_name, source, state, reason,
+      observed_at: iso(-18), expires_at: iso(42), max_age_seconds: 60, last_success_at: lastSuccess === null ? null : iso(-lastSuccess),
+    };
+  };
   const prod = stage === "prod";
   return {
     stage, state: prod ? "critical" : "unknown", evaluated_at: iso(-18),
@@ -336,17 +408,24 @@ function stageHealth(stage: string) {
     services: [
       prod ? svc("dagster.read-api", "dagster-graphql", "healthy", "Dagster GraphQL answers")
         : svc("dagster.read-api", "dagster-graphql", "unknown", "the Dagster GraphQL API did not answer"),
+      svc("dagster.workloads", "kubernetes", "healthy", "2 of 2 pods ready"),
       svc("trino.readiness", "trino-http", "healthy", "Coordinator accepts queries"),
       svc("polaris.readiness", "polaris-http", "healthy", "Catalog API responds"),
       svc("object-store.list", "s3", "healthy", "Buckets reachable"),
       prod ? svc("log-archive.spool-age", "log-collector", "warning", "No durable write for 12 min (limit 10 min)")
         : svc("log-archive.spool-age", "log-collector", "healthy", "Last durable write 42 s ago"),
+      // dev's newest archived object cannot be read, so its last durable write is unknown (null), never a time.
+      prod ? svc("log-archive.newest-object", "s3", "healthy", "an archived log was written within its bound", 12 * 60 + 20)
+        : svc("log-archive.newest-object", "s3", "unknown", "the log archive could not be listed"),
+      ...(prod ? [svc("quality-sync.publication", "quality-reconciler", "healthy", "the last pass published every result", 4 * 60)] : []),
     ],
     integrations: [
       prod ? { name: "dagster", status: "available", reason: "read from Dagster" } : { name: "dagster", status: "unavailable", reason: "Dagster could not be read" },
       { name: "services", status: "available", reason: "probed in the stage namespace" },
       prod ? { name: "quality", status: "available", reason: "read from the stage's quality manifests" }
         : { name: "quality", status: "not_provided", reason: "no quality manifest reader is configured for this stage" },
+      prod ? { name: "quality-sync", status: "available", reason: "read from the reconciler's quality-sync summary" }
+        : { name: "quality-sync", status: "not_provided", reason: "no quality results are published from this stage" },
       { name: "metrics", status: "not_provided", reason: "no metrics source is connected to the API" },
     ],
   };

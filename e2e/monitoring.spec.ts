@@ -31,7 +31,8 @@ test("DEV reads unknown when Dagster cannot be read; PROD names what needs atten
   await page.goto("/monitoring");
   await expect(page.getByRole("heading", { level: 2, name: "Unknown DEV status unknown" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Pipelines summary" })).toContainText("Dagster could not be read");
-  await expect(row(page, "Dagster API")).toContainText("Unknown");
+  await expect(row(page, "Dagster")).toContainText("Dagster API · Unknown");
+  await expect(page.getByText("Log archive · last durable write unknown")).toBeVisible();
   await expect(attention(page).getByRole("row", { name: /Pipelines cannot be read/ })).toContainText("Unknown");
   await expect(pipelines(page)).toHaveCount(0);
 
@@ -40,8 +41,10 @@ test("DEV reads unknown when Dagster cannot be read; PROD names what needs atten
   await stage.selectOption("prod");
   await expect(page).toHaveURL(/stage=prod$/);
   await expect(page.getByRole("heading", { level: 2, name: "Critical PROD needs attention" })).toBeVisible();
-  await expect(page.getByText("1 pipeline failed · 1 missed run · 1 quality failure · 1 quality warning · 4 of 5 services ready")).toBeVisible();
-  await expect(row(page, "Log spool age")).toContainText("Warning");
+  await expect(page.getByText("1 pipeline failed · 1 missed run · 1 quality failure · 1 quality warning · 5 of 6 services ready")).toBeVisible();
+  await expect(row(page, "Log archive")).toContainText("Warning");
+  await expect(row(page, "Log archive")).toContainText("Log spool age · Warning");
+  await expect(page.getByText(/^Log archive · last durable write 12 min ago · Quality sync · last publication 4 min ago$/)).toBeVisible();
   await expect(row(page, "Resource metrics")).toContainText("Disabled");
   await expect(page.getByRole("status").filter({ hasText: "Checked" })).toContainText("Auto-refresh · 30 s");
 });
@@ -72,6 +75,31 @@ test("a pipelines read that fails reads unknown with Retry, and the stage's own 
   await page.unroute("**/api/v1/stages/*/health/pipelines");
   await gap.getByRole("button", { name: /Retry/ }).click();
   await expect(pipelines(page).getByRole("row")).toHaveCount(5);
+});
+
+test("a role with no monitoring access sees a clear state and no health is read", async ({ page }) => {
+  const reads: string[] = [];
+  page.on("request", (r) => { if (r.url().includes("/api/v1/stages/")) reads.push(r.url()); });
+  await page.goto("/monitoring?mock=no-access");
+  await expect(page.getByText("No monitoring access")).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Stage" })).toHaveCount(0);
+  expect(reads).toEqual([]);
+});
+
+test("a role without list_pipeline_health gets no pipelines read, and the page says why", async ({ page }) => {
+  const reads: string[] = [];
+  page.on("request", (r) => reads.push(r.url()));
+  await page.goto("/monitoring?stage=prod&mock=limited");
+  await expect(attention(page).getByRole("row", { name: /Pipeline health is not available/ })).toContainText("Your role may not read pipeline health on stage PROD.");
+  await expect(row(page, "Trino")).toContainText("Healthy");
+  expect(reads.filter((u) => u.endsWith("/health/pipelines"))).toEqual([]);
+});
+
+test("a stage the API refuses with 403 shows its words as Disabled, with no retry", async ({ page }) => {
+  await page.goto("/monitoring?stage=prod&mock=unauthorized");
+  await expect(page.getByRole("heading", { level: 2, name: "Disabled PROD health is not available" })).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText("may not call get_stage_health on stage 'prod'");
+  await expect(page.getByRole("button", { name: /Retry/ })).toHaveCount(0);
 });
 
 test("an unreachable API is unknown, never green, and Retry works from the keyboard", async ({ page }) => {
