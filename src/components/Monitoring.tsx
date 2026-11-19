@@ -83,9 +83,9 @@ function Overview({ access, snap, now, retry }: { access: MonitoringStage; snap:
   const pipelinePanels = (
     <>
       <NeedsAttention p={p} now={now} stage={access.stage} retry={pipesRetry} />
-      <IncidentsTable a={a} now={now} retry={retry.onRetry} />
-      {p.ok && <PipelinesTable p={p} now={now} />}
-      {q.ok && <QualityTable q={q} now={now} />}
+      <IncidentsTable a={a} now={now} retry={retry.onRetry} stage={access.stage} />
+      {p.ok && <PipelinesTable p={p} now={now} stage={access.stage} />}
+      {q.ok && <QualityTable q={q} now={now} stage={access.stage} />}
     </>
   );
   // A role without get_stage_health: no rollup to show, so the page says so and keeps the panels it may read.

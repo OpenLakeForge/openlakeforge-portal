@@ -1,7 +1,10 @@
 // The Platform API contract for Monitoring (openlakeforge #1127, #1259, ADR 0021): GET /api/v1/monitoring-capabilities,
-// GET /api/v1/stages/{stage}/health and GET /api/v1/stages/{stage}/health/pipelines. Same-origin and
+// GET /api/v1/stages/{stage}/health and GET /api/v1/stages/{stage}/health/pipelines, and for one run (#1271)
+// GET /api/v1/stages/{stage}/runs/{run_id}, GET /api/v1/stages/{stage}/runs/{run_id}/failure and the run's lines from
+// GET /api/v1/stages/{stage}/logs. Same-origin and
 // cookie-authenticated, read-only. Types follow the committed OpenAPI document (docs/schema/platform-api.openapi.json:
-// MonitoringCapabilities, StageHealth, ServiceHealth, IntegrationStatus, PipelinesHealth, PipelineHealth, HealthSignal, Run).
+// MonitoringCapabilities, StageHealth, ServiceHealth, IntegrationStatus, PipelinesHealth, PipelineHealth, HealthSignal, Run,
+// RunFailure, FailedStep, RunRows, Logs, LogLine, AlertIncident).
 // shortcut: hand-written types; generate them from the OpenAPI spec.
 
 import { ApiError } from "./query-api";
@@ -56,9 +59,14 @@ export type HealthSignal = {
   run: string | null;
   observed_at: string | null;
   expires_at: string | null;
+  /** The occurrence an `expected_run` signal judged (#1273); null on every other kind and when none was expected. */
+  due: string | null;
 };
 export type PipelineHealth = {
   job: string;
+  /** The job's domain and data product from its definition's tags (#1272); null for a job of no product. */
+  domain: string | null;
+  product: string | null;
   state: HealthState;
   latest_run: Run | null;
   last_success: Run | null;
@@ -95,7 +103,7 @@ function explain(status: number, stage: string, detail?: string): string {
   return `The monitoring API failed (${status}), so nothing on this page can be shown as healthy.`;
 }
 
-async function get(url: string, stage: string, signal?: AbortSignal): Promise<Json | undefined> {
+async function get(url: string, stage: string, signal?: AbortSignal, notFound?: string): Promise<Json | undefined> {
   let res: Response;
   try {
     res = await fetch(url, { credentials: "same-origin", signal });
@@ -109,7 +117,7 @@ async function get(url: string, stage: string, signal?: AbortSignal): Promise<Js
     return undefined;
   });
   const detail = typeof body?.detail === "string" ? body.detail : undefined;
-  if (!res.ok) throw new ApiError(res.status, explain(res.status, stage, detail));
+  if (!res.ok) throw new ApiError(res.status, explain(res.status, stage, detail ?? (res.status === 404 ? notFound : undefined)));
   return isObject(body) ? body : undefined;
 }
 
@@ -140,7 +148,13 @@ export async function getPipelinesHealth(stage: string, signal?: AbortSignal): P
   // Every field the page renders is checked here: a malformed 200 is a failed pipelines read (Unknown, Retry), never
   // a crash of the whole view and never a partial answer.
   if (!isPipelinesHealth(body)) throw new ApiError(200, explain(500, stage));
-  return body;
+  // `due`, `domain` and `product` are additive (#1272, #1273): an API from before them answers none, which is null.
+  return {
+    ...body,
+    pipelines: body.pipelines.map((p) => ({
+      ...p, domain: p.domain ?? null, product: p.product ?? null, signals: p.signals.map((s) => ({ ...s, due: s.due ?? null })),
+    })),
+  };
 }
 
 type Json = Record<string, unknown>;
@@ -152,10 +166,13 @@ const isNumber = (v: unknown) => typeof v === "number" && Number.isFinite(v);
 const isNumberOrNull = (v: unknown) => v === null || isNumber(v);
 const isRunOrNull = (v: unknown) =>
   v === null || (isObject(v) && isText(v.run_id) && isText(v.status) && isNumber(v.created_at) && isNumberOrNull(v.started_at) && isNumberOrNull(v.ended_at));
+/** An additive field: absent (an older API) or the given shape. The reader turns absent into null. */
+const isOptional = (check: (v: unknown) => boolean) => (v: unknown) => v === undefined || check(v);
 const isSignal = (v: unknown) =>
-  isObject(v) && isText(v.kind) && STATES.has(v.state) && isText(v.reason) && isTextOrNull(v.run) && isTextOrNull(v.observed_at) && isTextOrNull(v.expires_at);
+  isObject(v) && isText(v.kind) && STATES.has(v.state) && isText(v.reason) && isTextOrNull(v.run) && isTextOrNull(v.observed_at) && isTextOrNull(v.expires_at)
+  && isOptional(isTextOrNull)(v.due);
 const isPipeline = (v: unknown) =>
-  isObject(v) && isText(v.job) && STATES.has(v.state) && isNumber(v.failed_runs) && isRunOrNull(v.latest_run) && isRunOrNull(v.last_success)
+  isObject(v) && isText(v.job) && isOptional(isTextOrNull)(v.domain) && isOptional(isTextOrNull)(v.product) && STATES.has(v.state) && isNumber(v.failed_runs) && isRunOrNull(v.latest_run) && isRunOrNull(v.last_success)
   && isObject(v.schedule) && ["running", "stopped", "absent"].includes(v.schedule.status as string) && isTextOrNull(v.schedule.name) && isTextOrNull(v.schedule.last_expected_at)
   && isObject(v.freshness) && isTextOrNull(v.freshness.last_success_at) && isNumberOrNull(v.freshness.age_seconds)
   && Array.isArray(v.signals) && v.signals.every(isSignal);
@@ -219,7 +236,8 @@ export type QualityCounts = { passed: number; warn: number; error: number; not_r
 export type PipelineQuality = {
   job: string;
   domain: string | null;
-  product: string;
+  /** Null for a job of no product, or one deployed before the product tag (#1272). */
+  product: string | null;
   run_id: string | null;
   observed_at: string | null;
   complete: boolean | null;
@@ -242,6 +260,9 @@ export type AlertIncident = {
   id: string;
   condition: string;
   severity: "warning" | "critical";
+  /** The Dagster job the incident is scoped to (#1272); null for a service incident. */
+  job: string | null;
+  /** The job's domain and product, null when the job has none or Dagster could not be read. */
   domain: string | null;
   product: string | null;
   table: string | null;
@@ -263,7 +284,7 @@ const COUNTS = ["passed", "warn", "error", "not_run", "unknown", "blocking"] as 
 const isCounts = (v: unknown) => isObject(v) && COUNTS.every((k) => Number.isInteger(v[k]) && (v[k] as number) >= 0);
 const isCountsOrNull = (v: unknown) => v === null || isCounts(v);
 const isPipelineQuality = (v: unknown) =>
-  isObject(v) && isText(v.job) && isTextOrNull(v.domain) && isText(v.product) && isTextOrNull(v.run_id) && isTextOrNull(v.observed_at)
+  isObject(v) && isText(v.job) && isTextOrNull(v.domain) && isTextOrNull(v.product) && isTextOrNull(v.run_id) && isTextOrNull(v.observed_at)
   && (v.complete === null || typeof v.complete === "boolean") && STATES.has(v.state) && isCountsOrNull(v.counts) && isText(v.reason);
 const DELIVERY = new Set<unknown>(["pending", "delivered", "undeliverable", "unrouted", "unknown"]);
 const isDelivery = (v: unknown) =>
@@ -271,7 +292,7 @@ const isDelivery = (v: unknown) =>
   && isNumberOrNull(v.attempts) && isNumberOrNull(v.receivers) && isNumberOrNull(v.delivered);
 const isIncident = (v: unknown) =>
   isObject(v) && isText(v.id) && isText(v.condition) && (v.severity === "warning" || v.severity === "critical")
-  && isTextOrNull(v.domain) && isTextOrNull(v.product) && isTextOrNull(v.table) && isTextOrNull(v.component)
+  && isOptional(isTextOrNull)(v.job) && isTextOrNull(v.domain) && isTextOrNull(v.product) && isTextOrNull(v.table) && isTextOrNull(v.component)
   && isText(v.opened_at) && isText(v.last_seen_at) && isText(v.summary) && Array.isArray(v.run_ids) && v.run_ids.every(isText) && isDelivery(v.delivery);
 
 export function isStageQualityHealth(body: unknown): body is StageQualityHealth {
@@ -299,5 +320,87 @@ export async function getQualityHealth(stage: string, signal?: AbortSignal): Pro
 export async function getAlertIncidents(stage: string, signal?: AbortSignal): Promise<StageAlertIncidents> {
   const body = await read("alerts/incidents", stage, signal);
   if (!isStageAlertIncidents(body)) throw new ApiError(200, explain(500, stage));
+  return { ...body, incidents: body.incidents && body.incidents.map((i) => ({ ...i, job: i.job ?? null })) };
+}
+
+// ── One run: its failure summary (#1271), its times and its archived lines ──────────────────────────────────
+
+/** One failed step: its Dagster step key and the first line of its innermost cause, redacted and bounded. */
+export type FailedStep = { step: string; error_class: string | null; message: string; message_truncated: boolean };
+/** Rows Floe rejected and accepted in the run, from its quality manifest; `complete: false` means partial sums. */
+export type RunRows = { rejected: number; accepted: number; complete: boolean };
+/** What went wrong in one run. `steps: null` is an unreadable event log, never "no step failed"; `rows: null` is no
+ * readable manifest, never zero rows. `sources` says why either is missing. */
+export type RunFailure = {
+  run_id: string;
+  job: string;
+  status: string;
+  steps: FailedStep[] | null;
+  run_message: string | null;
+  steps_truncated: boolean;
+  rows: RunRows | null;
+  sources: Integration[];
+};
+/** One archived pod log line. `line` is null when the record could not be parsed, and `error` then says why. */
+export type LogLine = {
+  archived_at: string;
+  namespace: string;
+  pod: string;
+  container: string;
+  line: string | null;
+  error: string | null;
+  component?: string | null;
+  run_id?: string | null;
+};
+export type Logs = { lines: LogLine[]; truncated: boolean };
+export type LogSeverity = "warning" | "error";
+
+const isFailedStep = (v: unknown) =>
+  isObject(v) && isText(v.step) && isTextOrNull(v.error_class) && isText(v.message) && typeof v.message_truncated === "boolean";
+const isRows = (v: unknown) =>
+  isObject(v) && Number.isInteger(v.rejected) && Number.isInteger(v.accepted) && typeof v.complete === "boolean";
+const isLogLine = (v: unknown) =>
+  isObject(v) && isText(v.archived_at) && isText(v.namespace) && isText(v.pod) && isText(v.container) && isTextOrNull(v.line) && isTextOrNull(v.error);
+
+export function isRunFailure(body: unknown): body is RunFailure {
+  return isObject(body) && isText(body.run_id) && isText(body.job) && isText(body.status)
+    && (body.steps === null || (Array.isArray(body.steps) && body.steps.every(isFailedStep)))
+    && isTextOrNull(body.run_message) && typeof body.steps_truncated === "boolean"
+    && (body.rows === null || isRows(body.rows))
+    && Array.isArray(body.sources) && body.sources.every(isIntegration);
+}
+
+export function isRun(body: unknown): body is Run {
+  return isRunOrNull(body) && body !== null && isText((body as Json).job_name);
+}
+
+export function isLogs(body: unknown): body is Logs {
+  return isObject(body) && Array.isArray(body.lines) && body.lines.every(isLogLine) && typeof body.truncated === "boolean";
+}
+
+const runPath = (stage: string, runId: string) => `/api/v1/stages/${encodeURIComponent(stage)}/runs/${encodeURIComponent(runId)}`;
+
+/** The run's failed steps, its own failure message and its rejected rows. 404 when the stage has no such run. */
+export async function getRunFailure(stage: string, runId: string, signal?: AbortSignal): Promise<RunFailure> {
+  const body = await get(`${runPath(stage, runId)}/failure`, stage, signal, `Run ${runId} is not known on stage ${stage.toUpperCase()}.`);
+  if (!isRunFailure(body)) throw new ApiError(200, explain(500, stage));
+  return body;
+}
+
+/** The run as Dagster reports it: its status and times. */
+export async function getRun(stage: string, runId: string, signal?: AbortSignal): Promise<Run> {
+  const body = await get(runPath(stage, runId), stage, signal, `Run ${runId} is not known on stage ${stage.toUpperCase()}.`);
+  if (!isRun(body)) throw new ApiError(200, explain(500, stage));
+  return body;
+}
+
+/** At most `limit` archived lines of one run on one UTC day (`YYYY-MM-DD`), oldest first, from `severity` up. */
+export async function getRunLogs(
+  stage: string, runId: string, date: string, opts: { severity?: LogSeverity; limit?: number } = {}, signal?: AbortSignal,
+): Promise<Logs> {
+  const q = new URLSearchParams({ date, run_id: runId, limit: String(opts.limit ?? 200) });
+  if (opts.severity) q.set("severity", opts.severity);
+  const body = await get(`/api/v1/stages/${encodeURIComponent(stage)}/logs?${q}`, stage, signal);
+  if (!isLogs(body)) throw new ApiError(200, explain(500, stage));
   return body;
 }

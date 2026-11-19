@@ -6,6 +6,7 @@ import {
   ApiError, effective, worst,
   type HealthSignal, type HealthState, type Integration, type PipelineHealth, type PipelinesHealth,
 } from "../lib/health-api";
+import { Link } from "react-router";
 import { StatusBadge } from "./StatusBadge";
 
 /** One read of a snapshot: its answer, why it failed, or why it was not made (`off`: no source, or not the role's). */
@@ -68,6 +69,12 @@ export function when(t: number | string | null | undefined, now: number): string
   return d.toDateString() === new Date(now).toDateString() ? time : `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${time}`;
 }
 const short = (run: string) => run.slice(0, 8);
+/** The Failed-run screen of one run. */
+export const runHref = (stage: string, run: string) => `/monitoring/${encodeURIComponent(stage)}/runs/${encodeURIComponent(run)}`;
+/** A run id as a link to its Failed-run screen; the accessible name says which run it opens. */
+export function RunLink({ stage, run, label = `run ${short(run)}` }: { stage: string; run: string; label?: string }) {
+  return <Link className="run-link f-mono" to={runHref(stage, run)} aria-label={`Open run ${short(run)}`}>{label}</Link>;
+}
 
 export function PipelinesCard({ p, now }: { p: Pipes; now: number }) {
   const state = p.ok ? (p.pipelines.length ? worst(p.pipelines.map((x) => x.shown)) : "unknown") : p.state;
@@ -95,7 +102,7 @@ const TITLES: Partial<Record<HealthSignal["kind"], Partial<Record<HealthState, s
   freshness: { critical: "Data is late", warning: "Data is ageing" },
   quality: { critical: "Quality check failed", warning: "Quality check warned" },
 };
-type Row = { key: string; state: HealthState; title: string; detail: string; job?: string; at?: string; run?: string | null; sort: number };
+type Row = { key: string; state: HealthState; title: string; detail: string; job?: string; at?: string; due?: string | null; run?: string | null; sort: number };
 const RANK: Record<HealthState, number> = { critical: 0, warning: 1, unknown: 2, healthy: 3, disabled: 4 };
 
 /** One row per warning or critical signal, and one per pipeline that has no current evidence. Worst first. */
@@ -106,10 +113,12 @@ export function attention(p: Pipes, stage: string): Row[] {
   for (const x of p.pipelines) {
     const bad = x.signals.filter((s) => s.shown === "critical" || s.shown === "warning");
     for (const s of bad) {
-      const at = s.kind === "expected_run" ? x.schedule.last_expected_at ?? s.observed_at : s.observed_at;
+      // An expected_run signal names the occurrence it judged (`due`); the schedule's last tick is only a fallback.
+      const due = s.kind === "expected_run" ? s.due : null;
+      const at = s.kind === "expected_run" ? due ?? x.schedule.last_expected_at ?? s.observed_at : s.observed_at;
       rows.push({
         key: `${x.job}/${s.kind}`, state: s.shown, title: TITLES[s.kind]?.[s.shown] ?? s.kind, detail: s.reason,
-        job: x.job, at: at ?? undefined, run: s.run, sort: RANK[s.shown],
+        job: x.job, at: at ?? undefined, due, run: s.run, sort: RANK[s.shown],
       });
     }
     if (!bad.length && x.shown === "unknown") {
@@ -149,7 +158,10 @@ export function NeedsAttention({ p, now, stage, retry }: { p: Pipes; now: number
                   )}
                 </th>
                 <td className="f-mono mon-job">{r.job ?? "—"}</td>
-                <td className="f-mono">{r.at ? when(r.at, now) : "—"}{r.run ? ` · run ${short(r.run)}` : ""}</td>
+                <td className="f-mono">
+                  {r.due ? `due ${when(r.due, now)}` : r.at ? when(r.at, now) : "—"}
+                  {r.run && <> · <RunLink stage={stage} run={r.run} /></>}
+                </td>
               </tr>
             ))}
             {rows.length === 0 && (
@@ -165,7 +177,7 @@ export function NeedsAttention({ p, now, stage, retry }: { p: Pipes; now: number
 const SCHEDULE: Record<PipelineHealth["schedule"]["status"], string> = { running: "running", stopped: "stopped", absent: "No schedule" };
 const RUN_WORD: Record<string, string> = { SUCCESS: "Succeeded", FAILURE: "Failed", CANCELED: "Canceled", CANCELING: "Canceling", STARTED: "Running", QUEUED: "Queued", STARTING: "Starting", NOT_STARTED: "Not started" };
 
-export function PipelinesTable({ p, now }: { p: Extract<Pipes, { ok: true }>; now: number }) {
+export function PipelinesTable({ p, now, stage }: { p: Extract<Pipes, { ok: true }>; now: number; stage: string }) {
   if (!p.pipelines.length) return null;
   return (
     <section className="q-card mon-list" aria-labelledby="mon-pipelines-h">
@@ -185,7 +197,7 @@ export function PipelinesTable({ p, now }: { p: Extract<Pipes, { ok: true }>; no
                 <tr key={x.job}>
                   <th scope="row"><span className="f-mono">{x.job}</span></th>
                   <td><StatusBadge state={x.shown} /></td>
-                  <td>{run ? <>{RUN_WORD[run.status] ?? run.status} · {when(run.ended_at ?? run.started_at ?? run.created_at, now)} <span className="f-mono">· {short(run.run_id)}</span></> : "No run in the window"}</td>
+                  <td>{run ? <>{RUN_WORD[run.status] ?? run.status} · {when(run.ended_at ?? run.started_at ?? run.created_at, now)} · <RunLink stage={stage} run={run.run_id} label={short(run.run_id)} /></> : "No run in the window"}</td>
                   <td>{x.freshness.last_success_at ? when(x.freshness.last_success_at, now) : "None on record"}</td>
                   <td>{x.schedule.status === "absent" ? SCHEDULE.absent : <><span className="f-mono">{x.schedule.name}</span> · {SCHEDULE[x.schedule.status]}</>}</td>
                   <td className="f-mono">{x.failed_runs} of last {p.runWindow}</td>

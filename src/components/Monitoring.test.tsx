@@ -30,14 +30,14 @@ const health = (over: Partial<StageHealth> = {}): StageHealth => ({
 });
 
 const sig = (kind: HealthSignal["kind"], state: HealthState, over: Partial<HealthSignal> = {}): HealthSignal => ({
-  kind, state, reason: `${kind} says ${state}`, run: null, observed_at: new Date().toISOString(), expires_at: soon(), ...over,
+  kind, state, reason: `${kind} says ${state}`, run: null, observed_at: new Date().toISOString(), expires_at: soon(), due: null, ...over,
 });
 const run = (job: string, status: string, id = `${job}-run-0001`) => {
   const t = Date.now() / 1000 - 600;
   return { run_id: id, job_name: job, status, created_at: t, started_at: t, ended_at: t + 60, tags: {} };
 };
 const pipeline = (job: string, over: Partial<PipelineHealth> = {}): PipelineHealth => ({
-  job, state: "healthy", latest_run: run(job, "SUCCESS"), last_success: run(job, "SUCCESS"), failed_runs: 0,
+  job, domain: null, product: null, state: "healthy", latest_run: run(job, "SUCCESS"), last_success: run(job, "SUCCESS"), failed_runs: 0,
   schedule: { name: `${job}_daily`, status: "running", last_expected_at: new Date(Date.now() - 900_000).toISOString() },
   freshness: { last_success_at: new Date(Date.now() - 540_000).toISOString(), age_seconds: 540 },
   signals: [sig("execution", "healthy"), sig("latest_success", "healthy"), sig("expected_run", "healthy"), sig("freshness", "healthy", { expires_at: null })],
@@ -236,6 +236,39 @@ describe("pipelines and needs attention", () => {
     expect(within(screen.getByRole("region", { name: "What needs attention" })).queryByText("erp_inventory")).toBeNull();
     const summary = screen.getByRole("region", { name: "Pipelines summary" });
     expect(summary).toHaveTextContent("1 failed of 3 · 1 missed");
+  });
+
+  it("links each signal's run and each pipeline's latest run to its Failed-run screen", async () => {
+    api(() => ({ body: health({ state: "critical" }) }), () => ({ body: troubled() }));
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    const href = `/monitoring/prod/runs/${failedRun.run_id}`;
+    expect(within(attentionRow("Run failed")).getByRole("link", { name: "Open run c94cbcb0" })).toHaveAttribute("href", href);
+    expect(within(pipelineRow("sales_orders")).getByRole("link", { name: "Open run c94cbcb0" })).toHaveAttribute("href", href);
+    expect(within(pipelineRow("sales_orders")).getByRole("link").textContent).toBe("c94cbcb0");
+  });
+
+  it("shows when a missed expected run was due, from the signal's own `due`", async () => {
+    const due = new Date(Date.now() - 1_800_000);
+    const missed = pipes({
+      pipelines: [pipeline("crm_accounts", {
+        state: "critical",
+        schedule: { name: "crm_daily", status: "running", last_expected_at: new Date(Date.now() - 600_000).toISOString() },
+        signals: [sig("expected_run", "critical", { reason: "an expected run did not start", due: due.toISOString() })],
+      })],
+    });
+    api(() => ({ body: health({ state: "critical" }) }), () => ({ body: missed }));
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    const hhmm = due.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    expect(attentionRow("Expected run did not start")).toHaveTextContent(`due ${hhmm}`);
+  });
+
+  it("falls back to the schedule's last tick, without the word due, when the API sends no `due`", async () => {
+    api(() => ({ body: health({ state: "critical" }) }), () => ({ body: troubled() }));
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    expect(attentionRow("Expected run did not start")).not.toHaveTextContent("due");
   });
 
   it("shows each pipeline's latest run, last success, schedule and failed runs", async () => {
@@ -760,12 +793,22 @@ describe("alert incidents", () => {
   const table = () => screen.getByRole("region", { name: "Open alert incidents" });
   const urls = (fetch: ReturnType<typeof vi.fn>) => fetch.mock.calls.map(([u]) => u as string);
   const incident = (id: string, delivery: AlertIncident["delivery"], over: Partial<AlertIncident> = {}): AlertIncident => ({
-    id, condition: "failed_run", severity: "critical", domain: "sales", product: "orders", table: null, component: null,
+    id, condition: "failed_run", severity: "critical", job: null, domain: "sales", product: "orders", table: null, component: null,
     opened_at: new Date(Date.now() - 3_600_000).toISOString(), last_seen_at: new Date(Date.now() - 120_000).toISOString(),
     summary: `incident ${id}`, run_ids: [], delivery, ...over,
   });
   const show = (body: StageAlertIncidents | Reply) =>
     api(() => ({ body: health() }), undefined, undefined, { alerts: () => ("state" in (body as object) ? { body } : body as Reply) });
+
+  it("links an incident's runs to their Failed-run screen and names its job", async () => {
+    show(incidentsOf({ incidents: [incident("a", { status: "delivered", event: "opened", attempts: 1, receivers: 1, delivered: 1 }, {
+      run_ids: ["c94cbcb0-5d1e-4a8e"], job: "sales_orders", product: null, domain: null,
+    })] }));
+    open();
+    const row = await within(await screen.findByRole("region", { name: "Open alert incidents" })).findByRole("row", { name: /incident a/ });
+    expect(within(row).getByRole("link", { name: "Open run c94cbcb0" })).toHaveAttribute("href", "/monitoring/prod/runs/c94cbcb0-5d1e-4a8e");
+    expect(row).toHaveTextContent("job sales_orders");
+  });
 
   it.each([
     ["pending", { status: "pending", event: "opened", attempts: 1, receivers: 2, delivered: 0 }, "Pending", "opened notification · 0 of 2 receivers · 1 attempt"],

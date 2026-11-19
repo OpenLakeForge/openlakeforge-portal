@@ -57,7 +57,7 @@ never contain it. These words in the SQL pick a behaviour:
 
 Export (CSV, JSON), cancel and the schema and table search all work. The
 browser tests in `e2e/` (Playwright) run against this mock: `npm run test:ui`.
-They save full-page screenshots of `/services`, `/queries`, `/files` and `/monitoring` (dark, light and
+They save full-page screenshots of `/services`, `/queries`, `/files`, `/monitoring` and a failed run (dark, light and
 390 px wide) in `test-results/screenshots/` for review; CI uploads them as the
 `ui-review` artifact. In a sandbox whose Chromium is not the revision Playwright
 expects, set `PW_CHROMIUM` to its path. Locally run `npx playwright install chromium` once.
@@ -97,10 +97,23 @@ the mock reads it from the request's Referer:
 | `unavailable` | The alert state cannot be read: `incidents: null`, shown as "Incidents cannot be read", never as none. |
 | `stale` | PROD's alert evaluator has stopped running: its incidents stay, flagged stale. |
 | `empty` | No open incident in a current evaluation, and no pipeline with quality evidence yet. |
+| `admin` | A platform admin: PROD's log archive is readable too, so the failed run shows its archived lines. |
 
 Without `mock=`, PROD's Data quality card sums the known counts (`crm_accounts` has none: "Counts unknown", never
 zeros; `finance_ledger`'s manifest is incomplete), and Open incidents lists one incident per delivery status
 (delivered, pending, undeliverable, unrouted, unknown). DEV's alert evaluator is stale and DEV has no quality reader.
+
+Each run named on the page (a Needs attention row, a pipeline's latest run, a quality row, an incident) links to its
+**Failed run** screen, `/monitoring/<stage>/runs/<run_id>`. It reads
+`GET /api/v1/stages/{stage}/runs/{run_id}/failure` (the failing steps, the first line of each error, redacted by the
+API, and the rows Floe rejected), `GET /api/v1/stages/{stage}/runs/{run_id}` (start and end), the pipelines, quality
+and incidents routes (domain and product, this run's quality counts, its open incidents), and, when the role may read
+the stage's log archive, the run's lines from `GET /api/v1/stages/{stage}/logs` for its UTC day. "Open in Dagster" is
+a plain link to the run on the stage's `orchestration` route; there is no Re-run in v0.7. A refused (403), unknown
+(404) or unreachable run reads Disabled or Unknown in the API's words, never green; a part the API could not read
+(`steps: null`, `rows: null`) says so and is never shown as "nothing failed" or zeros. In the mock, PROD's
+`sales_orders` run `c94cbcb0…` failed a Floe step; `mock=unknown` makes its event log and manifest unreadable,
+`mock=unauthorized` refuses it with 403, and a data-engineer (the default) is told PROD's archive is not theirs to read.
 
 ## Routes are a deploy-time parameter
 
@@ -213,6 +226,7 @@ src/
   routes.ts                route table
   routes/files.tsx         the Files explorer (buckets, folders, upload, rename, delete)
   routes/monitoring.tsx    Monitoring overview: platform and pipeline health per stage, from the Platform API
+  routes/monitoring-run.tsx Monitoring · Failed run: one run's failure, scope, quality, incidents and archived lines
   routes/home.tsx          the index: server loader reads the routes file per request, no-store
   routes/signed-out.tsx    where Logout lands, outside the perimeter
   routes/healthz.ts        liveness endpoint for the container

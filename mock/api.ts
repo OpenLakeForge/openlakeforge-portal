@@ -141,6 +141,8 @@ async function route(req: IncomingMessage, url: URL): Promise<{ status?: number;
   if (!STAGES.includes(stage)) throw new HttpError(404, `stage '${stage}' offers no query`);
   if (parts[2] === "buckets") return filesRoute(req, url, parts);
   if ((parts[2] === "health" || parts[2] === "alerts") && method === "GET") return monitoringRoute(scenarioOf(req), stage, parts.slice(2).join("/"));
+  if (parts[2] === "runs" && parts[3] && method === "GET") return runRoute(scenarioOf(req), stage, parts[3], parts[4]);
+  if (parts[2] === "logs" && method === "GET") return logsRoute(scenarioOf(req), stage, url);
   if (parts[2] === "schemas" && method === "GET") {
     const schemas = schemasOf(stage);
     if (parts.length === 3) { const p = page(Object.keys(schemas), url); return { json: { schemas: p.items, next_cursor: p.next } }; }
@@ -329,8 +331,9 @@ async function filesRoute(req: IncomingMessage, url: URL, parts: string[]): Prom
 /** `?mock=` on the page: `no-access` (an analyst: no stage), `limited` (a role with get_stage_health only, so no
  * pipelines, quality or incidents read is made), `unauthorized` (the routes answer 403 although the capabilities
  * offered them), `not-provided` (no quality reader, no alert evaluator), and for quality and incidents `unknown`,
- * `unavailable`, `stale` and `empty` (see qualityHealth and alertIncidents). */
-const MONITORING_SCENARIOS = ["no-access", "limited", "unauthorized", "not-provided", "unknown", "unavailable", "stale", "empty"] as const;
+ * `unavailable`, `stale` and `empty` (see qualityHealth and alertIncidents). `admin` is a platform admin: the log
+ * archive is read on prod too, so a failed run there shows its archived lines. */
+const MONITORING_SCENARIOS = ["no-access", "limited", "unauthorized", "not-provided", "unknown", "unavailable", "stale", "empty", "admin"] as const;
 type Scenario = (typeof MONITORING_SCENARIOS)[number] | undefined;
 function scenarioOf(req: IncomingMessage): Scenario {
   let asked: string | null = null;
@@ -345,13 +348,14 @@ const ROUTE_OPS: Record<string, string> = {
   "health/quality": "get_stage_quality_health", "alerts/incidents": "list_alert_incidents",
 };
 
-/** As platform-api builds it from its settings: a data-engineer's view, so logs on dev only. */
+/** As platform-api builds it from its settings: a data-engineer's view, so logs on dev only (both stages for `admin`). */
 function monitoringCapabilities(scenario: Scenario) {
   if (scenario === "no-access") return { stages: [] };
   return {
     stages: STAGES.map((stage) => ({
       stage,
-      operations: scenario === "limited" ? ["get_stage_health", "get_stage_service_health"] : MONITORING_OPS.filter((op) => op !== "list_logs" || stage === "dev"),
+      operations: scenario === "limited" ? ["get_stage_health", "get_stage_service_health"]
+        : MONITORING_OPS.filter((op) => op !== "list_logs" || stage === "dev" || scenario === "admin"),
       capabilities: [
         { name: "dagster", status: "available", reason: "a Dagster webserver is configured" },
         { name: "services", status: "available", reason: "service probes are configured" },
@@ -359,7 +363,7 @@ function monitoringCapabilities(scenario: Scenario) {
           : { name: "quality", status: "not_provided", reason: "no quality manifest reader is configured for this stage" },
         stage === "prod" ? { name: "quality-sync", status: "available", reason: "read from the reconciler's quality-sync summary" }
           : { name: "quality-sync", status: "not_provided", reason: "no quality results are published from this stage" },
-        stage === "dev" ? { name: "logs", status: "available", reason: "a log archive is configured" }
+        stage === "dev" || scenario === "admin" ? { name: "logs", status: "available", reason: "a log archive is configured" }
           : { name: "logs", status: "unavailable", reason: "the platform API holds no object-store key for the log archive" },
         { name: "metrics", status: "not_provided", reason: "no metrics source is connected to the API" },
         scenario === "not-provided" ? { name: "alerts", status: "not_provided", reason: "no alert evaluator, or no key to read its state, is configured" }
@@ -440,6 +444,9 @@ function stageHealth(stage: string) {
 // check, a missed run, a stopped schedule whose last run warned on quality, and one healthy pipeline. dev answers
 // 200 with Dagster unavailable and no pipelines, as the API does when Dagster cannot be read.
 
+/** Each job's domain and data product, from its definition's tags (#1272); web_events declares no product. */
+const SCOPES: Record<string, [string, string]> = { sales_orders: ["sales", "orders"], crm_accounts: ["crm", "accounts"], finance_ledger: ["finance", "ledger"] };
+
 const PROD_PIPELINES = [
   { job: "sales_orders", state: "critical" },
   { job: "crm_accounts", state: "critical" },
@@ -456,7 +463,7 @@ function pipelinesHealth(stage: string) {
     ({ run_id: id, job_name: job, status, created_at: secs(-ago), started_at: secs(-ago + 5), ended_at: secs(-ago + took), tags: {} });
   const signal = (kind: string, state: string, reason: string, r: { run_id: string; ended_at: number } | null, maxAge: number | null) => {
     const observed = r ? r.ended_at * 1000 : now;
-    return { kind, state, reason, run: r?.run_id ?? null, observed_at: new Date(observed).toISOString(), expires_at: maxAge === null ? null : new Date(observed + maxAge * 1000).toISOString() };
+    return { kind, state, reason, run: r?.run_id ?? null, observed_at: new Date(observed).toISOString(), expires_at: maxAge === null ? null : new Date(observed + maxAge * 1000).toISOString(), due: null as string | null };
   };
   const daily = 24 * H + 900;
   const dagster = stage === "prod"
@@ -479,7 +486,7 @@ function pipelinesHealth(stage: string) {
   const web = run("web_events", "0d9c3e7a-6b28-4f15-a3d0-8e1c5b2f4a67", "SUCCESS", 25 * 60, 60);
   const health = (job: string, latest: ReturnType<typeof run>, success: ReturnType<typeof run> | null, failed: number,
     schedule: { name: string | null; status: string; last_expected_at: string | null }, signals: unknown[]) => ({
-    job, state: PROD_PIPELINES.find((p) => p.job === job)!.state, latest_run: latest, last_success: success, failed_runs: failed, schedule,
+    job, domain: SCOPES[job]?.[0] ?? null, product: SCOPES[job]?.[1] ?? null, state: PROD_PIPELINES.find((p) => p.job === job)!.state, latest_run: latest, last_success: success, failed_runs: failed, schedule,
     freshness: { last_success_at: success ? new Date(success.ended_at * 1000).toISOString() : null, age_seconds: success ? secs(0) - success.ended_at : null },
     signals,
   });
@@ -496,7 +503,7 @@ function pipelinesHealth(stage: string) {
       health("crm_accounts", crmOk, crmOk, 0, { name: "crm_accounts_daily", status: "running", last_expected_at: iso(-35 * 60) }, [
         signal("execution", "healthy", "latest run succeeded", crmOk, daily),
         signal("latest_success", "healthy", "a successful run is on record", crmOk, daily),
-        signal("expected_run", "critical", "an expected run did not start", null, 300),
+        { ...signal("expected_run", "critical", "an expected run did not start", null, 300), due: iso(-35 * 60) },
         signal("freshness", "critical", "no run succeeded since the previous due time plus its grace", crmOk, null),
         signal("quality", "healthy", "quality checks passed", crmOk, daily),
       ]),
@@ -534,14 +541,14 @@ function qualityHealth(stage: string, scenario: Scenario) {
   const integrations = [{ name: "dagster", status: "available", reason: "read from Dagster" }, quality];
   if (scenario === "empty") return { ...base, integrations, totals: null, pipelines: [] };
   const counts = (passed: number, warn: number, error: number, blocking = 0, not_run = 0, unknown = 0) => ({ passed, warn, error, not_run, unknown, blocking });
-  const entry = (job: string, domain: string, run_id: string | null, at: number | null, complete: boolean | null, state: string,
+  const entry = (job: string, domain: string | null, run_id: string | null, at: number | null, complete: boolean | null, state: string,
     c: ReturnType<typeof counts> | null, reason: string) =>
-    ({ job, domain, product: job, run_id, observed_at: at === null ? null : iso(-at), complete, state, counts: c, reason });
+    ({ job, domain, product: SCOPES[job]?.[1] ?? null, run_id, observed_at: at === null ? null : iso(-at), complete, state, counts: c, reason });
   const pipelines = [
     entry("sales_orders", "sales", "c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21", 40 * 60, true, "critical", counts(14, 1, 2, 1), "a blocking quality check failed"),
     entry("crm_accounts", "crm", null, null, null, "unknown", null, "no finished run of the pipeline has quality evidence yet"),
     entry("finance_ledger", "finance", "e5d27b8c-0f41-4a9e-b6c3-1d8a2f7e9b05", 2 * 24 * 3600, false, "warning", counts(8, 2, 0, 0, 1), "quality checks warned"),
-    entry("web_events", "web", "0d9c3e7a-6b28-4f15-a3d0-8e1c5b2f4a67", 25 * 60, true, "healthy", counts(6, 0, 0), "quality checks passed"),
+    entry("web_events", null, "0d9c3e7a-6b28-4f15-a3d0-8e1c5b2f4a67", 25 * 60, true, "healthy", counts(6, 0, 0), "quality checks passed"),
   ];
   const known = pipelines.flatMap((p) => (p.counts ? [p.counts] : []));
   const totals = Object.fromEntries(Object.keys(counts(0, 0, 0)).map((k) => [k, known.reduce((n, c) => n + c[k as keyof typeof c], 0)]));
@@ -566,7 +573,8 @@ function alertIncidents(stage: string, scenario: Scenario) {
   if (scenario === "empty") return { stage, state, incidents: [] };
   const incident = (id: string, condition: string, severity: string, scope: [string | null, string | null, string | null, string | null],
     opened: number, summary: string, runs: string[], delivery: Record<string, unknown>) => ({
-    id, condition, severity, domain: scope[0], product: scope[1], table: scope[2], component: scope[3],
+    id, condition, severity, job: scope[1], domain: scope[1] ? SCOPES[scope[1]]?.[0] ?? null : null, product: scope[1] ? SCOPES[scope[1]]?.[1] ?? null : null,
+    table: scope[2], component: scope[3],
     opened_at: iso(-opened), last_seen_at: iso(-140), summary, run_ids: runs, delivery,
   });
   if (stage === "dev") {
@@ -588,4 +596,76 @@ function alertIncidents(stage: string, scenario: Scenario) {
         [], { status: "unknown", event: null, attempts: null, receivers: null, delivered: null }),
     ],
   };
+}
+
+// ── One run (openlakeforge #1271): Run, RunFailure and its archived lines. sales_orders' failed run has a failed
+// Floe step and rejected rows; the other runs on record succeeded. `unknown` makes the event log and the manifest
+// unreadable (steps and rows null, never empty); `unauthorized` and `limited` are refused with 403; dev's Dagster cannot
+// be read (502); an id no pipeline has is a 404.
+
+const FAILED_RUN = "c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21";
+
+function runsOnRecord() {
+  const runs = (pipelinesHealth("prod").pipelines as { latest_run: Record<string, unknown> | null; last_success: Record<string, unknown> | null }[])
+    .flatMap((p) => [p.latest_run, p.last_success]).filter((r): r is Record<string, unknown> => r !== null);
+  return new Map(runs.map((r) => [r.run_id as string, r]));
+}
+
+function runRoute(scenario: Scenario, stage: string, id: string, sub: string | undefined): { json: unknown } {
+  const op = sub === "failure" ? "get_run_failure" : sub === undefined ? "get_run" : undefined;
+  if (!op) throw new HttpError(404, "Not Found");
+  if (scenario === "unauthorized" || scenario === "limited" || scenario === "no-access") throw new HttpError(403, `role analyst may not call ${op} on stage '${stage}'`);
+  if (stage !== "prod") throw new HttpError(502, `Dagster for stage '${stage}' could not be read`);
+  const run = runsOnRecord().get(id);
+  if (!run) throw new HttpError(404, `no run '${id}' in stage '${stage}'`);
+  if (op === "get_run") return { json: run };
+  const product = (run.job_name as string) in SCOPES;
+  const failed = run.status === "FAILURE";
+  const unknown = scenario === "unknown" && failed;
+  return {
+    json: {
+      run_id: id, job: run.job_name, status: run.status,
+      steps: unknown ? null : failed ? [{
+        step: "floe_silver_orders", error_class: "SchemaMismatchError",
+        message: "orders.amount: expected decimal(18,2), found string in orders_2026-11-16.csv; policy abort, 0 rows written to sales_silver.orders",
+        message_truncated: true,
+      }] : [],
+      run_message: null, steps_truncated: false,
+      rows: unknown || !product ? null : failed ? { rejected: 412, accepted: 0, complete: true } : { rejected: 0, accepted: 19402, complete: true },
+      sources: [
+        unknown ? { name: "dagster", status: "unavailable", reason: "the run's event log could not be read" }
+          : { name: "dagster", status: "available", reason: failed ? "read from the run's event log" : "the run succeeded" },
+        unknown ? { name: "quality", status: "unavailable", reason: "the run's quality manifest could not be read" }
+          : product ? { name: "quality", status: "available", reason: "read from the run's quality manifest" }
+            : { name: "quality", status: "not_provided", reason: "only a product pipeline's run writes a quality manifest" },
+      ],
+    },
+  };
+}
+
+/** The log archive, as list_logs answers it: the role's stages only, lines of one UTC day, oldest first. */
+function logsRoute(scenario: Scenario, stage: string, url: URL): { json: unknown } {
+  const access = monitoringCapabilities(scenario).stages.find((s) => s.stage === stage);
+  if (!access?.operations.includes("list_logs") || scenario === "unauthorized") throw new HttpError(403, `role data-engineer may not call list_logs on stage '${stage}'`);
+  if (!url.searchParams.get("date")) throw new HttpError(422, "date is required");
+  const runId = url.searchParams.get("run_id") ?? "";
+  const floor = url.searchParams.get("severity");
+  const rank: Record<string, number> = { INFO: 1, WARN: 2, ERROR: 3 };
+  const min = floor === "error" ? 3 : floor === "warning" ? 2 : 0;
+  const at = new Date().toISOString();
+  const line = (container: string, level: string, t: string, text: string) => ({
+    archived_at: at, namespace: `olf-${stage}`, pod: `dagster-run-${runId.slice(0, 8)}`, container, line: `${t} ${level.padEnd(5)} ${text}`, error: null,
+    component: container, product: "orders", domain: "sales", run_id: runId, stage, source: "pod", stream: "stdout", missing: null, level,
+  });
+  const lines = runId !== FAILED_RUN ? [] : [
+    line("floe", "INFO", "03:02:11.204", "Starting Silver load sales.orders"),
+    line("floe", "INFO", "03:02:11.882", "Reading bronze crm/orders/2026-11-16 · 3 files"),
+    line("floe", "INFO", "03:02:14.310", "Validating 19,402 rows against sales/orders"),
+    line("floe", "WARN", "03:03:52.017", "floe_cast_error orders.ordered_at · 412 rows quarantined"),
+    line("floe", "ERROR", "03:04:03.551", "floe_schema_mismatch orders.amount · expected decimal(18,2), found string"),
+    line("floe", "ERROR", "03:04:03.552", "policy abort · stopping before commit, 0 rows written"),
+    line("floe", "INFO", "03:04:05.118", "Report written to floe/reports/sales/run_c94cbcb0/"),
+    line("dagster", "INFO", "03:04:05.240", "Step floe_silver_orders failed · Gold skipped"),
+  ];
+  return { json: { lines: lines.filter((l) => rank[l.level] >= min).map(({ level: _, ...l }) => l), truncated: false } };
 }
