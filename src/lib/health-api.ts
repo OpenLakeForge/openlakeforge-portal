@@ -210,3 +210,94 @@ export function gate(access: MonitoringStage, source: SourceName, op: Monitoring
   // `unavailable` is configured but missing a piece (a key, the probes): a gap, not a choice.
   return { open: false, state: c.status === "unavailable" ? "unknown" : "disabled", reason: c.reason };
 }
+
+// ── Quality counts (#1257) and alert incidents (#1258) ──────────────────────────────────────────────────
+
+/** Results of one quality manifest, or a sum of them, by outcome. `blocking` sits beside `error`, not inside it. */
+export type QualityCounts = { passed: number; warn: number; error: number; not_run: number; unknown: number; blocking: number };
+/** The manifest behind one pipeline's quality signal. `counts: null` is no manifest (unknown), never zero checks. */
+export type PipelineQuality = {
+  job: string;
+  domain: string | null;
+  product: string;
+  run_id: string | null;
+  observed_at: string | null;
+  complete: boolean | null;
+  state: HealthState;
+  counts: QualityCounts | null;
+  reason: string;
+};
+export type StageQualityHealth = { stage: string; evaluated_at: string; integrations: Integration[]; totals: QualityCounts | null; pipelines: PipelineQuality[] };
+
+export type DeliveryStatus = "pending" | "delivered" | "undeliverable" | "unrouted" | "unknown";
+/** The incident's latest notification: queued, or how it left the outbox. Counts only, never a receiver. */
+export type AlertDelivery = {
+  status: DeliveryStatus;
+  event: "opened" | "escalated" | "resolved" | null;
+  attempts: number | null;
+  receivers: number | null;
+  delivered: number | null;
+};
+export type AlertIncident = {
+  id: string;
+  condition: string;
+  severity: "warning" | "critical";
+  domain: string | null;
+  product: string | null;
+  table: string | null;
+  component: string | null;
+  opened_at: string;
+  last_seen_at: string;
+  summary: string;
+  run_ids: string[];
+  delivery: AlertDelivery;
+};
+/** `incidents: null` is "could not be read", never "none open"; `stale` says the evaluator has stopped running. */
+export type StageAlertIncidents = {
+  stage: string;
+  state: { status: "available" | "unavailable" | "not_provided"; reason: string; evaluated_at: string | null; stale: boolean | null };
+  incidents: AlertIncident[] | null;
+};
+
+const COUNTS = ["passed", "warn", "error", "not_run", "unknown", "blocking"] as const;
+const isCounts = (v: unknown) => isObject(v) && COUNTS.every((k) => Number.isInteger(v[k]) && (v[k] as number) >= 0);
+const isCountsOrNull = (v: unknown) => v === null || isCounts(v);
+const isPipelineQuality = (v: unknown) =>
+  isObject(v) && isText(v.job) && isTextOrNull(v.domain) && isText(v.product) && isTextOrNull(v.run_id) && isTextOrNull(v.observed_at)
+  && (v.complete === null || typeof v.complete === "boolean") && STATES.has(v.state) && isCountsOrNull(v.counts) && isText(v.reason);
+const DELIVERY = new Set<unknown>(["pending", "delivered", "undeliverable", "unrouted", "unknown"]);
+const isDelivery = (v: unknown) =>
+  isObject(v) && DELIVERY.has(v.status) && (v.event === null || ["opened", "escalated", "resolved"].includes(v.event as string))
+  && isNumberOrNull(v.attempts) && isNumberOrNull(v.receivers) && isNumberOrNull(v.delivered);
+const isIncident = (v: unknown) =>
+  isObject(v) && isText(v.id) && isText(v.condition) && (v.severity === "warning" || v.severity === "critical")
+  && isTextOrNull(v.domain) && isTextOrNull(v.product) && isTextOrNull(v.table) && isTextOrNull(v.component)
+  && isText(v.opened_at) && isText(v.last_seen_at) && isText(v.summary) && Array.isArray(v.run_ids) && v.run_ids.every(isText) && isDelivery(v.delivery);
+
+export function isStageQualityHealth(body: unknown): body is StageQualityHealth {
+  return isObject(body) && isText(body.stage) && isText(body.evaluated_at)
+    && Array.isArray(body.integrations) && body.integrations.every(isIntegration)
+    && isCountsOrNull(body.totals) && Array.isArray(body.pipelines) && body.pipelines.every(isPipelineQuality);
+}
+
+export function isStageAlertIncidents(body: unknown): body is StageAlertIncidents {
+  const s = isObject(body) ? body.state : undefined;
+  return isObject(body) && isText(body.stage)
+    && isObject(s) && ["available", "unavailable", "not_provided"].includes(s.status as string) && isText(s.reason)
+    && isTextOrNull(s.evaluated_at) && (s.stale === null || typeof s.stale === "boolean")
+    && (body.incidents === null || (Array.isArray(body.incidents) && body.incidents.every(isIncident)));
+}
+
+/** Each pipeline's quality outcome counts and their sum. A stage without Dagster is a 404. */
+export async function getQualityHealth(stage: string, signal?: AbortSignal): Promise<StageQualityHealth> {
+  const body = await read("health/quality", stage, signal);
+  if (!isStageQualityHealth(body)) throw new ApiError(200, explain(500, stage));
+  return body;
+}
+
+/** The stage's open incidents and their latest notification's delivery. There is no acknowledgement, by decision. */
+export async function getAlertIncidents(stage: string, signal?: AbortSignal): Promise<StageAlertIncidents> {
+  const body = await read("alerts/incidents", stage, signal);
+  if (!isStageAlertIncidents(body)) throw new ApiError(200, explain(500, stage));
+  return body;
+}

@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
 import {
-  ApiError, effective, gate, getMonitoringCapabilities, getPipelinesHealth, getStageHealth, worst,
-  type Gate, type HealthState, type MonitoringCapabilities, type MonitoringStage, type ServiceHealth, type StageHealth,
+  ApiError, effective, gate, getAlertIncidents, getMonitoringCapabilities, getPipelinesHealth, getQualityHealth, getStageHealth, worst,
+  type Gate, type HealthState, type MonitoringCapabilities, type MonitoringStage, type ServiceHealth, type StageAlertIncidents,
+  type StageHealth, type StageQualityHealth,
 } from "../lib/health-api";
+import { alerts, AlertsCard, IncidentsTable } from "./MonitoringAlerts";
 import { absent, NeedsAttention, pipes, PipelinesCard, PipelinesTable, pipesLine, type Part, type PipesLoad } from "./MonitoringPipelines";
+import { quality, QualityCard, QualityTable } from "./MonitoringQuality";
 import { LABEL, StatusBadge } from "./StatusBadge";
 
 const REFRESH_MS = 30_000;
-/** How long one snapshot (the stage and pipelines reads, together) may take before the page calls the API unreachable. */
+/** How long one snapshot (the stage, pipelines, quality and incidents reads, together) may take before the page calls the API unreachable. */
 export const DEADLINE_MS = 10_000;
 const timedOut = () =>
   new ApiError(0, `The monitoring API did not answer within ${DEADLINE_MS / 1000} s, so nothing on this page can be shown as healthy.`);
@@ -29,7 +32,7 @@ const TITLE: Record<HealthState, string> = {
 
 type Load =
   | { status: "loading" }
-  | { status: "ok"; stage: string; data: StageHealth | null; pipes: PipesLoad; at: number }
+  | { status: "ok"; stage: string; data: StageHealth | null; pipes: PipesLoad; quality: Part<StageQualityHealth>; alerts: Part<StageAlertIncidents>; at: number }
   | { status: "error"; error: ApiError };
 type Caps = { status: "loading" } | { status: "ok"; data: MonitoringCapabilities } | { status: "error"; error: ApiError };
 const retryable = (e: ApiError) => !(e.status === 401 || e.status === 403 || e.status === 404);
@@ -61,14 +64,28 @@ const oldest = (rows: Shown[]) =>
 
 type Retry = { onRetry(): void; lastGood?: number };
 
-function Overview({ access, health, pipesLoad, now, retry }: { access: MonitoringStage; health: StageHealth | null; pipesLoad: PipesLoad; now: number; retry: Retry }) {
+type Snapshot = Extract<Load, { status: "ok" }>;
+
+function Overview({ access, snap, now, retry }: { access: MonitoringStage; snap: Snapshot; now: number; retry: Retry }) {
   const stage = access.stage.toUpperCase();
-  const p = pipes(pipesLoad, now);
+  const health = snap.data;
+  const p = pipes(snap.pipes, now);
+  const q = quality(snap.quality);
+  const a = alerts(snap.alerts);
   const pipesRetry = !p.ok && p.error && retryable(p.error) ? retry : undefined;
+  const cards = (
+    <>
+      <PipelinesCard p={p} now={now} />
+      <QualityCard q={q} retry={retry.onRetry} />
+      <AlertsCard a={a} now={now} />
+    </>
+  );
   const pipelinePanels = (
     <>
       <NeedsAttention p={p} now={now} stage={access.stage} retry={pipesRetry} />
+      <IncidentsTable a={a} now={now} retry={retry.onRetry} />
       {p.ok && <PipelinesTable p={p} now={now} />}
+      {q.ok && <QualityTable q={q} now={now} />}
     </>
   );
   // A role without get_stage_health: no rollup to show, so the page says so and keeps the panels it may read.
@@ -81,7 +98,7 @@ function Overview({ access, health, pipesLoad, now, retry }: { access: Monitorin
             <p>Your role may not read the stage health of {stage}, so no rollup or service row can be shown.</p>
           </div>
         </section>
-        <div className="mon-summary"><PipelinesCard p={p} now={now} /></div>
+        <div className="mon-summary">{cards}</div>
         {pipelinePanels}
       </>
     );
@@ -142,7 +159,7 @@ function Overview({ access, health, pipesLoad, now, retry }: { access: Monitorin
             : <p className="mon-value"><strong>{ready} of {groups.length}</strong> ready</p>}
           <p className="mon-note">{servicesGap ? servicesReason : groups.map((g) => g.name).join(", ")}</p>
         </section>
-        <PipelinesCard p={p} now={now} />
+        {cards}
       </div>
 
       {pipelinePanels}
@@ -270,12 +287,17 @@ export function Monitoring({ stages }: { stages: string[] }) {
       : Promise.resolve({ status: "off", state: g.state, reason: g.reason });
     setLoad((l) => (l.status === "ok" && l.stage === stage ? l : { status: "loading" }));
     const pipesRead = part(gate(access, "dagster", "list_pipeline_health", "pipeline health"), () => getPipelinesHealth(stage, ctl.signal));
+    // Quality counts come from the same Dagster pass as the pipelines: they need both sources.
+    const qualityGate = gate(access, "quality", "get_stage_quality_health", "quality counts");
+    const qualityRead = part(qualityGate.open ? gate(access, "dagster", "get_stage_quality_health", "quality counts") : qualityGate,
+      () => getQualityHealth(stage, ctl.signal));
+    const alertsRead = part(gate(access, "alerts", "list_alert_incidents", "alert incidents"), () => getAlertIncidents(stage, ctl.signal));
     const healthRead = access.operations.includes("get_stage_health") ? getStageHealth(stage, ctl.signal) : Promise.resolve(null);
     healthRead.then(
       async (data) => {
         stageAnswered = true;
-        const pipesLoad = await pipesRead;
-        settle({ status: "ok", stage, data, pipes: pipesLoad, at: Date.now() });
+        const [pipesLoad, qualityLoad, alertsLoad] = await Promise.all([pipesRead, qualityRead, alertsRead]);
+        settle({ status: "ok", stage, data, pipes: pipesLoad, quality: qualityLoad, alerts: alertsLoad, at: Date.now() });
       },
       (e) => settle({ status: "error", error: failure(e) }),
     );
@@ -321,7 +343,7 @@ export function Monitoring({ stages }: { stages: string[] }) {
           : load.status === "error"
             ? <Unavailable name={stage.toUpperCase()} error={load.error} lastGood={lastGood} onRetry={retry} />
             : ready
-              ? <Overview access={access} health={ready.data} pipesLoad={ready.pipes} now={now} retry={{ onRetry: retry, lastGood: lastGoodPipes }} />
+              ? <Overview access={access} snap={ready} now={now} retry={{ onRetry: retry, lastGood: lastGoodPipes }} />
               : <p className="mon-loading" role="status">Reading {stage.toUpperCase()} health…</p>}
       </>
     );

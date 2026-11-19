@@ -327,8 +327,10 @@ async function filesRoute(req: IncomingMessage, url: URL, parts: string[]): Prom
 // ── Monitoring capabilities (openlakeforge #1259) and the scenarios a reviewer can pick ───────────────────────
 
 /** `?mock=` on the page: `no-access` (an analyst: no stage), `limited` (a role with get_stage_health only, so no
- * pipelines read is made) and `unauthorized` (the routes answer 403 although the capabilities offered them). */
-const MONITORING_SCENARIOS = ["no-access", "limited", "unauthorized"] as const;
+ * pipelines, quality or incidents read is made), `unauthorized` (the routes answer 403 although the capabilities
+ * offered them), `not-provided` (no quality reader, no alert evaluator), and for quality and incidents `unknown`,
+ * `unavailable`, `stale` and `empty` (see qualityHealth and alertIncidents). */
+const MONITORING_SCENARIOS = ["no-access", "limited", "unauthorized", "not-provided", "unknown", "unavailable", "stale", "empty"] as const;
 type Scenario = (typeof MONITORING_SCENARIOS)[number] | undefined;
 function scenarioOf(req: IncomingMessage): Scenario {
   let asked: string | null = null;
@@ -353,14 +355,15 @@ function monitoringCapabilities(scenario: Scenario) {
       capabilities: [
         { name: "dagster", status: "available", reason: "a Dagster webserver is configured" },
         { name: "services", status: "available", reason: "service probes are configured" },
-        stage === "prod" ? { name: "quality", status: "available", reason: "read from the stage's quality manifests" }
+        stage === "prod" && scenario !== "not-provided" ? { name: "quality", status: "available", reason: "read from the stage's quality manifests" }
           : { name: "quality", status: "not_provided", reason: "no quality manifest reader is configured for this stage" },
         stage === "prod" ? { name: "quality-sync", status: "available", reason: "read from the reconciler's quality-sync summary" }
           : { name: "quality-sync", status: "not_provided", reason: "no quality results are published from this stage" },
         stage === "dev" ? { name: "logs", status: "available", reason: "a log archive is configured" }
           : { name: "logs", status: "unavailable", reason: "the platform API holds no object-store key for the log archive" },
         { name: "metrics", status: "not_provided", reason: "no metrics source is connected to the API" },
-        { name: "alerts", status: "available", reason: "the alert evaluator's state is configured" },
+        scenario === "not-provided" ? { name: "alerts", status: "not_provided", reason: "no alert evaluator, or no key to read its state, is configured" }
+          : { name: "alerts", status: "available", reason: "the alert evaluator's state is configured" },
       ],
     })),
   };
@@ -375,6 +378,8 @@ function monitoringRoute(scenario: Scenario, stage: string, path: string): { sta
   if (path === "health") return { json: stageHealth(stage) };
   if (path === "health/services") return { json: { stage, services: stageHealth(stage).services } };
   if (path === "health/pipelines") return { json: pipelinesHealth(stage) };
+  if (path === "health/quality") return { json: qualityHealth(stage, scenario) };
+  if (path === "alerts/incidents") return { json: alertIncidents(stage, scenario) };
   throw new HttpError(404, "Not Found");
 }
 
@@ -509,6 +514,78 @@ function pipelinesHealth(stage: string) {
         signal("freshness", "healthy", "a run succeeded since the previous due time", web, null),
         signal("quality", "healthy", "quality checks passed", web, H + 900),
       ]),
+    ],
+  };
+}
+
+// ── Quality counts (openlakeforge #1257): StageQualityHealth. prod: sales_orders failed a blocking check,
+// finance_ledger warned and its manifest is incomplete, crm_accounts has no usable manifest (counts null, never
+// zeros), web_events passed. `unknown`: Dagster could not be read, so no counts at all. `empty`: no pipeline has
+// quality evidence yet.
+
+function qualityHealth(stage: string, scenario: Scenario) {
+  const now = Date.now();
+  const iso = (offset: number) => new Date(now + offset * 1000).toISOString();
+  const quality = { name: "quality", status: "available", reason: "read from the stage's quality manifests" };
+  const base = { stage, evaluated_at: iso(-18) };
+  if (scenario === "unknown") {
+    return { ...base, integrations: [{ name: "dagster", status: "unavailable", reason: "the read did not finish within 20 s" }, quality], totals: null, pipelines: [] };
+  }
+  const integrations = [{ name: "dagster", status: "available", reason: "read from Dagster" }, quality];
+  if (scenario === "empty") return { ...base, integrations, totals: null, pipelines: [] };
+  const counts = (passed: number, warn: number, error: number, blocking = 0, not_run = 0, unknown = 0) => ({ passed, warn, error, not_run, unknown, blocking });
+  const entry = (job: string, domain: string, run_id: string | null, at: number | null, complete: boolean | null, state: string,
+    c: ReturnType<typeof counts> | null, reason: string) =>
+    ({ job, domain, product: job, run_id, observed_at: at === null ? null : iso(-at), complete, state, counts: c, reason });
+  const pipelines = [
+    entry("sales_orders", "sales", "c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21", 40 * 60, true, "critical", counts(14, 1, 2, 1), "a blocking quality check failed"),
+    entry("crm_accounts", "crm", null, null, null, "unknown", null, "no finished run of the pipeline has quality evidence yet"),
+    entry("finance_ledger", "finance", "e5d27b8c-0f41-4a9e-b6c3-1d8a2f7e9b05", 2 * 24 * 3600, false, "warning", counts(8, 2, 0, 0, 1), "quality checks warned"),
+    entry("web_events", "web", "0d9c3e7a-6b28-4f15-a3d0-8e1c5b2f4a67", 25 * 60, true, "healthy", counts(6, 0, 0), "quality checks passed"),
+  ];
+  const known = pipelines.flatMap((p) => (p.counts ? [p.counts] : []));
+  const totals = Object.fromEntries(Object.keys(counts(0, 0, 0)).map((k) => [k, known.reduce((n, c) => n + c[k as keyof typeof c], 0)]));
+  return { ...base, integrations, totals, pipelines };
+}
+
+// ── Alert incidents (openlakeforge #1258): StageAlertIncidents. prod has one open incident per delivery status;
+// dev's evaluator stopped running (stale). `stale` makes prod stale too, `unknown` has a state with no evaluation
+// time (stale), `unavailable` cannot read the state (incidents null), `empty` has none open.
+
+function alertIncidents(stage: string, scenario: Scenario) {
+  const now = Date.now();
+  const iso = (offset: number) => new Date(now + offset * 1000).toISOString();
+  if (scenario === "unavailable") {
+    return { stage, state: { status: "unavailable", reason: "the alert evaluator has not written a state yet", evaluated_at: null, stale: null }, incidents: null };
+  }
+  const stale = scenario === "stale" || (stage === "dev" && scenario !== "empty");
+  const evaluated = stale ? iso(-47 * 60) : iso(-140);
+  const state = scenario === "unknown"
+    ? { status: "available", reason: "the alert state does not say when it was evaluated", evaluated_at: null, stale: true }
+    : { status: "available", reason: stale ? `the alert evaluator has not run since ${evaluated}` : "read from the alert evaluator's state", evaluated_at: evaluated, stale };
+  if (scenario === "empty") return { stage, state, incidents: [] };
+  const incident = (id: string, condition: string, severity: string, scope: [string | null, string | null, string | null, string | null],
+    opened: number, summary: string, runs: string[], delivery: Record<string, unknown>) => ({
+    id, condition, severity, domain: scope[0], product: scope[1], table: scope[2], component: scope[3],
+    opened_at: iso(-opened), last_seen_at: iso(-140), summary, run_ids: runs, delivery,
+  });
+  if (stage === "dev") {
+    return { stage, state, incidents: [incident("dev-health", "health_unreadable", "warning", [null, null, null, "dagster.read-api"], 50 * 60,
+      "the stage health could not be read", [], { status: "delivered", event: "opened", attempts: 1, receivers: 1, delivered: 1 })] };
+  }
+  return {
+    stage, state,
+    incidents: [
+      incident("prod-sales-failed", "failed_run", "critical", ["sales", "sales_orders", null, null], 38 * 60, "latest run failed",
+        ["c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21"], { status: "delivered", event: "opened", attempts: 1, receivers: 2, delivered: 2 }),
+      incident("prod-sales-quality", "quality_blocking", "critical", ["sales", "sales_orders", "silver.orders", null], 38 * 60, "a blocking quality check failed",
+        ["c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21"], { status: "pending", event: "escalated", attempts: 2, receivers: 2, delivered: 1 }),
+      incident("prod-crm-missed", "missed_run", "critical", ["crm", "crm_accounts", null, null], 20 * 60, "an expected run did not start",
+        [], { status: "undeliverable", event: "opened", attempts: 10, receivers: 1, delivered: 0 }),
+      incident("prod-spool", "service_degraded", "warning", [null, null, null, "log-archive.spool-age"], 12 * 60, "No durable write for 12 min (limit 10 min)",
+        [], { status: "unrouted", event: "opened", attempts: 0, receivers: 0, delivered: 0 }),
+      incident("prod-ledger-schedule", "schedule_mismatch", "warning", ["finance", "finance_ledger", null, null], 3 * 24 * 3600, "schedule is stopped",
+        [], { status: "unknown", event: null, attempts: null, receivers: null, delivered: null }),
     ],
   };
 }

@@ -92,6 +92,15 @@ the mock reads it from the request's Referer:
 | `no-access` | `monitoring-capabilities` lists no stage (an analyst): "No monitoring access", and no stage route is called. |
 | `limited` | The role may call `get_stage_health` only: no pipelines read is made, and the panels say why. |
 | `unauthorized` | The capabilities offer the stage but its routes answer 403: the API's words, as Disabled, with no Retry. |
+| `not-provided` | No quality reader and no alert evaluator: both panels say "not configured", and neither route is called. |
+| `unknown` | Quality: Dagster could not be read, so no counts. Incidents: the state does not say when it was evaluated, so stale. |
+| `unavailable` | The alert state cannot be read: `incidents: null`, shown as "Incidents cannot be read", never as none. |
+| `stale` | PROD's alert evaluator has stopped running: its incidents stay, flagged stale. |
+| `empty` | No open incident in a current evaluation, and no pipeline with quality evidence yet. |
+
+Without `mock=`, PROD's Data quality card sums the known counts (`crm_accounts` has none: "Counts unknown", never
+zeros; `finance_ledger`'s manifest is incomplete), and Open incidents lists one incident per delivery status
+(delivered, pending, undeliverable, unrouted, unknown). DEV's alert evaluator is stale and DEV has no quality reader.
 
 ## Routes are a deploy-time parameter
 
