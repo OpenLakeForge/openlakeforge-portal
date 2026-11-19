@@ -324,6 +324,20 @@ describe("pipelines and needs attention", () => {
     expect(pipelineRow("sales_orders")).toHaveTextContent("2 of last 25 runs");
   });
 
+  it("reads a pipelines answer with `window: null` as no window, in the run-window wording", async () => {
+    api(() => ({ body: health() }), () => ({ body: { ...pipes({ pipelines: [pipeline("sales_orders", { failed_runs: 2 })] }), window: null } }));
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    expect(pipelineRow("sales_orders")).toHaveTextContent("2 of last 25 runs");
+  });
+
+  it("accepts a stage health answer with `window: null`", async () => {
+    api(() => ({ body: { ...health(), window: null, failed_runs: null } }));
+    open();
+    expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
+    expect(await getStageHealth("prod")).toMatchObject({ window: null });
+  });
+
   it("does not take a window that is not a HealthWindow as an answer", async () => {
     api(() => ({ body: health() }), () => ({ body: { ...pipes(), window: { range: "24h" } } }));
     open();

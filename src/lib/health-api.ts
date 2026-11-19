@@ -199,6 +199,8 @@ const isPipeline = (v: unknown) =>
   && isObject(v.freshness) && isTextOrNull(v.freshness.last_success_at) && isNumberOrNull(v.freshness.age_seconds)
   && Array.isArray(v.signals) && v.signals.every(isSignal);
 const isWindow = (v: unknown) => isObject(v) && isText(v.range) && isText(v.from) && isText(v.to) && isTextOrNull(v.covered_from);
+/** A window, or none: omitted (an API before #1319) and null both read as no window, so counts keep the run-window wording. */
+const isWindowOrNull = (v: unknown) => v === null || isWindow(v);
 const SOURCE_STATUS = new Set<unknown>(["available", "disabled", "unavailable", "not_provided"]);
 const isIntegration = (v: unknown) => isObject(v) && isText(v.name) && SOURCE_STATUS.has(v.status) && isText(v.reason);
 const isService = (v: unknown) =>
@@ -215,7 +217,7 @@ export function isMonitoringCapabilities(body: unknown): body is MonitoringCapab
 /** Whether `body` is a StageHealth with every nested field the page reads. */
 export function isStageHealth(body: unknown): body is StageHealth {
   return isObject(body) && isText(body.stage) && STATES.has(body.state) && isText(body.evaluated_at)
-    && isOptional(isWindow)(body.window) && isOptional(isNumberOrNull)(body.failed_runs)
+    && isOptional(isWindowOrNull)(body.window) && isOptional(isNumberOrNull)(body.failed_runs)
     && Array.isArray(body.pipelines) && body.pipelines.every((p) => isObject(p) && isText(p.job) && STATES.has(p.state) && isOptional(isNumberOrNull)(p.failed_runs))
     && Array.isArray(body.services) && body.services.every(isService)
     && Array.isArray(body.integrations) && body.integrations.every(isIntegration);
@@ -225,7 +227,7 @@ export function isStageHealth(body: unknown): body is StageHealth {
 export function isPipelinesHealth(body: unknown): body is PipelinesHealth {
   return isObject(body) && isText(body.stage) && isText(body.evaluated_at)
     && isObject(body.thresholds) && isNumber(body.thresholds.run_window)
-    && isOptional(isWindow)(body.window) && isOptional(isNumberOrNull)(body.failed_runs)
+    && isOptional(isWindowOrNull)(body.window) && isOptional(isNumberOrNull)(body.failed_runs)
     && Array.isArray(body.integrations) && body.integrations.every(isIntegration)
     && Array.isArray(body.pipelines) && body.pipelines.every(isPipeline);
 }
