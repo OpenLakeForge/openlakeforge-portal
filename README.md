@@ -94,12 +94,12 @@ the mock reads it from the request's Referer:
 | `no-access` | `monitoring-capabilities` lists no stage (an analyst): "No monitoring access", and no stage route is called. |
 | `limited` | The role may call `get_stage_health` only: no pipelines read is made, and the panels say why. |
 | `unauthorized` | The capabilities offer the stage but its routes answer 403: the API's words, as Disabled, with no Retry. |
-| `not-provided` | No quality reader and no alert evaluator: both panels say "not configured", and neither route is called. |
+| `not-provided` | No quality reader, no alert evaluator and no log archive (`log_retention_days: null`): the panels say "not configured", and no route of theirs is called. |
 | `unknown` | Quality: Dagster could not be read, so no counts. Incidents: the state does not say when it was evaluated, so stale. |
 | `unavailable` | The alert state cannot be read: `incidents: null`, shown as "Incidents cannot be read", never as none. |
 | `stale` | PROD's alert evaluator has stopped running: its incidents stay, flagged stale. |
 | `empty` | No open incident in a current evaluation, and no pipeline with quality evidence yet. |
-| `admin` | A platform admin: PROD's log archive is readable too, so the failed run shows its archived lines. |
+| `admin` | A platform admin: PROD's log archive and quality reports are readable too, so a failed run shows its lines and report links. |
 | `slim` | Metrics are off (the Slim profile): Resource metrics reads Disabled, and Metrics draws only the pipeline charts. |
 
 Without `mock=`, PROD's Data quality card sums the known counts (`crm_accounts` has none: "Counts unknown", never
@@ -109,14 +109,22 @@ zeros; `finance_ledger`'s manifest is incomplete), and Open incidents lists one 
 Each run named on the page (a Needs attention row, a pipeline's latest run, a quality row, an incident) links to its
 **Failed run** screen, `/monitoring/<stage>/runs/<run_id>`. It reads
 `GET /api/v1/stages/{stage}/runs/{run_id}/failure` (the failing steps, the first line of each error, redacted by the
-API, and the rows Floe rejected), `GET /api/v1/stages/{stage}/runs/{run_id}` (start and end), the pipelines, quality
-and incidents routes (domain and product, this run's quality counts, its open incidents), and, when the role may read
-the stage's log archive, the run's lines from `GET /api/v1/stages/{stage}/logs` for its UTC day. "Open in Dagster" is
-a plain link to the run on the stage's `orchestration` route; there is no Re-run in v0.7. A refused (403), unknown
-(404) or unreachable run reads Disabled or Unknown in the API's words, never green; a part the API could not read
-(`steps: null`, `rows: null`) says so and is never shown as "nothing failed" or zeros. In the mock, PROD's
-`sales_orders` run `c94cbcb0…` failed a Floe step; `mock=unknown` makes its event log and manifest unreadable,
-`mock=unauthorized` refuses it with 403, and a data-engineer (the default) is told PROD's archive is not theirs to read.
+API, the rows Floe rejected, and the job's domain and product), `GET /api/v1/stages/{stage}/runs/{run_id}` (start and
+end), `GET /api/v1/stages/{stage}/runs/{run_id}/quality` (every check of the run's quality manifest, its counts and the
+Floe and dbt reports it kept), the pipelines and incidents routes, and, when the role may read the stage's log archive,
+`GET /api/v1/stages/{stage}/runs/{run_id}/logs`: the lines of the run's whole window, across UTC days, each with its own
+time and level, filtered by level and "Match this run only", read on with Load more. The Logs card says how long the
+archive keeps lines (`log_retention_days`). Each read is made only when `monitoring-capabilities` lists its operation
+(`get_run_failure`, `get_run`, `get_run_quality`; the run's logs share `list_logs`'s row), and a card says why when it is
+not. A report is a same-origin download from its `href`; one with `href: null` is named, not linked, with the reason.
+"Open in Dagster" is a plain link to the run on the stage's `orchestration` route; there is no Re-run in v0.7, and no
+Runbook while the API names none. A refused (403), unknown (404) or unreachable run reads Disabled or Unknown in the
+API's words, never green; a part the API could not read (`steps: null`, `rows: null`, `checks: null`) says so and is
+never shown as "nothing failed", passes or zeros. In the mock, PROD's `sales_orders` run `c94cbcb0…` failed a Floe step
+and a blocking check; `finance_ledger`'s run `e5d27b8c…` crossed midnight UTC, left an incomplete manifest and 308 lines
+(Load more); `crm_accounts`' run `4be0c1a9…` wrote no quality manifest. `mock=unknown` makes the failed run's event log
+and manifest unreadable, `mock=unauthorized` refuses it with 403, and a data-engineer (the default) sees the checks but
+is told PROD's archive and report downloads are not theirs (`mock=admin` has both).
 
 The **Metrics** view (`/monitoring/metrics?stage=<stage>&range=1h|6h|24h|7d`, next to Overview) draws a small curated
 set of history charts: CPU and memory per component, the stage's stored bytes, Trino's running and failed queries,
