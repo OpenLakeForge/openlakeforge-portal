@@ -9,6 +9,7 @@ export default [
     route("monitoring/metrics", "routes/monitoring-metrics.tsx"),
     route("monitoring/:stage/runs", "routes/monitoring-runs.tsx"),
     route("monitoring/:stage/runs/:runId", "routes/monitoring-run.tsx"),
+    route("monitoring/:stage/logs", "routes/monitoring-logs.tsx"),
     route("queries", "routes/queries.tsx"),
     route("files", "routes/files.tsx"),
   ]),

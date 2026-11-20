@@ -793,31 +793,26 @@ function runQuality(scenario: Scenario, stage: string, run: MockRun) {
   return { ...base, complete, counts, checks, reports };
 }
 
-const LEVEL_RANK: Record<string, number> = { debug: 0, info: 1, warning: 2, error: 3, critical: 4 };
+/** One archived record, as the mock archive holds it before a route filters and shapes it. `at` is the line's own
+ * event time; a v1 record has none, and `placed` (where the archiver wrote it) partitions it instead. */
+type ArchiveLine = {
+  at: number | null; placed: number; level: string | null; pod: string; container: string; text: string | null; error?: string;
+  run?: MockRun; tagged: boolean; v1?: boolean;
+};
 
-/** Every line of the stage's archive in the run's window, as list_run_logs reads it: its pods' lines (tagged with the
- * run), other workloads' lines meanwhile (not tagged), and v1 records (no tag, time or level). Paged by an opaque
- * `next`; `match_run` keeps only the tagged lines; `severity` is a floor on each line's level. */
-function runLogs(stage: string, run: MockRun, url: URL) {
+/** Every line of the stage's archive in the run's window: its pods' lines (tagged with the run), other workloads'
+ * lines meanwhile (not tagged), and v1 records (no tag, time or level). */
+function runLines(run: MockRun): ArchiveLine[] {
   const start = (run.started_at ?? run.created_at) * 1000;
   const end = (run.ended_at ?? Date.now() / 1000) * 1000;
-  const limit = Number(url.searchParams.get("limit") ?? 500);
-  if (!Number.isInteger(limit) || limit < 1 || limit > 5000) throw new HttpError(422, "limit must be between 1 and 5000");
-  const floor = url.searchParams.get("severity");
-  if (floor !== null && !(floor in LEVEL_RANK)) throw new HttpError(422, "severity must be one of debug, info, warning, error, critical");
-  const matchRun = url.searchParams.get("match_run") === "true";
-  const after = url.searchParams.get("after");
-  let from = 0;
-  if (after) {
-    from = Number(Buffer.from(after, "base64url").toString().replace(/^p:/, ""));
-    if (!Number.isInteger(from) || from < 0) throw new HttpError(422, "`after` is not a cursor this route returned");
-  }
   const pod = `dagster-run-${run.run_id.slice(0, 8)}`;
-  const archived = new Date(end + 90_000).toISOString();
-  type L = { at: number | null; level: string | null; container: string; text: string | null; pod?: string; tagged?: boolean; v1?: boolean; error?: string };
-  const all: L[] = [];
-  const add = (offsetMs: number, level: string | null, container: string, text: string | null, extra: Partial<L> = {}) =>
-    all.push({ at: start + offsetMs, level, container, text, tagged: true, ...extra });
+  const all: ArchiveLine[] = [];
+  const add = (offsetMs: number, level: string | null, container: string, text: string | null, extra: Partial<ArchiveLine> = {}) =>
+    all.push({ at: start + offsetMs, placed: start + offsetMs, level, pod, container, text, run, tagged: true, ...extra });
+  const v1 = (container: string, text: string) => {
+    const placed = all.length ? all[all.length - 1].placed : start;
+    all.push({ at: null, placed, level: null, pod, container, text, run, tagged: false, v1: true });
+  };
   if (run.run_id === FAILED_RUN) {
     add(1_204, "info", "floe", "Starting Silver load sales.orders");
     add(1_882, "info", "floe", "Reading bronze crm/orders/2026-11-16 · 3 files");
@@ -826,7 +821,7 @@ function runLogs(stage: string, run: MockRun, url: URL) {
     add(102_017, "warning", "floe", "floe_cast_error orders.ordered_at · 412 rows quarantined");
     add(113_551, "error", "floe", "floe_schema_mismatch orders.amount · expected decimal(18,2), found string");
     add(113_552, "critical", "floe", "policy abort · stopping before commit, 0 rows written");
-    all.push({ at: null, level: null, container: "floe", text: "[v1] exit code 1", tagged: false, v1: true });
+    v1("floe", "[v1] exit code 1");
     add(115_118, "info", "floe", "Report written to floe/reports/sales/run_c94cbcb0/");
     add(115_240, null, "dagster", "Step floe_silver_orders failed · Gold skipped");
     add(116_000, null, "floe", null, { error: "the record is not valid JSON" });
@@ -838,23 +833,115 @@ function runLogs(stage: string, run: MockRun, url: URL) {
       else add(t, i % 25 === 0 ? "debug" : "info", "floe", `Loaded batch ${i + 1} of 300 into finance_silver.ledger · ${27 + (i % 5)} rows`);
       if (i % 50 === 9) add(t + 3_000, "info", "trino", `Query 20261117_${String(i).padStart(4, "0")} finished · reporting`, { pod: "trino-worker-0", tagged: false });
     }
-    all.push({ at: null, level: null, container: "floe", text: "[v1] heartbeat", tagged: false, v1: true });
+    v1("floe", "[v1] heartbeat");
     add(3_002_000, "info", "floe", "Report written to floe/reports/finance/run_e5d27b8c/ (dbt results not written: manifest incomplete)");
   } else {
     add(1_000, "info", "floe", `Starting ${run.job_name}`);
-    add(Math.max(2_000, end - start - 1_000), "info", "dagster", "Run succeeded");
+    if (run.status === "FAILURE") add(Math.max(1_500, end - start - 2_000), "error", "floe", `${run.job_name} failed · see the run's failure`);
+    add(Math.max(2_000, end - start - 1_000), "info", "dagster", run.status === "FAILURE" ? "Run failed" : "Run succeeded");
   }
-  // Oldest first by event time; a v1 record (no time) sits where the archiver wrote it, by its place in the list.
-  const kept = all.filter((l) => (!matchRun || l.tagged) && (floor === null || (l.level !== null && LEVEL_RANK[l.level] >= LEVEL_RANK[floor])));
+  return all;
+}
+
+/** The stage's own workloads, whatever runs: a scheduler tick every 5 min, a Trino query every 10, the catalog's
+ * heartbeat, the log archiver's debug lines, a Trino memory warning every 2 h and a catalog error every 7 h. */
+function backgroundLines(stage: string, from: number, to: number): ArchiveLine[] {
+  const out: ArchiveLine[] = [];
+  const M = 60_000;
+  const first = Math.ceil(from / M) * M;
+  const stop = Math.min(to, Date.now());
+  for (let t = first; t < stop; t += M) {
+    const minute = Math.floor(t / M);
+    const m = minute % 60;
+    const h = Math.floor(minute / 60);
+    const add = (pod: string, container: string, level: string, text: string) =>
+      out.push({ at: t + (minute % 7) * 113, placed: t, level, pod, container, text, tagged: false });
+    if (m % 5 === 0) add("dagster-daemon-5f7c9", "dagster-daemon", "info", `Scheduler tick: ${stage === "prod" ? 4 : 2} schedules evaluated`);
+    if (m % 10 === 3) add("trino-coordinator-0", "trino", "info", `Query ${String(h % 10000).padStart(4, "0")}_${String(m).padStart(2, "0")} finished · ${stage}_reporting · ${(minute % 9) + 1}.${minute % 10} s`);
+    if (m % 15 === 7) add("log-archiver-28431", "log-archiver", "debug", `Flushed spool to logs/v2/${stage}/ · ${40 + (minute % 23)} records`);
+    if (m === 30) add("polaris-7d9b8", "polaris", "info", "Heartbeat · catalog lake_" + stage + " · 12 namespaces");
+    if (m === 17 && h % 2 === 0) add("trino-coordinator-0", "trino", "warning", "Memory pool general reserved above 80% for 30 s");
+    if (m === 43 && h % 7 === 0) add("polaris-7d9b8", "polaris", "error", "Token refresh for the object store failed · retrying in 30 s");
+  }
+  return out;
+}
+
+/** DEV's own runs: web_events every hour at :05 and sales_orders every day at 02:00, one warning each. */
+function devRuns(from: number, to: number): MockRun[] {
+  const H = 3_600_000;
+  const runs: MockRun[] = [];
+  for (let h = Math.floor(from / H) * H; h < Math.min(to, Date.now()); h += H) {
+    const at = (h + 5 * 60_000) / 1000;
+    if (at * 1000 < Date.now()) runs.push({ run_id: mockRunId(`dev:web_events:${h}`), job_name: "web_events", status: "SUCCESS", created_at: at, started_at: at + 2, ended_at: at + 80 });
+    if (new Date(h).getUTCHours() === 2) {
+      const s = h / 1000 + 10;
+      if (s * 1000 < Date.now()) runs.push({ run_id: mockRunId(`dev:sales_orders:${h}`), job_name: "sales_orders", status: "SUCCESS", created_at: s, started_at: s + 3, ended_at: s + 240 });
+    }
+  }
+  return runs;
+}
+
+/** The stage's archive between `from` and `to`, oldest first; a v1 record sits where the archiver wrote it. */
+function archive(stage: string, from: number, to: number): ArchiveLine[] {
+  const runs = stage === "prod" ? ([...runsOnRecord().values()] as MockRun[]) : devRuns(from - 3_600_000, to);
+  const fromRuns = runs
+    .filter((r) => (r.started_at ?? r.created_at) * 1000 < to && (r.ended_at ?? Date.now() / 1000) * 1000 >= from - 3_600_000)
+    .flatMap((r) => runLines(r).map((l, i) => ({ l, i })));
+  const background = backgroundLines(stage, from, to).map((l, i) => ({ l, i }));
+  return [...fromRuns, ...background]
+    .filter(({ l }) => l.placed >= from && l.placed < to && l.placed <= Date.now())
+    .sort((a, b) => a.l.placed - b.l.placed || a.i - b.i)
+    .map(({ l }) => l);
+}
+
+/** A record as LogLine sends it. An unreadable record has no v2 fields: no component, product or run. */
+function shape(stage: string, l: ArchiveLine) {
+  const scope = l.tagged && l.run ? SCOPES[l.run.job_name] : undefined;
+  const v2 = !l.v1 && l.text !== null;
+  const end = l.run ? (l.run.ended_at ?? Date.now() / 1000) * 1000 : l.placed;
+  return {
+    archived_at: new Date(Math.max(end, l.placed) + 90_000).toISOString(), namespace: `olf-${stage}`, pod: l.pod, container: l.container,
+    line: l.text, error: l.text === null ? l.error ?? "unreadable" : null,
+    component: v2 ? l.container : null, product: v2 ? scope?.[1] ?? null : null, domain: v2 ? scope?.[0] ?? null : null,
+    run_id: v2 && l.tagged && l.run ? l.run.run_id : null, stage: l.v1 ? null : stage, source: l.v1 ? null : "pod", stream: l.v1 ? null : "stdout",
+    missing: l.v1 ? ["timestamp", "level", "run_id"] : null, timestamp: l.at === null ? null : new Date(l.at).toISOString(), level: l.level,
+  };
+}
+
+const LEVEL_RANK: Record<string, number> = { debug: 0, info: 1, warning: 2, error: 3, critical: 4 };
+
+/** The filters list_logs and list_run_logs share: severity is a floor on each line's level; pod, container and
+ * component match exactly (component a v2 record's only). */
+function sharedFilters(url: URL) {
+  const limit = Number(url.searchParams.get("limit") ?? 500);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 5000) throw new HttpError(422, "limit must be between 1 and 5000");
+  const floor = url.searchParams.get("severity");
+  if (floor !== null && !(floor in LEVEL_RANK)) throw new HttpError(422, "severity must be one of debug, info, warning, error, critical");
+  const pod = url.searchParams.get("pod") ?? "";
+  const container = url.searchParams.get("container") ?? "";
+  const component = url.searchParams.get("component") ?? "";
+  const keep = (l: ReturnType<typeof shape>) => (floor === null || (l.level !== null && LEVEL_RANK[l.level] >= LEVEL_RANK[floor]))
+    && (!pod || l.pod === pod) && (!container || l.container === container) && (!component || l.component === component);
+  return { limit, keep };
+}
+
+/** The run's window, as list_run_logs reads it, paged by an opaque `next`; `match_run` keeps only the tagged lines. */
+function runLogs(stage: string, run: MockRun, url: URL) {
+  const start = (run.started_at ?? run.created_at) * 1000;
+  const end = (run.ended_at ?? Date.now() / 1000) * 1000;
+  const { limit, keep } = sharedFilters(url);
+  const matchRun = url.searchParams.get("match_run") === "true";
+  const after = url.searchParams.get("after");
+  let from = 0;
+  if (after) {
+    from = Number(Buffer.from(after, "base64url").toString().replace(/^p:/, ""));
+    if (!Number.isInteger(from) || from < 0) throw new HttpError(422, "`after` is not a cursor this route returned");
+  }
+  const kept = runLines(run).filter((l) => !matchRun || l.tagged).map((l) => shape(stage, l)).filter(keep);
   const page = kept.slice(from, from + limit);
   const more = from + limit < kept.length;
   return {
-    lines: page.map((l) => ({
-      archived_at: archived, namespace: `olf-${stage}`, pod: l.pod ?? pod, container: l.container, line: l.text, error: l.text === null ? l.error ?? "unreadable" : null,
-      component: l.v1 ? null : l.container, product: l.tagged ? SCOPES[run.job_name]?.[1] ?? null : null, domain: l.tagged ? SCOPES[run.job_name]?.[0] ?? null : null,
-      run_id: l.tagged ? run.run_id : null, stage: l.v1 ? null : stage, source: l.v1 ? null : "pod", stream: l.v1 ? null : "stdout",
-      missing: l.v1 ? ["timestamp", "level", "run_id"] : null, timestamp: l.at === null ? null : new Date(l.at).toISOString(), level: l.level,
-    })),
+    lines: page.map((l) => ({ ...l, archived_at: new Date(end + 90_000).toISOString() })),
     truncated: more,
     since: new Date(start).toISOString(),
     until: new Date(end).toISOString(),
@@ -862,31 +949,27 @@ function runLogs(stage: string, run: MockRun, url: URL) {
   };
 }
 
-/** The log archive, as list_logs answers it: the role's stages only, lines of one UTC day, oldest first. */
+/** The log archive, as list_logs answers it: the role's stages only, lines of one UTC day or one hour of it, oldest
+ * first, at most `limit` (then `truncated`, with no cursor). Lines older than the stage's retention are gone. */
 function logsRoute(scenario: Scenario, stage: string, url: URL): { json: unknown } {
   const access = monitoringCapabilities(scenario).stages.find((s) => s.stage === stage);
   if (!access?.operations.includes("list_logs") || scenario === "unauthorized") throw new HttpError(403, `role data-engineer may not call list_logs on stage '${stage}'`);
-  if (!url.searchParams.get("date")) throw new HttpError(422, "date is required");
+  if (scenario === "not-provided") throw new HttpError(404, `stage '${stage}' has no log archive`);
+  const date = url.searchParams.get("date") ?? "";
+  const day = /^\d{4}-\d\d-\d\d$/.test(date) ? Date.parse(`${date}T00:00:00Z`) : NaN;
+  if (Number.isNaN(day)) throw new HttpError(422, "date is required, as YYYY-MM-DD");
+  const hourParam = url.searchParams.get("hour");
+  const hour = hourParam === null || hourParam === "" ? null : Number(hourParam);
+  if (hour !== null && !(Number.isInteger(hour) && hour >= 0 && hour <= 23)) throw new HttpError(422, "hour must be between 0 and 23");
+  const { limit, keep } = sharedFilters(url);
+  const product = url.searchParams.get("product") ?? "";
   const runId = url.searchParams.get("run_id") ?? "";
-  const floor = url.searchParams.get("severity");
-  const rank: Record<string, number> = { INFO: 1, WARN: 2, ERROR: 3 };
-  const min = floor === "error" ? 3 : floor === "warning" ? 2 : 0;
-  const at = new Date().toISOString();
-  const line = (container: string, level: string, t: string, text: string) => ({
-    archived_at: at, namespace: `olf-${stage}`, pod: `dagster-run-${runId.slice(0, 8)}`, container, line: `${t} ${level.padEnd(5)} ${text}`, error: null,
-    component: container, product: "orders", domain: "sales", run_id: runId, stage, source: "pod", stream: "stdout", missing: null, level,
-  });
-  const lines = runId !== FAILED_RUN ? [] : [
-    line("floe", "INFO", "03:02:11.204", "Starting Silver load sales.orders"),
-    line("floe", "INFO", "03:02:11.882", "Reading bronze crm/orders/2026-11-16 · 3 files"),
-    line("floe", "INFO", "03:02:14.310", "Validating 19,402 rows against sales/orders"),
-    line("floe", "WARN", "03:03:52.017", "floe_cast_error orders.ordered_at · 412 rows quarantined"),
-    line("floe", "ERROR", "03:04:03.551", "floe_schema_mismatch orders.amount · expected decimal(18,2), found string"),
-    line("floe", "ERROR", "03:04:03.552", "policy abort · stopping before commit, 0 rows written"),
-    line("floe", "INFO", "03:04:05.118", "Report written to floe/reports/sales/run_c94cbcb0/"),
-    line("dagster", "INFO", "03:04:05.240", "Step floe_silver_orders failed · Gold skipped"),
-  ];
-  return { json: { lines: lines.filter((l) => rank[l.level] >= min).map(({ level: _, ...l }) => l), truncated: false } };
+  const from = hour === null ? day : day + hour * 3_600_000;
+  const to = hour === null ? day + 86_400_000 : from + 3_600_000;
+  const kept = Date.now() - LOG_RETENTION_DAYS[stage] * 86_400_000;
+  const lines = to <= kept ? [] : archive(stage, Math.max(from, kept), to).map((l) => shape(stage, l))
+    .filter((l) => keep(l) && (!product || l.product === product) && (!runId || l.run_id === runId));
+  return { json: { lines: lines.slice(0, limit), truncated: lines.length > limit } };
 }
 
 // ── Metrics (openlakeforge #21, ADR 0024): MetricCatalog and MetricSeriesData. Metrics are on (a Full deployment

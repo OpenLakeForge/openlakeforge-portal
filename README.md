@@ -57,7 +57,7 @@ never contain it. These words in the SQL pick a behaviour:
 
 Export (CSV, JSON), cancel and the schema and table search all work. The
 browser tests in `e2e/` (Playwright) run against this mock: `npm run test:ui`.
-They save full-page screenshots of `/services`, `/queries`, `/files`, `/monitoring`, `/monitoring/metrics`, `/monitoring/prod/runs` and a failed run (dark, light and
+They save full-page screenshots of `/services`, `/queries`, `/files`, `/monitoring`, `/monitoring/metrics`, `/monitoring/prod/runs`, `/monitoring/dev/logs` and a failed run (dark, light and
 390 px wide) in `test-results/screenshots/` for review; CI uploads them as the
 `ui-review` artifact. In a sandbox whose Chromium is not the revision Playwright
 expects, set `PW_CHROMIUM` to its path. Locally run `npx playwright install chromium` once.
@@ -153,6 +153,16 @@ a window older than the read says its earlier runs were not read, never that the
 `list_runs`; the page asks it when the role has `get_run` (the same permission row). In the mock, PROD holds more than 100
 runs (an unfiltered 7d read stops short), a run in progress and a queued one; DEV's Dagster cannot be read, `mock=empty` has
 no run, and `unauthorized`, `limited` and `no-access` refuse or skip the read.
+
+The **Logs** view (`/monitoring/<stage>/logs?date=YYYY-MM-DD&hour=HH&run=<run_id>&product=&pod=&container=&component=&level=info|warning|error|critical&q=<text>`,
+next to Runs) browses the stage's log archive by UTC day and hour (the current hour when no date is given; a date alone is the
+whole day) with `GET /api/v1/stages/{stage}/logs`, at most 500 lines a read: that route has no cursor, so a truncated answer
+says so and asks for a narrower filter. With `run=` it reads the run's window from `GET /api/v1/stages/{stage}/runs/{run_id}/logs`
+(narrowed to `date`/`hour` when given) and pages with Load more; an API without `log_retention_days` has no run window, so the
+run's UTC day is read from the stage route instead. Level is the API's `severity` floor. Free-text search (`q`) is not served
+by the API yet (openlakeforge#1347): it filters the lines already loaded, in the browser, and the page says so. Only stages whose
+capabilities list `list_logs` are offered (in the mock a data-engineer reads DEV only; `mock=admin` reads PROD too); a stage
+without an archive (`mock=not-provided`) says so and reads nothing. The failed-run screen's Logs card links here with the run.
 
 ## Routes are a deploy-time parameter
 
@@ -267,6 +277,7 @@ src/
   routes/monitoring.tsx    Monitoring overview: platform and pipeline health per stage, from the Platform API
   routes/monitoring-run.tsx Monitoring · Failed run: one run's failure, scope, quality, incidents and archived lines
   routes/monitoring-metrics.tsx Monitoring · Metrics: history charts per stage and range, from the metrics routes
+  routes/monitoring-logs.tsx Monitoring · Logs: a stage's archived logs by day and hour, or one run's window
   routes/home.tsx          the index: server loader reads the routes file per request, no-store
   routes/signed-out.tsx    where Logout lands, outside the perimeter
   routes/healthz.ts        liveness endpoint for the container
