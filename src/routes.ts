@@ -6,6 +6,7 @@ export default [
   layout("routes/shell.tsx", [
     route("services", "routes/services.tsx"),
     route("monitoring", "routes/monitoring.tsx"),
+    route("monitoring/metrics", "routes/monitoring-metrics.tsx"),
     route("monitoring/:stage/runs/:runId", "routes/monitoring-run.tsx"),
     route("queries", "routes/queries.tsx"),
     route("files", "routes/files.tsx"),

@@ -132,3 +132,81 @@
 .run-link:hover { text-decoration: underline; }
 .run-link:focus-visible, .run-crumbs a:focus-visible, .run-dagster:focus-visible { outline: 2px solid var(--olf-highlight); outline-offset: 2px; }
 .run-body .run-dagster { align-self: flex-start; }
+
+/* Overview / Metrics: two views of a stage, as tabs under the page title. */
+.mon-views { display: flex; gap: var(--olf-space-5); margin: var(--olf-space-4) 0 0; border-bottom: 1px solid var(--olf-hairline); }
+.mon-views a {
+  margin-bottom: -1px; padding: var(--olf-space-2) 0; border-bottom: 2px solid transparent;
+  color: var(--olf-text-secondary); font: 600 0.8125rem var(--olf-font-body); text-decoration: none;
+}
+.mon-views a:hover { color: var(--olf-text-primary); }
+.mon-views a[aria-current="page"] { border-bottom-color: var(--olf-accent); color: var(--olf-text-primary); }
+.mon-views a:focus-visible { outline: 2px solid var(--olf-highlight); outline-offset: 2px; }
+
+/* Metrics: the range control is a segmented radio group (native radios, so the arrow keys move it). */
+.mc-context { align-items: flex-end; }
+.mc-range { margin: 0; padding: 0; border: 0; min-width: 0; }
+.mc-range legend { float: left; width: 100%; margin-bottom: 0.375rem; padding: 0; }
+.mc-segments { clear: both; display: inline-flex; border: 1px solid var(--olf-hairline); border-radius: var(--olf-radius-sm); overflow: hidden; }
+.mc-segments label { position: relative; display: block; }
+.mc-segments input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.mc-segments span {
+  display: grid; place-items: center; min-width: 2.75rem; height: 2.1875rem; padding: 0 var(--olf-space-3);
+  background: var(--olf-card-fill-hover); color: var(--olf-text-secondary); font: 600 0.75rem var(--olf-font-mono);
+}
+.mc-segments label + label span { border-left: 1px solid var(--olf-hairline); }
+.mc-segments input:checked + span { background: var(--olf-bg-accent-subtle); color: var(--olf-text-primary); box-shadow: inset 0 -2px 0 var(--olf-accent); }
+.mc-segments input:focus-visible + span { outline: 2px solid var(--olf-highlight); outline-offset: -2px; }
+.mc-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--olf-space-3); }
+
+.mc-section + .mc-section { margin-top: var(--olf-space-6); }
+.mc-section-h { margin: var(--olf-space-5) 0 var(--olf-space-3); font: 600 1.125rem / 1.3 var(--olf-font-heading); }
+.mc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr)); gap: var(--olf-space-4); }
+.mc-grid .mon-list + .mon-list { margin-top: 0; }
+.mc-card .f-card-head { justify-content: space-between; align-items: flex-start; }
+.mc-head { display: flex; flex-direction: column; min-width: 0; }
+.mc-head h3 { margin: 0; font: 600 1rem / 1.3 var(--olf-font-heading); }
+.mc-body { display: flex; flex-direction: column; gap: var(--olf-space-2); padding: var(--olf-space-4); min-width: 0; }
+.mc-gap { display: flex; align-items: flex-start; gap: var(--olf-space-3); color: var(--olf-text-secondary); font-size: 0.8125rem; }
+.mc-gap > span:last-child { min-width: 0; }
+.mc-gap .mon-retry { margin-top: var(--olf-space-2); }
+.mc-empty { display: flex; flex-direction: column; gap: var(--olf-space-1); margin: 0; color: var(--olf-text-secondary); font-size: 0.8125rem; }
+
+/* The chart. Series colours are categorical (never the status hues), validated for CVD and contrast against both
+ * surfaces; "other" is neutral. Each line is also named in the legend, so colour is never the only key. */
+.mc-figure {
+  --mc-1: #3d9aea; --mc-2: #d95926; --mc-3: #199e70; --mc-4: #9085e9; --mc-5: #d55181; --mc-other: var(--olf-text-muted);
+  display: flex; flex-direction: column; gap: var(--olf-space-2); margin: 0; min-width: 0;
+}
+:root[data-theme="light"] .mc-figure { --mc-1: #1766b5; --mc-2: #eb6834; --mc-3: #1baf7a; --mc-4: #6250d6; --mc-5: #e87ba4; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .mc-figure { --mc-1: #1766b5; --mc-2: #eb6834; --mc-3: #1baf7a; --mc-4: #6250d6; --mc-5: #e87ba4; }
+}
+.mc-readout { min-height: 2.2rem; margin: 0; color: var(--olf-text-secondary); font-size: 0.6875rem; overflow-wrap: anywhere; }
+.mc-frame { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 9.5rem auto; column-gap: var(--olf-space-2); }
+.mc-y { position: relative; min-width: 3.25rem; color: var(--olf-text-muted); font-size: 0.625rem; text-align: right; }
+.mc-y span { position: absolute; right: 0; transform: translateY(50%); white-space: nowrap; }
+.mc-plot { position: relative; min-width: 0; border-bottom: 1px solid var(--olf-border-default); cursor: crosshair; touch-action: pan-y; }
+.mc-plot:focus-visible { outline: 2px solid var(--olf-highlight); outline-offset: 2px; }
+.mc-plot svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.mc-rule { stroke: var(--olf-border-subtle); stroke-width: 1; }
+.mc-line { fill: none; stroke: var(--mc-1); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.mc-dots { stroke-width: 6; }
+.mc-cursor { stroke: var(--olf-text-secondary); stroke-width: 1; stroke-dasharray: 3 3; }
+.mc-x { grid-column: 2; position: relative; height: 1.25rem; color: var(--olf-text-muted); font-size: 0.625rem; }
+.mc-x span { position: absolute; top: 0.25rem; transform: translateX(-50%); white-space: nowrap; }
+.mc-x span[data-edge="start"] { transform: none; }
+.mc-x span[data-edge="end"] { transform: translateX(-100%); }
+.mc-figure figcaption { display: flex; flex-direction: column; gap: var(--olf-space-1); }
+.mc-legend { display: flex; flex-direction: column; gap: 0.25rem; margin: 0; padding: 0; list-style: none; color: var(--olf-text-secondary); font-size: 0.75rem; }
+.mc-legend li { display: flex; align-items: baseline; gap: var(--olf-space-2); overflow-wrap: anywhere; }
+.mc-swatch { flex: none; width: 0.875rem; height: 2px; border-radius: 1px; background: var(--mc-1); transform: translateY(-0.2rem); }
+[data-slot="1"] { --mc: var(--mc-1); } [data-slot="2"] { --mc: var(--mc-2); } [data-slot="3"] { --mc: var(--mc-3); }
+[data-slot="4"] { --mc: var(--mc-4); } [data-slot="5"] { --mc: var(--mc-5); } [data-slot="other"] { --mc: var(--mc-other); }
+.mc-line[data-slot] { stroke: var(--mc); }
+.mc-swatch[data-slot] { background: var(--mc); }
+.mc-toggle { align-self: flex-start; height: auto; padding: 0; color: var(--olf-link); font-weight: 500; }
+.mc-table { max-height: 16rem; }
+.mc-table td, .mc-table tbody th { height: auto; padding-block: 0.25rem; font-size: 0.75rem; }
+@media (forced-colors: active) { .mc-line { stroke: CanvasText; } .mc-swatch { background: CanvasText; } }
+@media (max-width: 40rem) { .mc-x span:nth-child(2), .mc-x span:nth-child(4) { display: none; } }

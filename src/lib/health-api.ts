@@ -4,7 +4,9 @@
 // GET /api/v1/stages/{stage}/logs. Same-origin and
 // cookie-authenticated, read-only. Types follow the committed OpenAPI document (docs/schema/platform-api.openapi.json:
 // MonitoringCapabilities, StageHealth, ServiceHealth, IntegrationStatus, PipelinesHealth, PipelineHealth, HealthSignal, Run,
-// RunFailure, FailedStep, RunRows, Logs, LogLine, AlertIncident).
+// RunFailure, FailedStep, RunRows, Logs, LogLine, AlertIncident). Metrics (#21, #1268, #1269, ADR 0024): GET /api/v1/stages/{stage}/metrics,
+// GET /api/v1/stages/{stage}/metrics/{series}?range= and GET /api/v1/platform/metrics/{series}?range= (MetricCatalog,
+// MetricSeriesInfo, MetricSeriesData, MetricLine).
 // shortcut: hand-written types; generate them from the OpenAPI spec.
 
 import { ApiError } from "./query-api";
@@ -117,6 +119,8 @@ function explain(status: number, stage: string, detail?: string): string {
   if (status === 0) return "The monitoring API isn’t answering, so nothing on this page can be shown as healthy.";
   if (status === 401) return "Your session has expired. Reload the page to sign in again.";
   if (status === 403) return detail || (stage ? `You have no monitoring access on stage ${stage.toUpperCase()}.` : "You have no monitoring access.");
+  // A refused range (past the metrics retention) is a 400 whose detail says why.
+  if (status === 400 && detail) return detail;
   if (status === 404) return detail || `Stage ${stage.toUpperCase()} is not known to the Platform API.`;
   return `The monitoring API failed (${status}), so nothing on this page can be shown as healthy.`;
 }
@@ -429,5 +433,86 @@ export async function getRunLogs(
   if (opts.severity) q.set("severity", opts.severity);
   const body = await get(`/api/v1/stages/${encodeURIComponent(stage)}/logs?${q}`, stage, signal);
   if (!isLogs(body)) throw new ApiError(200, explain(500, stage));
+  return body;
+}
+
+// ── Metrics (ADR 0024, decision 4): named series over a fixed range, never a query ─────────────────────────
+
+/** One of the catalog's ranges, the same vocabulary as the health routes' window. */
+export type MetricRange = HealthRange;
+export const METRIC_RANGES: readonly MetricRange[] = ["1h", "6h", "24h", "7d"];
+/** `disabled`: the profile turns metrics off; `not_provided`: the provider has none; `unavailable`: the backend did not
+ * answer, or holds no samples for the range. Never a line of zeros. */
+export type MetricState = "available" | "disabled" | "unavailable" | "not_provided";
+/** One catalog entry: a series the API serves for the stage, the ranges this deployment keeps for it, and whether its
+ * source answers now. */
+export type MetricSeriesInfo = {
+  name: string;
+  unit: string;
+  source: "prometheus" | "dagster";
+  labels: string[];
+  ranges: MetricRange[];
+  state: MetricState;
+  reason: string;
+};
+export type MetricCatalog = { stage: string; observed_at: string; series: MetricSeriesInfo[] };
+/** One [time, value] pair per step, oldest first; a step without a sample is null, never 0. */
+export type MetricLine = { labels: Record<string, string>; points: [string, number | null][] };
+export type MetricSeriesData = {
+  series: string;
+  /** Null for a platform series: the nodes and olf-system components serve every stage. */
+  stage: string | null;
+  source: "prometheus" | "dagster";
+  state: MetricState;
+  reason: string;
+  range: MetricRange;
+  step_seconds: number;
+  unit: string;
+  observed_at: string;
+  /** False only for a Dagster series whose read reached its run cap: every step before `covered_from` is null. */
+  complete: boolean;
+  covered_from: string | null;
+  lines: MetricLine[];
+};
+
+const RANGE_SET = new Set<unknown>(METRIC_RANGES);
+const METRIC_STATES = new Set<unknown>(["available", "disabled", "unavailable", "not_provided"]);
+const METRIC_SOURCES = new Set<unknown>(["prometheus", "dagster"]);
+const isSeriesInfo = (v: unknown) =>
+  isObject(v) && isText(v.name) && isText(v.unit) && METRIC_SOURCES.has(v.source) && Array.isArray(v.labels) && v.labels.every(isText)
+  && Array.isArray(v.ranges) && v.ranges.every((r) => RANGE_SET.has(r)) && METRIC_STATES.has(v.state) && isText(v.reason);
+const isPoint = (v: unknown) => Array.isArray(v) && v.length === 2 && isText(v[0]) && isNumberOrNull(v[1]);
+const isLine = (v: unknown) =>
+  isObject(v) && isObject(v.labels) && Object.values(v.labels).every(isText) && Array.isArray(v.points) && v.points.every(isPoint);
+
+export function isMetricCatalog(body: unknown): body is MetricCatalog {
+  return isObject(body) && isText(body.stage) && isText(body.observed_at) && Array.isArray(body.series) && body.series.every(isSeriesInfo);
+}
+
+export function isMetricSeriesData(body: unknown): body is MetricSeriesData {
+  return isObject(body) && isText(body.series) && isTextOrNull(body.stage) && METRIC_SOURCES.has(body.source) && METRIC_STATES.has(body.state)
+    && isText(body.reason) && RANGE_SET.has(body.range) && Number.isInteger(body.step_seconds) && (body.step_seconds as number) > 0
+    && isText(body.unit) && isText(body.observed_at) && typeof body.complete === "boolean" && isTextOrNull(body.covered_from)
+    && Array.isArray(body.lines) && body.lines.every(isLine);
+}
+
+/** The stage's series, the ranges each is kept for, and whether its source answers now. Configuration, not history. */
+export async function getMetricCatalog(stage: string, signal?: AbortSignal): Promise<MetricCatalog> {
+  const body = await read("metrics", stage, signal);
+  if (!isMetricCatalog(body)) throw new ApiError(200, explain(500, stage));
+  return body;
+}
+
+/** One stage series over `range`. A range past the retention is a 400, an unknown series a 404. */
+export async function getStageMetric(stage: string, series: string, range: MetricRange, signal?: AbortSignal): Promise<MetricSeriesData> {
+  const body = await get(`/api/v1/stages/${encodeURIComponent(stage)}/metrics/${encodeURIComponent(series)}?range=${range}`, stage, signal);
+  if (!isMetricSeriesData(body)) throw new ApiError(200, explain(500, stage));
+  return body;
+}
+
+/** One platform series (the nodes and the olf-system components) over `range`. */
+export async function getPlatformMetric(series: string, range: MetricRange, signal?: AbortSignal): Promise<MetricSeriesData> {
+  const body = await get(`/api/v1/platform/metrics/${encodeURIComponent(series)}?range=${range}`, "", signal);
+  if (!isMetricSeriesData(body)) throw new ApiError(200, explain(500, ""));
   return body;
 }

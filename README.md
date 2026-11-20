@@ -57,7 +57,7 @@ never contain it. These words in the SQL pick a behaviour:
 
 Export (CSV, JSON), cancel and the schema and table search all work. The
 browser tests in `e2e/` (Playwright) run against this mock: `npm run test:ui`.
-They save full-page screenshots of `/services`, `/queries`, `/files`, `/monitoring` and a failed run (dark, light and
+They save full-page screenshots of `/services`, `/queries`, `/files`, `/monitoring`, `/monitoring/metrics` and a failed run (dark, light and
 390 px wide) in `test-results/screenshots/` for review; CI uploads them as the
 `ui-review` artifact. In a sandbox whose Chromium is not the revision Playwright
 expects, set `PW_CHROMIUM` to its path. Locally run `npx playwright install chromium` once.
@@ -78,7 +78,7 @@ are grouped by service (the worst row decides), and the banner shows the log arc
 last quality publication, or "unknown" when the API has none. `prod` needs
 attention: `sales_orders` failed with a failed blocking quality check, `crm_accounts` missed its run,
 `finance_ledger`'s schedule is stopped and its last run warned on quality, `web_events` is healthy, the log spool is
-past its limit and metrics are not connected. "Needs attention" lists each warning or critical pipeline signal in
+past its limit. "Needs attention" lists each warning or critical pipeline signal in
 the API's words; the Pipelines table lists every job, with its failed runs in the API's 24 h window
 (openlakeforge#1319): `crm_accounts`' count could not be read, so it reads Unknown (never 0), and `web_events`' run read
 stopped short of the window, so its count says where it starts. `dev` reads unknown because Dagster cannot be read. No backend
@@ -100,6 +100,7 @@ the mock reads it from the request's Referer:
 | `stale` | PROD's alert evaluator has stopped running: its incidents stay, flagged stale. |
 | `empty` | No open incident in a current evaluation, and no pipeline with quality evidence yet. |
 | `admin` | A platform admin: PROD's log archive is readable too, so the failed run shows its archived lines. |
+| `slim` | Metrics are off (the Slim profile): Resource metrics reads Disabled, and Metrics draws only the pipeline charts. |
 
 Without `mock=`, PROD's Data quality card sums the known counts (`crm_accounts` has none: "Counts unknown", never
 zeros; `finance_ledger`'s manifest is incomplete), and Open incidents lists one incident per delivery status
@@ -116,6 +117,20 @@ a plain link to the run on the stage's `orchestration` route; there is no Re-run
 (`steps: null`, `rows: null`) says so and is never shown as "nothing failed" or zeros. In the mock, PROD's
 `sales_orders` run `c94cbcb0…` failed a Floe step; `mock=unknown` makes its event log and manifest unreadable,
 `mock=unauthorized` refuses it with 403, and a data-engineer (the default) is told PROD's archive is not theirs to read.
+
+The **Metrics** view (`/monitoring/metrics?stage=<stage>&range=1h|6h|24h|7d`, next to Overview) draws a small curated
+set of history charts: CPU and memory per component, the stage's stored bytes, Trino's running and failed queries,
+pipeline runs by outcome and the longest run per pipeline, and the cluster's node CPU and memory. It reads
+`GET /api/v1/stages/{stage}/metrics` (the catalog) when the role has `list_stage_metrics`, then each charted series the
+catalog lists from `GET /api/v1/stages/{stage}/metrics/{series}?range=` (with `get_stage_metric`) and the node series
+from `GET /api/v1/platform/metrics/{series}?range=`. Charts are plain SVG with no chart library; each has a summary of
+every line in words, a keyboard readout of each step (focus the plot, then the arrow keys, Home and End) and its values
+as a table. A step with no sample is a gap, never a zero. With metrics off the resource charts are replaced by one
+"Resource history is not collected" notice (Disabled, never zeros or green); an outage reads Unknown with Retry; a range
+the deployment does not keep reads "Not kept" and is not asked for; a range with no sample reads "No samples". The mock
+keeps 3 days of resource history (7d is not kept, the pipeline series' 7d read reaches its run cap), DEV's Dagster
+cannot be read, `mock=slim` turns metrics off, `mock=unavailable` takes the backend down, `mock=empty` has no pipeline
+line, and `unauthorized`, `limited` and `no-access` refuse or skip the reads as on the overview.
 
 ## Routes are a deploy-time parameter
 
@@ -229,6 +244,7 @@ src/
   routes/files.tsx         the Files explorer (buckets, folders, upload, rename, delete)
   routes/monitoring.tsx    Monitoring overview: platform and pipeline health per stage, from the Platform API
   routes/monitoring-run.tsx Monitoring · Failed run: one run's failure, scope, quality, incidents and archived lines
+  routes/monitoring-metrics.tsx Monitoring · Metrics: history charts per stage and range, from the metrics routes
   routes/home.tsx          the index: server loader reads the routes file per request, no-store
   routes/signed-out.tsx    where Logout lands, outside the perimeter
   routes/healthz.ts        liveness endpoint for the container

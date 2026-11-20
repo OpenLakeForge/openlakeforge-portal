@@ -47,8 +47,15 @@ test("DEV reads unknown when Dagster cannot be read; PROD names what needs atten
   await expect(row(page, "Log archive")).toContainText("Warning");
   await expect(row(page, "Log archive")).toContainText("Log spool age · Warning");
   await expect(page.getByText(/^Log archive · last durable write 12 min ago · Quality sync · last publication 4 min ago$/)).toBeVisible();
-  await expect(row(page, "Resource metrics")).toContainText("Disabled");
+  // Metrics answer on this deployment, so no row stands in for them.
+  await expect(row(page, "Resource metrics")).toHaveCount(0);
   await expect(page.getByRole("status").filter({ hasText: "Checked" })).toContainText("Auto-refresh · 30 s");
+});
+
+test("with metrics off (Slim) the services table says so, as Disabled", async ({ page }) => {
+  await page.goto("/monitoring?stage=prod&mock=slim");
+  await expect(row(page, "Resource metrics")).toContainText("Disabled");
+  await expect(row(page, "Resource metrics")).toContainText("the deployment profile turns metrics off");
 });
 
 test("PROD's needs-attention table names each failing signal, worst first, and the pipelines table lists every job", async ({ page }) => {
