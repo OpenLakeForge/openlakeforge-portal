@@ -8,6 +8,7 @@ import {
 import { alerts, AlertsCard, IncidentsTable } from "./MonitoringAlerts";
 import { absent, NeedsAttention, pipes, PipelinesCard, PipelinesTable, pipesLine, type Part, type PipesLoad } from "./MonitoringPipelines";
 import { quality, QualityCard, QualityTable } from "./MonitoringQuality";
+import { MonitoringViews } from "./MonitoringViews";
 import { LABEL, StatusBadge } from "./StatusBadge";
 
 const REFRESH_MS = 30_000;
@@ -363,6 +364,7 @@ export function Monitoring({ stages }: { stages: string[] }) {
           </div>
         )}
       </div>
+      <MonitoringViews stage={stage ?? asked ?? undefined} />
       {body}
     </>
   );
