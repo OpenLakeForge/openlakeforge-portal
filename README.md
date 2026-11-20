@@ -119,12 +119,16 @@ API, the rows Floe rejected, and the job's domain and product), `GET /api/v1/sta
 end), `GET /api/v1/stages/{stage}/runs/{run_id}/quality` (every check of the run's quality manifest, its counts and the
 Floe and dbt reports it kept), the pipelines and incidents routes, and, when the role may read the stage's log archive,
 `GET /api/v1/stages/{stage}/runs/{run_id}/logs`: the lines of the run's whole window, across UTC days, each with its own
-time and level, filtered by level and "Match this run only", read on with Load more. The Logs card says how long the
-archive keeps lines (`log_retention_days`). Each read is made only when `monitoring-capabilities` lists its operation
+time and level, filtered by level and "Only this run's lines" (which hides other workloads' lines from the same
+window), read on with Load more. The Logs card says how long the archive keeps lines (`log_retention_days`).
+The page opens on a failure summary (the failed step, its error class and first line, when the run ended, and links to
+the logs, the reports, the runbook, Dagster and the job's other runs), then the logs at full width, opened at warning
+and above with "Show all levels" and "Jump to first error" (a window with no warning falls back to all levels and says
+so), then the checks that did not pass, with the passes collapsed behind their count. Each read is made only when `monitoring-capabilities` lists its operation
 (`get_run_failure`, `get_run`, `get_run_quality`; the run's logs share `list_logs`'s row), and a card says why when it is
 not. A report is a same-origin download from its `href`; one with `href: null` is named, not linked, with the reason.
-"Open in Dagster" is a plain link to the run on the stage's `orchestration` route; there is no Re-run in v0.7, and no
-Runbook while the API names none. A refused (403), unknown (404) or unreachable run reads Disabled or Unknown in the
+"Open in Dagster" is a plain link to the run on the stage's `orchestration` route; there is no Re-run in v0.7, and a
+Runbook link only when `get_run_quality` names one as a web address (the mock's failed runs do). A refused (403), unknown (404) or unreachable run reads Disabled or Unknown in the
 API's words, never green; a part the API could not read (`steps: null`, `rows: null`, `checks: null`) says so and is
 never shown as "nothing failed", passes or zeros. In the mock, PROD's `sales_orders` run `c94cbcb0…` failed a Floe step
 and a blocking check; `finance_ledger`'s run `e5d27b8c…` crossed midnight UTC, left an incomplete manifest and 308 lines

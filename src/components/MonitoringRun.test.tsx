@@ -89,7 +89,13 @@ function api(routes: Routes = {}) {
     pipes: () => ({ body: pipesOf() }),
     quality: () => ({ body: qualityOf() }),
     alerts: () => ({ body: incidentsOf() }),
-    logs: () => ({ body: logsOf() }),
+    // Like the API, a `severity` floor keeps only lines at or above it (the default lines are all INFO).
+    logs: (u) => {
+      const floor = u.searchParams.get("severity");
+      const rank = ["debug", "info", "warning", "error", "critical"];
+      const page = logsOf();
+      return { body: floor ? { ...page, lines: page.lines.filter((l) => rank.indexOf(l.level ?? "") >= rank.indexOf(floor)) } : page };
+    },
     // The stage's day read (list_logs), the only log route of an API from before #1326.
     dayLogs: () => ({ body: { lines: [lineOf(0), lineOf(1)].map(({ timestamp: _t, level: _l, ...l }) => l), truncated: false } }),
     other: () => ({ status: 404 }),
@@ -149,8 +155,40 @@ describe("failed run", () => {
     open();
     await screen.findByText("SchemaMismatchError");
     expect(screen.queryByRole("button", { name: /re-?run|retry|launch/i })).toBeNull();
-    expect(card("Next step")).toHaveTextContent("re-run sales_orders from Dagster");
+    expect(card("What failed")).toHaveTextContent("re-run sales_orders from Dagster");
     expect(screen.queryByRole("link", { name: /Runbook/ })).toBeNull();
+  });
+
+  it("opens on the failure summary, then the logs, with no Next step card", async () => {
+    api();
+    open();
+    await screen.findByRole("region", { name: "Run log lines" });
+    const cards = screen.getAllByRole("region").filter((r) => r.classList.contains("run-card")).map((r) => r.querySelector("h2")!.textContent);
+    expect(cards).toEqual(["What failed", "Logs", "Quality checks", "Data quality", "Open incidents"]);
+    expect(screen.queryByRole("region", { name: "Next step" })).toBeNull();
+  });
+
+  it("summarizes the failure: step, error, when it ended, and links to the logs, reports, Dagster and the job's runs", async () => {
+    api();
+    open();
+    const what = await screen.findByRole("region", { name: "What failed" });
+    await within(what).findByRole("list", { name: "Quality reports" });
+    expect(what).toHaveTextContent("Step floe_silver_orders failed");
+    expect(what).toHaveTextContent("SchemaMismatchError");
+    expect(within(what).getByText("When", { selector: "dt" }).closest("div")).toHaveTextContent(/^WhenEnded .*, after 1 min 54 s$/);
+    expect(within(what).getByRole("link", { name: /^Logs/ })).toHaveAttribute("href", "#run-logs-h");
+    expect(within(what).getByRole("link", { name: /Open in Dagster/ })).toHaveAttribute("href", `${DAGSTER}/runs/${RUN}`);
+    expect(within(what).getByRole("link", { name: "All runs of sales_orders" })).toHaveAttribute("href", "/monitoring/prod/runs?job=sales_orders");
+    expect(within(what).getByRole("link", { name: /Floe report/ })).toHaveAttribute("href", HREF);
+    // The page's head does not repeat the summary's Dagster link.
+    expect(screen.getAllByRole("link", { name: /Open in Dagster/ })).toHaveLength(1);
+  });
+
+  it("says when the run ended is not known when the run read fails", async () => {
+    api({ run: () => ({ status: 503 }) });
+    open();
+    const what = await screen.findByRole("region", { name: "What failed" });
+    expect(within(what).getByText("When", { selector: "dt" }).closest("div")).toHaveTextContent("Not known: The monitoring API failed (503)");
   });
 
   it("lists only the open incidents of this run or its pipeline, with their delivery", async () => {
@@ -164,12 +202,12 @@ describe("failed run", () => {
 });
 
 describe("quality checks (get_run_quality)", () => {
-  it("lists every check, failures first, with engine, table, column, WARN apart from ERROR, and the recorded counts", async () => {
+  it("lists the checks that did not pass, failures first, with engine, table, column, WARN apart from ERROR, and the recorded counts", async () => {
     const fetch = api();
     open();
     const table = await screen.findByRole("region", { name: "Quality check results" });
     const rows = within(table).getAllByRole("row").slice(1);
-    expect(rows.map((r) => r.querySelector(".run-outcome")!.textContent)).toEqual(["ERROR", "WARN", "PASS"]);
+    expect(rows.map((r) => r.querySelector(".run-outcome")!.textContent)).toEqual(["ERROR", "WARN"]);
     expect(rows[0]).toHaveTextContent("schema.amount_type");
     expect(rows[0]).toHaveTextContent("sales_silver.orders · amount");
     expect(rows[0]).toHaveTextContent("Floe · severity abort");
@@ -178,12 +216,43 @@ describe("quality checks (get_run_quality)", () => {
     expect(rows[1]).toHaveTextContent("dbt · severity warn");
     expect(rows[1]).toHaveTextContent("3 failures");
     expect(rows[1]).not.toHaveTextContent("rows");
-    expect(within(card("Quality checks")).getByText("3")).toBeInTheDocument();
+    expect(within(card("Quality checks")).getByText("2 of 3 did not pass")).toBeInTheDocument();
     expect(qualityReads(fetch).map((u) => u.pathname)).toEqual([`/api/v1/stages/prod/runs/${RUN}/quality`]);
   });
 
+  it("collapses the passing checks behind their count, and shows them on demand", async () => {
+    api();
+    open();
+    await screen.findByRole("region", { name: "Quality check results" });
+    const passes = card("Quality checks").querySelector("details")!;
+    expect(passes).not.toHaveAttribute("open");
+    const toggle = within(card("Quality checks")).getByText("1 passed").closest("summary")!;
+    expect(toggle).toHaveTextContent("1 passed · show them");
+    await userEvent.click(toggle);
+    expect(passes).toHaveAttribute("open");
+    const rows = within(screen.getByRole("region", { name: "Passed quality checks" })).getAllByRole("row").slice(1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent("PASS");
+    expect(rows[0]).toHaveTextContent("not_null.order_id");
+  });
+
+  it("says no check failed when every check passed, with the passes still behind their count", async () => {
+    api({ quality: () => ({ body: qualityOf({ checks: [check(), check({ check_id: "unique.order_id" })], counts: { passed: 2, warn: 0, error: 0, not_run: 0, unknown: 0, blocking: 0 } }) }) });
+    open();
+    expect(await within(await screen.findByRole("region", { name: "Quality checks" })).findByText(/No check in the run's quality manifest failed/)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Quality check results" })).toBeNull();
+    expect(within(card("Quality checks")).getByText("2 passed")).toBeInTheDocument();
+  });
+
+  it("shows a check not run or unknown as not passed, never among the passes", async () => {
+    api({ quality: () => ({ body: qualityOf({ checks: [check(), check({ check_id: "x.not_run", outcome: "not_run" }), check({ check_id: "x.unknown", outcome: "unknown" })] }) }) });
+    open();
+    const rows = within(await screen.findByRole("region", { name: "Quality check results" })).getAllByRole("row").slice(1);
+    expect(rows.map((r) => r.querySelector(".run-outcome")!.textContent)).toEqual(["UNKNOWN", "NOT RUN"]);
+  });
+
   it("says no counts were recorded rather than showing zeros", async () => {
-    api({ quality: () => ({ body: qualityOf({ checks: [check({ rows: null, violations: null })] }) }) });
+    api({ quality: () => ({ body: qualityOf({ checks: [check({ outcome: "error", rows: null, violations: null })] }) }) });
     open();
     const table = await screen.findByRole("region", { name: "Quality check results" });
     expect(within(table).getAllByRole("row")[1]).toHaveTextContent("No counts recorded");
@@ -274,7 +343,7 @@ describe("quality reports", () => {
     expect(within(reports).queryByRole("link")).toBeNull();
     expect(reports).toHaveTextContent("dbt results");
     expect(reports).toHaveTextContent("Floe report");
-    expect(card("Data quality")).toHaveTextContent("These reports are not downloadable here. The API gives no link to your role on this stage");
+    expect(card("What failed")).toHaveTextContent("These reports are not downloadable here. The API gives no link to your role on this stage");
   });
 
   it("names only the reports that cannot be downloaded when some can", async () => {
@@ -283,7 +352,7 @@ describe("quality reports", () => {
     open();
     const reports = await screen.findByRole("list", { name: "Quality reports" });
     expect(within(reports).getAllByRole("link")).toHaveLength(1);
-    expect(card("Data quality")).toHaveTextContent("dbt results: not downloadable here");
+    expect(card("What failed")).toHaveTextContent("dbt results: not downloadable here");
   });
 
   it("says the run retained no report", async () => {
@@ -292,10 +361,18 @@ describe("quality reports", () => {
     expect(await screen.findByText("The run retained no Floe or dbt report.")).toBeInTheDocument();
   });
 
-  it("shows a runbook only when the API names one", async () => {
-    api({ quality: () => ({ body: qualityOf({ runbook: "https://docs.example/runbooks/quality" }) }) });
+  it("shows a runbook in the failure summary only when the API names one as a web address", async () => {
+    api({ quality: () => ({ body: qualityOf({ runbook: "https://docs.example/runbooks/alerting#failed_run" }) }) });
     open();
-    expect(await screen.findByRole("link", { name: /Runbook/ })).toHaveAttribute("href", "https://docs.example/runbooks/quality");
+    const book = await within(await screen.findByRole("region", { name: "What failed" })).findByRole("link", { name: /Runbook/ });
+    expect(book).toHaveAttribute("href", "https://docs.example/runbooks/alerting#failed_run");
+    expect(book).toHaveAttribute("target", "_blank");
+    expect(book).toHaveAttribute("rel", "noopener noreferrer");
+    cleanup();
+    api({ quality: () => ({ body: qualityOf({ runbook: "javascript:alert(1)" }) }) });
+    open();
+    await screen.findByRole("list", { name: "Quality reports" });
+    expect(screen.queryByRole("link", { name: /Runbook/ })).toBeNull();
   });
 });
 
@@ -309,16 +386,75 @@ describe("run logs (list_run_logs)", () => {
     expect(rows[1]).toHaveTextContent("21:58:00.000");
     expect(rows[1]).toHaveTextContent("INFO");
     expect(within(rows[1]).getByText("21:58:00.000").closest("time")).toHaveAttribute("dateTime", new Date(T0).toISOString());
-    const read = logReads(fetch)[0];
-    expect(read.searchParams.get("limit")).toBe("200");
-    expect(read.searchParams.get("severity")).toBeNull();
-    expect(read.searchParams.get("match_run")).toBeNull();
-    expect(read.searchParams.get("date")).toBeNull();
+    // The logs open at warning and above; with no such line in the window, they fall back to all levels and say so.
+    const [first, fallback] = logReads(fetch);
+    expect(first.searchParams.get("limit")).toBe("200");
+    expect(first.searchParams.get("severity")).toBe("warning");
+    expect(first.searchParams.get("match_run")).toBeNull();
+    expect(first.searchParams.get("date")).toBeNull();
+    expect(fallback.searchParams.get("severity")).toBeNull();
+    expect(logReads(fetch)).toHaveLength(2);
+    expect(card("Logs")).toHaveTextContent("No line at warning or above in the run's window, so all levels are shown.");
+    expect(within(card("Logs")).getByRole("combobox", { name: "Level" })).toHaveValue("");
     await userEvent.selectOptions(within(card("Logs")).getByRole("combobox", { name: "Level" }), "error");
     await vi.waitFor(() => expect(logReads(fetch).at(-1)!.searchParams.get("severity")).toBe("error"));
-    await userEvent.click(within(card("Logs")).getByRole("checkbox", { name: "Match this run only" }));
+    await userEvent.click(within(card("Logs")).getByRole("checkbox", { name: "Only this run's lines" }));
     await vi.waitFor(() => expect(logReads(fetch).at(-1)!.searchParams.get("match_run")).toBe("true"));
     expect(logReads(fetch).at(-1)!.searchParams.get("severity")).toBe("error");
+  });
+
+  it("opens at warning and above when the window has such lines, with an obvious way back to all levels", async () => {
+    const fetch = api({ logs: (u) => ({ body: u.searchParams.get("severity") === "warning"
+      ? logsOf(0, { lines: [lineOf(1, { level: "warning", line: "a warning" })] })
+      : logsOf(3) }) });
+    open();
+    const lines = await screen.findByRole("region", { name: "Run log lines" });
+    expect(within(lines).getAllByRole("row")).toHaveLength(2);
+    expect(within(card("Logs")).getByRole("combobox", { name: "Level" })).toHaveValue("warning");
+    expect(card("Logs")).toHaveTextContent("Showing warnings and above only.");
+    expect(card("Logs")).toHaveTextContent("1 lines");
+    await userEvent.click(within(card("Logs")).getByRole("button", { name: "Show all levels" }));
+    await vi.waitFor(() => expect(within(screen.getByRole("region", { name: "Run log lines" })).getAllByRole("row")).toHaveLength(4));
+    expect(logReads(fetch).at(-1)!.searchParams.get("severity")).toBeNull();
+    expect(within(card("Logs")).getByRole("combobox", { name: "Level" })).toHaveValue("");
+    expect(within(card("Logs")).queryByRole("button", { name: "Show all levels" })).toBeNull();
+  });
+
+  it("keeps a floor the reader picked even when it matches no line, and offers all levels", async () => {
+    const fetch = api({ logs: (u) => ({ body: u.searchParams.get("severity") ? logsOf(0) : logsOf(3, { lines: [lineOf(0, { level: "warning" })] }) }) });
+    open();
+    await screen.findByRole("region", { name: "Run log lines" });
+    await userEvent.selectOptions(within(card("Logs")).getByRole("combobox", { name: "Level" }), "critical");
+    expect(await within(card("Logs")).findByText(/The archive holds no critical only line/)).toBeInTheDocument();
+    expect(within(card("Logs")).getByRole("combobox", { name: "Level" })).toHaveValue("critical");
+    expect(logReads(fetch).at(-1)!.searchParams.get("severity")).toBe("critical");
+    await userEvent.click(within(card("Logs")).getByRole("button", { name: "Show all levels" }));
+    await vi.waitFor(() => expect(within(card("Logs")).getByRole("combobox", { name: "Level" })).toHaveValue(""));
+  });
+
+  it("jumps to the first error line", async () => {
+    api({ logs: () => ({ body: logsOf(0, { lines: [lineOf(0, { level: "warning" }), lineOf(1, { level: "error", line: "the first error" }), lineOf(2, { level: "critical" })] }) }) });
+    open();
+    await screen.findByRole("region", { name: "Run log lines" });
+    await userEvent.click(within(card("Logs")).getByRole("button", { name: "Jump to first error" }));
+    expect(document.activeElement).toHaveTextContent("the first error");
+    expect(document.activeElement?.tagName).toBe("TR");
+  });
+
+  it("offers no jump when the lines shown hold no error", async () => {
+    api({ logs: () => ({ body: logsOf(0, { lines: [lineOf(0, { level: "warning" })] }) }) });
+    open();
+    await screen.findByRole("region", { name: "Run log lines" });
+    expect(within(card("Logs")).queryByRole("button", { name: "Jump to first error" })).toBeNull();
+  });
+
+  it("explains what 'Only this run's lines' hides", async () => {
+    api();
+    open();
+    await screen.findByRole("region", { name: "Run log lines" });
+    const box = within(card("Logs")).getByRole("checkbox", { name: "Only this run's lines" });
+    expect(box).toHaveAccessibleDescription(/hides other workloads' lines from that window/);
+    expect(screen.getByText(/hides other workloads' lines from that window/)).toBeVisible();
   });
 
   it("shows nothing for a null time or level, never a guessed one", async () => {
@@ -494,6 +630,7 @@ describe("capabilities gate each read", () => {
     expect(logReads(fetch)).toEqual([]);
     const day = new Date(started * 1000).toISOString().slice(0, 10);
     const read = urls(fetch).find((u) => u.pathname === "/api/v1/stages/prod/logs")!;
+    expect(read.searchParams.get("severity")).toBe("warning");
     expect(read.searchParams.get("run_id")).toBe(RUN);
     expect(read.searchParams.get("date")).toBe(day);
     expect(card("Logs")).toHaveTextContent(`Archived ${day} (UTC) · run c94cbcb0`);
@@ -595,9 +732,10 @@ describe("missing fields", () => {
     const fetch = api({ run: () => ({ status: 503 }) });
     open();
     await screen.findByText("SchemaMismatchError");
-    expect(screen.getByText(/Not known: The monitoring API failed \(503\)/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Not known: The monitoring API failed \(503\)/).length).toBeGreaterThan(0);
     expect(await screen.findByRole("region", { name: "Run log lines" })).toBeInTheDocument();
-    expect(logReads(fetch)).toHaveLength(1);
+    // The warning-and-above read, then its fallback to all levels: both of the run's window, neither of a day.
+    expect(logReads(fetch)).toHaveLength(2);
   });
 
   it("says when no Dagster address is published for the stage, instead of a dead link", async () => {
@@ -721,7 +859,9 @@ describe("refused, missing and unreachable", () => {
     expect(reached).toContain(screen.getAllByRole("link", { name: /Open in Dagster/ })[0]);
     expect(reached).toContain(screen.getByRole("region", { name: "Quality check results" }));
     expect(reached).toContain(within(card("Logs")).getByRole("combobox", { name: "Level" }));
-    expect(reached).toContain(within(card("Logs")).getByRole("checkbox", { name: "Match this run only" }));
+    expect(reached).toContain(within(card("Logs")).getByRole("checkbox", { name: "Only this run's lines" }));
+    expect(reached).toContain(card("Quality checks").querySelector("summary"));
+    expect(reached).toContain(within(card("What failed")).getByRole("link", { name: /^Logs/ }));
     expect(reached).toContain(screen.getByRole("region", { name: "Run log lines" }));
     expect(reached).toContain(within(card("Logs")).getByRole("button", { name: "Load more" }));
     expect(reached).toContain(screen.getByRole("link", { name: /Floe report/ }));

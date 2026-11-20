@@ -83,12 +83,26 @@ function Gap({ what, part, retry }: { what: string; part: Exclude<Part<unknown>,
   );
 }
 
-function WhatFailed({ f }: { f: RunFailure }) {
-  const dagster = source(f, "dagster");
+/** "Ended 09:32 AM, after 1 min 55 s", or why the time is not known: the run's own end, never its creation. */
+function Ended({ run, now }: { run: Part<Run>; now: number }) {
+  if (run.status !== "ok") {
+    return <span className="mon-why">Not known: {run.status === "off" ? run.reason : run.error.message}</span>;
+  }
+  const r = run.data;
+  if (r.ended_at == null) return <span className="mon-why">Not ended, or no end time recorded</span>;
+  return <>Ended {when(r.ended_at, now)}{r.started_at != null && `, after ${duration(r.ended_at - r.started_at)}`}</>;
+}
+
+/** The failure summary: what failed and why, when, and where to look next (logs, reports, runbook, Dagster, the job's
+ * other runs). It replaces the former "Next step" card: run control stays in Dagster in v0.7 (openlakeforge#333). */
+function WhatFailed({ f, run, quality, stage, runId, dagster, now }: {
+  f: RunFailure; run: Part<Run>; quality: Part<RunQuality>; stage: string; runId: string; dagster?: string; now: number;
+}) {
+  const dagsterSrc = source(f, "dagster");
   let body;
   if (f.steps === null) {
     // An unreadable event log is no evidence that nothing failed.
-    body = <Gap what="The failed steps" part={{ status: "off", state: absent(dagster) ?? "unknown", reason: dagster?.reason ?? "the run's event log could not be read" }} />;
+    body = <Gap what="The failed steps" part={{ status: "off", state: absent(dagsterSrc) ?? "unknown", reason: dagsterSrc?.reason ?? "the run's event log could not be read" }} />;
   } else if (f.steps.length) {
     body = (
       <ol className="run-steps">
@@ -116,10 +130,33 @@ function WhatFailed({ f }: { f: RunFailure }) {
   } else {
     body = <p className="run-step">Dagster recorded no failed step and no run message for this run ({f.status}).</p>;
   }
+  const book = quality.status === "ok" ? runbookUrl(quality.data.runbook) : undefined;
+  const failed = f.status === "FAILURE";
   return (
     <Card id="run-failed-h" title="What failed">
       {body}
       {f.steps_truncated && <p className="mon-why">More steps failed than are shown here: open the run in Dagster for all of them.</p>}
+      <dl className="run-summary-facts">
+        <Fact term="When"><Ended run={run} now={now} /></Fact>
+      </dl>
+      <div className="run-actions">
+        <a className="f-btn f-outline run-dagster" href="#run-logs-h">Logs <span aria-hidden="true">↓</span><span className="sr-only"> (on this page)</span></a>
+        <OpenInDagster url={dagster} runId={runId} />
+        {book && (
+          <a className="f-btn f-outline run-dagster" href={book} target="_blank" rel="noopener noreferrer">
+            Runbook <span aria-hidden="true">↗</span><span className="sr-only"> (opens in a new tab)</span>
+          </a>
+        )}
+        <Link className="run-link run-all" to={`/monitoring/${encodeURIComponent(stage)}/runs?job=${encodeURIComponent(f.job)}`}>
+          All runs of <span className="f-mono">{f.job}</span>
+        </Link>
+      </div>
+      {quality.status === "ok" && quality.data.checks !== null && <Reports reports={quality.data.reports} />}
+      <p className="mon-why">
+        {failed
+          ? `Run control is not in the portal: once the cause is fixed, re-run ${f.job} from Dagster.`
+          : "Run control is not in the portal: the run, its full event log and its re-execution are in Dagster."}
+      </p>
     </Card>
   );
 }
@@ -129,6 +166,8 @@ const SEVERITY_LABEL: Record<"" | Exclude<LogSeverity, "debug">, string> = {
   "": "All levels", info: "Info and above", warning: "Warning and above", error: "Error and above", critical: "Critical only",
 };
 type Floor = keyof typeof SEVERITY_LABEL;
+const DEFAULT_FLOOR: Floor = "warning";
+const FLOOR_WORDS: Record<Exclude<Floor, "">, string> = { info: "info lines and above", warning: "warnings and above", error: "errors and above", critical: "critical lines" };
 
 /** "23:41:07.204" from the line's own ISO time, in UTC; a time the API sent that does not parse is shown as sent. */
 export function lineTime(ts: string): string {
@@ -163,8 +202,13 @@ function RunLogs({ access, stage, runId, run }: { access: MonitoringStage; stage
   const older = access.log_retention_days === undefined;
   const day = older && run.status === "ok" ? runDay(run.data) : undefined;
   const retention = access.log_retention_days ?? null;
-  const [severity, setSeverity] = useState<Floor>("");
+  // The logs open on what matters (#38): warning and above. When the run's window holds no such line, the page falls
+  // back to all levels once, and says so; a floor the reader picks is kept as picked.
+  const [severity, setSeverity] = useState<Floor>(DEFAULT_FLOOR);
+  const [fellBack, setFellBack] = useState(false);
+  const auto = useRef(true);
   const [matchRun, setMatchRun] = useState(false);
+  const firstError = useRef<HTMLTableRowElement | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [load, setLoad] = useState<{ status: "loading" } | Part<Page>>({ status: "loading" });
   const [more, setMore] = useState<More>({ status: "idle" });
@@ -185,7 +229,15 @@ function RunLogs({ access, stage, runId, run }: { access: MonitoringStage; stage
         }))
       : listRunLogs(stage, runId, { severity: severity || undefined, matchRun }, ctl.signal);
     read.then(
-      (data) => setLoad({ status: "ok", data }),
+      (data) => {
+        if (auto.current && severity === DEFAULT_FLOOR && !data.lines.length && !data.truncated) {
+          auto.current = false;
+          setFellBack(true);
+          setSeverity("");
+          return;
+        }
+        setLoad({ status: "ok", data });
+      },
       (e) => { if (!ctl.signal.aborted) setLoad({ status: "error", error: failure(e) }); },
     ).finally(() => clearTimeout(deadline));
     return () => { clearTimeout(deadline); ctl.abort(); moreCtl.current?.abort(); };
@@ -207,6 +259,15 @@ function RunLogs({ access, stage, runId, run }: { access: MonitoringStage; stage
       },
       (e) => { if (!ctl.signal.aborted) setMore({ status: "error", error: failure(e) }); },
     ).finally(() => clearTimeout(deadline));
+  };
+
+  /** A floor the reader picked: no fallback from here on. */
+  const pick = (floor: Floor) => { auto.current = false; setFellBack(false); setSeverity(floor); };
+  const jump = () => {
+    const row = firstError.current;
+    if (!row) return;
+    row.scrollIntoView?.({ block: "center" });
+    row.focus();
   };
 
   const keptNote = retention !== null ? <span className="run-kept">{kept(retention)}</span> : null;
@@ -242,12 +303,14 @@ function RunLogs({ access, stage, runId, run }: { access: MonitoringStage; stage
             The archive holds no {severity ? `${SEVERITY_LABEL[severity].toLowerCase()} ` : ""}line {matchRun ? "tagged with this run " : ""}{d.day ? `of this run for ${d.day} (UTC)` : "in the run's window"}.
             Lines still in the collector's spool are not archived yet.
           </p>
+          {severity && <p className="mon-why"><button type="button" className="f-link" onClick={() => pick("")}>Show all levels</button></p>}
           {window}
         </>
       );
     } else {
       let shownDay = crosses ? undefined : first;
       const rows: React.ReactNode[] = [];
+      const errorAt = d.lines.findIndex((l) => l.level === "error" || l.level === "critical");
       d.lines.forEach((l, i) => {
         const ts = l.timestamp ?? null;
         const lineDay = ts ? utcDay(ts) : undefined;
@@ -257,7 +320,7 @@ function RunLogs({ access, stage, runId, run }: { access: MonitoringStage; stage
         }
         const level = l.level ?? null;
         rows.push(
-          <tr key={i}>
+          <tr key={i} {...(i === errorAt ? { ref: firstError, tabIndex: -1, className: "run-first-error" } : {})}>
             <td className="f-mono run-time">{ts && <time dateTime={ts} title={ts}>{lineTime(ts)}</time>}</td>
             <td>{level && <span className="run-level" data-level={level}>{level.toUpperCase()}</span>}</td>
             <td className="f-mono">{l.container}</td>
@@ -267,6 +330,7 @@ function RunLogs({ access, stage, runId, run }: { access: MonitoringStage; stage
       });
       body = (
         <>
+          <LevelNote severity={severity} fellBack={fellBack} onAll={() => pick("")} onJump={errorAt >= 0 ? jump : undefined} />
           <div className="f-scroll run-log" role="region" aria-label="Run log lines" tabIndex={0}>
             <table className="f-table mon-table">
               <thead><tr><th scope="col">Time (UTC)</th><th scope="col">Level</th><th scope="col">Container</th><th scope="col">Line</th></tr></thead>
@@ -302,23 +366,43 @@ function RunLogs({ access, stage, runId, run }: { access: MonitoringStage; stage
           <div className="run-filters">
             <label className="run-filter">
               <span className="q-label">Level</span>
-              <select className="q-select" value={severity} onChange={(e) => setSeverity(e.target.value as Floor)}>
+              <select className="q-select" value={severity} onChange={(e) => pick(e.target.value as Floor)}>
                 {(older ? OLDER_FLOORS : (Object.keys(SEVERITY_LABEL) as Floor[])).map((k) => <option key={k} value={k}>{SEVERITY_LABEL[k]}</option>)}
               </select>
             </label>
-            {!older && <>
-            <label className="run-filter f-check">
-              <input type="checkbox" checked={matchRun} onChange={(e) => setMatchRun(e.target.checked)} aria-describedby="run-match-why" />
-              <span className="q-label">Match this run only</span>
-            </label>
-            <span className="sr-only" id="run-match-why">Keeps only the lines the collector tagged with this run, which leaves older untagged records out.</span>
-            </>}
+            {!older && (
+              <label className="run-filter f-check">
+                <input type="checkbox" checked={matchRun} onChange={(e) => setMatchRun(e.target.checked)} aria-describedby="run-match-why" />
+                <span className="q-label">Only this run's lines</span>
+              </label>
+            )}
           </div>
         )}
       </>}
     >
+      {g.open && !older && (
+        <p className="mon-why run-filter-help" id="run-match-why">
+          The window holds every workload's lines from the run's start to its end. "Only this run's lines" hides other
+          workloads' lines from that window, and older records that carry no run tag.
+        </p>
+      )}
       {body}
     </Card>
+  );
+}
+
+/** Which floor the lines are read at, the way back to all levels, and a jump to the first error line. */
+function LevelNote({ severity, fellBack, onAll, onJump }: { severity: Floor; fellBack: boolean; onAll(): void; onJump?(): void }) {
+  if (!severity && !fellBack && !onJump) return null;
+  return (
+    <p className="mon-why run-level-note">
+      {fellBack
+        ? <>No line at warning or above in the run's window, so all levels are shown.</>
+        : severity
+          ? <>Showing {FLOOR_WORDS[severity]} only. <button type="button" className="f-link" onClick={onAll}>Show all levels</button></>
+          : null}
+      {onJump && <>{severity || fellBack ? " · " : ""}<button type="button" className="f-link" onClick={onJump}>Jump to first error</button></>}
+    </p>
   );
 }
 
@@ -354,7 +438,35 @@ function checkCounts(c: QualityCheck): string[] {
   return out;
 }
 
-/** Every check of the run's quality manifest (#1325): failures first, each with its engine, table, column and counts. */
+function CheckTable({ label, checks }: { label: string; checks: QualityCheck[] }) {
+  return (
+    <div className="f-scroll run-checks" role="region" aria-label={label} tabIndex={0}>
+      <table className="f-table mon-table">
+        <thead><tr><th scope="col">Outcome</th><th scope="col">Check · table · column</th><th scope="col">Pipeline</th><th scope="col">Counts</th></tr></thead>
+        <tbody>
+          {checks.map((c, i) => {
+            const counts = checkCounts(c);
+            return (
+              <tr key={`${c.engine}-${c.check_id}-${i}`}>
+                <td><span className="run-outcome" data-outcome={c.outcome}>{OUTCOME_WORD[c.outcome]}</span></td>
+                <th scope="row">
+                  <span className="mon-what f-mono">{c.check_id}</span>
+                  <span className="mon-why f-mono">{c.table ?? "no table"}{c.column ? ` · ${c.column}` : ""}</span>
+                  <span className="mon-why">{engineName(c.engine)} · severity {c.engine_severity}</span>
+                </th>
+                <td data-pipeline={c.pipeline_outcome}>{PIPELINE_WORD[c.pipeline_outcome]}</td>
+                <td>{counts.length ? counts.join(" · ") : <span className="mon-why">No counts recorded</span>}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Every check of the run's quality manifest (#1325): the ones that did not pass first, each with its engine, table,
+ * column and counts; the passes collapsed behind their count. */
 function QualityChecks({ quality, retry }: { quality: Part<RunQuality>; retry(): void }) {
   let body;
   let count: string | undefined;
@@ -366,7 +478,10 @@ function QualityChecks({ quality, retry }: { quality: Part<RunQuality>; retry():
   } else {
     const q = quality.data;
     const checks = [...q.checks!].sort((a, b) => OUTCOME_RANK[a.outcome] - OUTCOME_RANK[b.outcome]);
-    count = String(checks.length);
+    // What did not pass is what a reader of a failure needs; the passes stay one click away, behind their count (#38).
+    const open = checks.filter((c) => c.outcome !== "passed");
+    const passed = checks.filter((c) => c.outcome === "passed");
+    count = open.length ? `${fmt(open.length)} of ${fmt(checks.length)} did not pass` : `${fmt(checks.length)}`;
     body = (
       <>
         {q.complete === false && (
@@ -376,28 +491,19 @@ function QualityChecks({ quality, retry }: { quality: Part<RunQuality>; retry():
               <span className="mon-why">The run did not finish its quality manifest, so checks may be missing from this list and its counts may be partial.</span></span>
           </p>
         )}
-        <div className="f-scroll run-checks" role="region" aria-label="Quality check results" tabIndex={0}>
-          <table className="f-table mon-table">
-            <thead><tr><th scope="col">Outcome</th><th scope="col">Check · table · column</th><th scope="col">Pipeline</th><th scope="col">Counts</th></tr></thead>
-            <tbody>
-              {checks.map((c, i) => {
-                const counts = checkCounts(c);
-                return (
-                  <tr key={`${c.engine}-${c.check_id}-${i}`}>
-                    <td><span className="run-outcome" data-outcome={c.outcome}>{OUTCOME_WORD[c.outcome]}</span></td>
-                    <th scope="row">
-                      <span className="mon-what f-mono">{c.check_id}</span>
-                      <span className="mon-why f-mono">{c.table ?? "no table"}{c.column ? ` · ${c.column}` : ""}</span>
-                      <span className="mon-why">{engineName(c.engine)} · severity {c.engine_severity}</span>
-                    </th>
-                    <td data-pipeline={c.pipeline_outcome}>{PIPELINE_WORD[c.pipeline_outcome]}</td>
-                    <td>{counts.length ? counts.join(" · ") : <span className="mon-why">No counts recorded</span>}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        {open.length ? <CheckTable label="Quality check results" checks={open} /> : (
+          <p className="run-step">No check in the run's quality manifest failed, warned, was skipped or is unknown.</p>
+        )}
+        {passed.length > 0 && (
+          <details className="run-passed">
+            <summary>
+              <span className="run-outcome" data-outcome="passed">{fmt(passed.length)} passed</span>
+              <span className="mon-why run-show"> · show them</span>
+              <span className="mon-why run-hide"> · hide them</span>
+            </summary>
+            <CheckTable label="Passed quality checks" checks={passed} />
+          </details>
+        )}
       </>
     );
   }
@@ -441,7 +547,8 @@ function Reports({ reports }: { reports: QualityReport[] }) {
   );
 }
 
-/** Floe's rows from the failure answer, this run's outcome counts and its reports from get_run_quality. */
+/** Floe's rows from the failure answer and this run's outcome counts from get_run_quality (its reports are linked
+ * from the failure summary). */
 function Quality({ f, quality, retry }: { f?: RunFailure; quality: Part<RunQuality>; retry(): void }) {
   const q = f && source(f, "quality");
   const rows = f?.rows;
@@ -475,7 +582,6 @@ function Quality({ f, quality, retry }: { f?: RunFailure; quality: Part<RunQuali
         <Gap what="Row counts" part={{ status: "off", state: absent(q) ?? "unknown", reason: q?.status === "available" ? "No Floe result in the run's quality manifest reports its rows." : q?.reason ?? "The API did not say why." }} />
       ) : null}
       {counts}
-      {quality.status === "ok" && quality.data.checks !== null && <Reports reports={quality.data.reports} />}
     </Card>
   );
 }
@@ -526,27 +632,6 @@ function OpenInDagster({ url, runId }: { url?: string; runId: string }) {
 
 /** A runbook is shown only when the API names one as a web address (#1325 answers null until the signal catalog has one). */
 const runbookUrl = (r: string | null) => (r && /^https?:\/\//.test(r) ? r : undefined);
-
-function NextStep({ f, dagster, runId, runbook }: { f?: RunFailure; dagster?: string; runId: string; runbook: string | null }) {
-  const book = runbookUrl(runbook);
-  const failed = f?.status === "FAILURE";
-  return (
-    <Card id="run-next-h" title="Next step">
-      <p className="run-step">{failed ? "Fix the cause, then re-run in Dagster" : "Look at the run in Dagster"}</p>
-      <p className="mon-why">
-        {failed
-          ? `${f.steps === null ? "The failed steps could not be read here: Dagster's event log has them." : "Read what the failing step reports above and in the run's logs."} Run control is not in the portal: once the cause is fixed, re-run ${f.job} from Dagster.`
-          : "Run control is not in the portal: the run, its full event log and its re-execution are in Dagster."}
-      </p>
-      <OpenInDagster url={dagster} runId={runId} />
-      {book && (
-        <a className="f-btn f-outline run-dagster" href={book} target="_blank" rel="noopener noreferrer">
-          Runbook <span aria-hidden="true">↗</span><span className="sr-only"> (opens in a new tab)</span>
-        </a>
-      )}
-    </Card>
-  );
-}
 
 function Fact({ term, children }: { term: string; children: React.ReactNode }) {
   return <div><dt className="label">{term}</dt><dd>{children}</dd></div>;
@@ -656,16 +741,18 @@ export function MonitoringRun({ stage, runId, dagster }: { stage: string; runId:
   } else {
     const fd = snap.failure.data;
     body = (
-      <div className="run-cols">
-        <div className="run-col">
-          <WhatFailed f={fd} />
-          <QualityChecks quality={snap.quality} retry={retry} />
-          <RunLogs access={access} stage={stage} runId={runId} run={snap.run} />
-        </div>
-        <div className="run-col">
-          <Quality f={fd} quality={snap.quality} retry={retry} />
-          <Incidents a={snap.alerts} runId={runId} job={fd.job} now={now} retry={retry} />
-          <NextStep f={fd} dagster={dagster} runId={runId} runbook={snap.quality.status === "ok" ? snap.quality.data.runbook : null} />
+      // The failure summary first, then the logs at full width, then the checks beside the counts and incidents (#38).
+      <div className="run-col">
+        <WhatFailed f={fd} run={snap.run} quality={snap.quality} stage={stage} runId={runId} dagster={dagster} now={now} />
+        <RunLogs access={access} stage={stage} runId={runId} run={snap.run} />
+        <div className="run-cols">
+          <div className="run-col">
+            <QualityChecks quality={snap.quality} retry={retry} />
+          </div>
+          <div className="run-col">
+            <Quality f={fd} quality={snap.quality} retry={retry} />
+            <Incidents a={snap.alerts} runId={runId} job={fd.job} now={now} retry={retry} />
+          </div>
         </div>
       </div>
     );
@@ -697,7 +784,8 @@ export function MonitoringRun({ stage, runId, dagster }: { stage: string; runId:
             {run?.ended_at != null && started !== undefined && ` after ${duration(run.ended_at - started)}`}
           </p>
         </div>
-        <OpenInDagster url={dagster} runId={runId} />
+        {/* With a failure to summarize, its card carries the link; otherwise the run is still one click from Dagster. */}
+        {snap?.failure.status !== "ok" && <OpenInDagster url={dagster} runId={runId} />}
       </div>
       <ul className="run-chips" aria-label="Run">
         <li><StatusBadge state={state} /></li>
