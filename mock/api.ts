@@ -337,8 +337,8 @@ async function filesRoute(req: IncomingMessage, url: URL, parts: string[]): Prom
  * offered them), `not-provided` (no quality reader, no alert evaluator), and for quality and incidents `unknown`,
  * `unavailable`, `stale` and `empty` (see qualityHealth and alertIncidents). `admin` is a platform admin: the log
  * archive is read on prod too, so a failed run there shows its archived lines. `slim` turns metrics off (the Slim profile),
- * and `unavailable` also makes the metrics backend unreachable. */
-const MONITORING_SCENARIOS = ["no-access", "limited", "unauthorized", "not-provided", "unknown", "unavailable", "stale", "empty", "admin", "slim"] as const;
+ * and `unavailable` also makes the metrics backend unreachable. `healthy`: every PROD service probe answers healthy. */
+const MONITORING_SCENARIOS = ["no-access", "limited", "unauthorized", "not-provided", "unknown", "unavailable", "stale", "empty", "admin", "slim", "healthy"] as const;
 type Scenario = (typeof MONITORING_SCENARIOS)[number] | undefined;
 function scenarioOf(req: IncomingMessage): Scenario {
   let asked: string | null = null;
@@ -431,7 +431,7 @@ function stageHealth(stage: string, scenario?: Scenario) {
       svc("trino.readiness", "trino-http", "healthy", "Coordinator accepts queries"),
       svc("polaris.readiness", "polaris-http", "healthy", "Catalog API responds"),
       svc("object-store.list", "s3", "healthy", "Buckets reachable"),
-      prod ? svc("log-archive.spool-age", "log-collector", "warning", "No durable write for 12 min (limit 10 min)")
+      prod && scenario !== "healthy" ? svc("log-archive.spool-age", "log-collector", "warning", "No durable write for 12 min (limit 10 min)")
         : svc("log-archive.spool-age", "log-collector", "healthy", "Last durable write 42 s ago"),
       // dev's newest archived object cannot be read, so its last durable write is unknown (null), never a time.
       prod ? svc("log-archive.newest-object", "s3", "healthy", "an archived log was written within its bound", 12 * 60 + 20)

@@ -104,9 +104,9 @@ test("with log access the run's window shows each line's time and level, and the
 
 test("an incident and a pipelines row link to their run", async ({ page }) => {
   await page.goto("/monitoring?stage=prod");
-  await expect(page.getByRole("region", { name: "Open alert incidents" }).getByRole("link", { name: "Open run c94cbcb0" }).first())
+  await expect(attention(page).getByRole("row", { name: /Quality check failed/ }).getByRole("link", { name: "Open run c94cbcb0" }))
     .toHaveAttribute("href", `/monitoring/prod/runs/${FAILED}`);
-  await page.getByRole("region", { name: "Pipeline health" }).getByRole("row", { name: /crm_accounts/ }).getByRole("link").click();
+  await page.getByRole("region", { name: "Pipeline health" }).getByRole("row", { name: /crm_accounts/ }).getByRole("link", { name: "Open run 4be0c1a9" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "crm · accounts" })).toBeVisible();
   await expect(card(page, "What failed")).toContainText("This run succeeded: nothing failed.");
 });

@@ -113,6 +113,8 @@ const banner = () => screen.getByRole("heading", { level: 2, name: /PROD/ });
 const attentionRow = (name: string) => within(screen.getByRole("region", { name: "What needs attention" })).getByRole("row", { name: new RegExp(name) });
 const pipelineRow = (name: string) => within(screen.getByRole("region", { name: "Pipeline health" })).getByRole("row", { name: new RegExp(name) });
 const serviceRow = (name: string) => within(screen.getByRole("region", { name: "Service health" })).getByRole("row", { name: new RegExp(name) });
+/** Opens the Services panel's full list (it folds to one line when every service is healthy). */
+const showAllServices = () => userEvent.click(screen.getByRole("button", { name: /^Show all \d+ services$/ }));
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
@@ -134,6 +136,13 @@ describe("overview", () => {
     open();
     expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
     expect(screen.getByText("0 pipelines failed · 2 of 2 services ready")).toBeInTheDocument();
+    // Every service is healthy: Services is one line, with a toggle, and its table is folded away.
+    expect(screen.getByText("2 of 2 healthy · resource metrics disabled")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Service health" })).toBeNull();
+    const toggle = screen.getByRole("button", { name: "Show all 2 services" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(toggle);
+    expect(screen.getByRole("button", { name: "Hide healthy services" })).toHaveAttribute("aria-expanded", "true");
     expect(serviceRow("Trino")).toHaveTextContent("Healthy");
     expect(serviceRow("Resource metrics")).toHaveTextContent("Disabled");
     expect(serviceRow("Resource metrics")).toHaveTextContent("no metrics source is connected to the API");
@@ -153,7 +162,9 @@ describe("overview", () => {
     expect(await screen.findByRole("heading", { name: "Critical PROD needs attention" })).toBeInTheDocument();
     const pipelines = screen.getByRole("region", { name: "Pipelines summary" });
     expect(pipelines).toHaveTextContent("1 failed of 2 · 0 missed");
-    expect(pipelines).toHaveTextContent(/Last success · sales_orders failed \d\d?:\d\d( [AP]M)? · crm \d\d?:\d\d( [AP]M)?$/);
+    // Counts only: the card names no pipeline and no time; the table and the list hold the detail.
+    expect(pipelines).toHaveTextContent(/1 critical · 1 healthy$/);
+    expect(pipelines).not.toHaveTextContent(/sales_orders|crm|Last success/);
     expect(within(pipelines).getByText("Critical")).toBeInTheDocument();
   });
 
@@ -163,7 +174,7 @@ describe("overview", () => {
     open();
     expect(await screen.findByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
     expect(screen.queryByText(/is healthy/)).toBeNull();
-    expect(screen.getByText(/1 service answer expired/)).toBeInTheDocument();
+    expect(banner().closest("section")).toHaveTextContent("1 service answer expired");
     expect(serviceRow("Trino")).toHaveTextContent("Unknown");
     expect(serviceRow("Trino")).toHaveTextContent(/Stale: no fresh answer/);
     expect(within(screen.getByRole("region", { name: "Services summary" })).getByText("0 of 1")).toBeInTheDocument();
@@ -248,7 +259,7 @@ describe("pipelines and needs attention", () => {
     const href = `/monitoring/prod/runs/${failedRun.run_id}`;
     expect(within(attentionRow("Run failed")).getByRole("link", { name: "Open run c94cbcb0" })).toHaveAttribute("href", href);
     expect(within(pipelineRow("sales_orders")).getByRole("link", { name: "Open run c94cbcb0" })).toHaveAttribute("href", href);
-    expect(within(pipelineRow("sales_orders")).getByRole("link").textContent).toBe("c94cbcb0");
+    expect(within(pipelineRow("sales_orders")).getByRole("link", { name: "Open run c94cbcb0" }).textContent).toBe("c94cbcb0");
   });
 
   it("shows when a missed expected run was due, from the signal's own `due`", async () => {
@@ -279,10 +290,10 @@ describe("pipelines and needs attention", () => {
     open();
     await screen.findByRole("region", { name: "Pipeline health" });
     expect(pipelineRow("sales_orders")).toHaveTextContent("Critical");
-    expect(pipelineRow("sales_orders")).toHaveTextContent(/Failed · .* · c94cbcb0/);
+    expect(pipelineRow("sales_orders")).toHaveTextContent(/Failed · .*c94cbcb0/);
     expect(pipelineRow("sales_orders")).toHaveTextContent("2 failed in last 24h");
     expect(pipelineRow("erp_inventory")).toHaveTextContent("Disabled");
-    expect(pipelineRow("erp_inventory")).toHaveTextContent("erp_daily · stopped");
+    expect(pipelineRow("erp_inventory")).toHaveTextContent(/Stopped\s*erp_daily/);
   });
 
   it("reads a failed-run count that could not be read as Unknown, never 0", async () => {
@@ -384,6 +395,7 @@ describe("pipelines and needs attention", () => {
     expect(attentionRow("Pipelines cannot be read")).toHaveTextContent("The monitoring API failed (502)");
     expect(within(screen.getByRole("region", { name: "Pipelines summary" })).getByText("Unknown")).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Pipeline health" })).toBeNull();
+    await showAllServices();
     expect(serviceRow("Trino")).toHaveTextContent("Healthy"); // the stage answer still stands
     fail = false;
     await userEvent.click(within(screen.getByRole("region", { name: "What needs attention" })).getByRole("button", { name: /Retry/ }));
@@ -437,6 +449,7 @@ describe("pipelines and needs attention", () => {
     expect(await screen.findByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
     expect(attentionRow("Pipelines cannot be read")).toHaveTextContent("Unknown");
     expect(within(screen.getByRole("region", { name: "What needs attention" })).getByRole("button", { name: /Retry/ })).toBeInTheDocument();
+    await showAllServices();
     expect(serviceRow("Trino")).toHaveTextContent("Healthy");
   });
 
@@ -514,7 +527,7 @@ describe("unavailable and absent", () => {
     })));
     open(["dev", "prod"], "/monitoring?stage=dev");
     await screen.findByText("Reading DEV health…");
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Stage" }), "prod");
+    await userEvent.click(screen.getByRole("radio", { name: "PROD" }));
     expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -534,17 +547,41 @@ describe("unavailable and absent", () => {
     await expect(read).rejects.toMatchObject({ name: "AbortError" });
   });
 
+  it("offers a list instead of the switch for more than three stages", async () => {
+    const four = ["dev", "test", "uat", "prod"];
+    api((stage) => ({ body: health({ stage }) }), undefined, () => ({ body: caps(...four.map((st) => access(st))) }));
+    open(four, "/monitoring?stage=uat");
+    expect(await screen.findByRole("heading", { name: "Healthy UAT is healthy" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Stage" })).toHaveValue("uat");
+    expect(screen.queryByRole("radio")).toBeNull();
+  });
+
+  it("offers DEV | UAT | PROD as three segments", async () => {
+    const three = ["dev", "uat", "prod"];
+    api((stage) => ({ body: health({ stage }) }), undefined, () => ({ body: caps(...three.map((st) => access(st))) }));
+    open(three, "/monitoring?stage=uat");
+    expect(await screen.findByRole("heading", { name: "Healthy UAT is healthy" })).toBeInTheDocument();
+    expect(screen.getAllByRole("radio").map((r) => r.getAttribute("aria-label"))).toEqual(["DEV", "UAT", "PROD"]);
+    expect(screen.getByRole("radio", { name: "UAT" })).toBeChecked();
+  });
+
   it("does not take a 200 without a StageHealth as an answer", async () => {
     api(() => ({ body: {} }));
     open();
     expect(await screen.findByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
   });
 
-  it("switches stage from the selector and asks the API for it", async () => {
+  it("switches stage from a segmented DEV | PROD switch, with the keyboard, and asks the API for it", async () => {
     const fetch = api((stage) => ({ body: health({ stage }) }));
     open(["dev", "prod"], "/monitoring");
     expect(await screen.findByRole("heading", { name: "Healthy DEV is healthy" })).toBeInTheDocument();
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Stage" }), "prod");
+    const group = screen.getByRole("group", { name: "Stage" });
+    expect(within(group).getAllByRole("radio").map((r) => r.getAttribute("aria-label"))).toEqual(["DEV", "PROD"]);
+    expect(screen.queryByRole("combobox", { name: "Stage" })).toBeNull();
+    expect(screen.getByRole("radio", { name: "DEV" })).toBeChecked();
+    screen.getByRole("radio", { name: "DEV" }).focus();
+    await userEvent.keyboard("{ArrowRight}");
+    expect(screen.getByRole("radio", { name: "PROD" })).toBeChecked();
     expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
     expect(healthCalls(fetch)).toEqual(["/api/v1/stages/dev/health", "/api/v1/stages/prod/health"]);
     expect(fetch).toHaveBeenCalledWith("/api/v1/stages/prod/health/pipelines", expect.anything());
@@ -588,7 +625,7 @@ describe("a health read that never answers", () => {
     await advance(1);
     expect(screen.getByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
     expect(attentionRow("Pipelines cannot be read")).toHaveTextContent(`did not answer within ${DEADLINE_MS / 1000} s`);
-    expect(serviceRow("Trino")).toHaveTextContent("Healthy");
+    expect(screen.getByText(/^2 of 2 healthy/)).toBeInTheDocument(); // the services' own answer stands
   });
 
   it("after a good snapshot, drops it for Unknown when a refresh stalls", async () => {
@@ -620,6 +657,7 @@ describe("monitoring capabilities", () => {
     expect(await screen.findByText(/Your role may not monitor any stage/)).toBeInTheDocument();
     expect(screen.getByText("No monitoring access")).toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "Stage" })).toBeNull();
+    expect(screen.queryByRole("radio")).toBeNull();
     expect(urls(fetch)).toEqual([CAPS_URL]);
   });
 
@@ -627,7 +665,7 @@ describe("monitoring capabilities", () => {
     api((stage) => ({ body: health({ stage }) }), undefined, () => ({ body: caps(access("dev")) }));
     open(["dev", "prod"], "/monitoring");
     expect(await screen.findByRole("heading", { name: "Healthy DEV is healthy" })).toBeInTheDocument();
-    expect(within(screen.getByRole("combobox", { name: "Stage" })).getAllByRole("option").map((o) => o.textContent)).toEqual(["DEV"]);
+    expect(within(screen.getByRole("group", { name: "Stage" })).getAllByRole("radio").map((o) => o.getAttribute("aria-label"))).toEqual(["DEV"]);
   });
 
   it("refuses a deployed stage the role may not monitor without calling any of its routes", async () => {
@@ -710,8 +748,13 @@ describe("services by service", () => {
     }));
     open();
     await screen.findByRole("heading", { name: /PROD/ });
-    const rows = within(screen.getByRole("region", { name: "Service health" })).getAllByRole("row").slice(1);
-    expect(rows.map((r) => r.querySelector("th")?.textContent)).toEqual(["Dagster", "Trino", "Resource metrics"]);
+    const names = () => within(screen.getByRole("region", { name: "Service health" })).getAllByRole("row").slice(1).map((r) => r.querySelector("th")?.textContent);
+    // A service that is not healthy opens the panel on its own, listing only what is not healthy; the toggle lists all.
+    expect(names()).toEqual(["Dagster"]);
+    await userEvent.click(screen.getByRole("button", { name: "Show all 2 services" }));
+    expect(names()).toEqual(["Dagster", "Trino", "Resource metrics"]);
+    await userEvent.click(screen.getByRole("button", { name: "Show only problems" }));
+    expect(names()).toEqual(["Dagster"]);
     expect(within(serviceRow("Dagster")).getAllByText("Unknown")[0]).toHaveClass("mon-badge");
     expect(serviceRow("Dagster")).toHaveTextContent("Dagster API · Unknown");
     expect(serviceRow("Dagster")).toHaveTextContent("Dagster workloads · Healthy");
@@ -724,13 +767,13 @@ describe("services by service", () => {
     const at = new Date(Date.now() - 180_000).toISOString();
     api(() => ({ body: health({ services: [svc("log-archive.newest-object", "healthy", { last_success_at: at }), svc("quality-sync.publication", "healthy", { last_success_at: at })] }) }));
     open();
-    expect(await screen.findByText("Log archive · last durable write 3 min ago · Quality sync · last publication 3 min ago")).toBeInTheDocument();
+    expect(await screen.findByText("2 of 2 healthy · log archive last durable write 3 min ago · quality sync last publication 3 min ago · resource metrics disabled")).toBeInTheDocument();
   });
 
   it("reads a null last_success_at as unknown, never as a time", async () => {
     api(() => ({ body: health({ services: [svc("log-archive.newest-object", "unknown", { last_success_at: null }), svc("trino.readiness", "healthy")] }) }));
     open();
-    expect(await screen.findByText("Log archive · last durable write unknown")).toBeInTheDocument();
+    expect(await screen.findByText(/^1 of 2 healthy · log archive last durable write unknown/)).toBeInTheDocument();
     expect(screen.queryByText(/last durable write \d/)).toBeNull();
   });
 
@@ -852,7 +895,7 @@ describe("data quality", () => {
 
 describe("alert incidents", () => {
   const card = () => screen.getByRole("region", { name: "Alerts summary" });
-  const table = () => screen.getByRole("region", { name: "Open alert incidents" });
+  const table = () => screen.getByRole("region", { name: "What needs attention" });
   const urls = (fetch: ReturnType<typeof vi.fn>) => fetch.mock.calls.map(([u]) => u as string);
   const incident = (id: string, delivery: AlertIncident["delivery"], over: Partial<AlertIncident> = {}): AlertIncident => ({
     id, condition: "failed_run", severity: "critical", job: null, domain: "sales", product: "orders", table: null, component: null,
@@ -867,9 +910,9 @@ describe("alert incidents", () => {
       run_ids: ["c94cbcb0-5d1e-4a8e"], job: "sales_orders", product: null, domain: null,
     })] }));
     open();
-    const row = await within(await screen.findByRole("region", { name: "Open alert incidents" })).findByRole("row", { name: /incident a/ });
+    const row = await within(await screen.findByRole("region", { name: "What needs attention" })).findByRole("row", { name: /incident a/ });
     expect(within(row).getByRole("link", { name: "Open run c94cbcb0" })).toHaveAttribute("href", "/monitoring/prod/runs/c94cbcb0-5d1e-4a8e");
-    expect(row).toHaveTextContent("job sales_orders");
+    expect(within(row).getByRole("link", { name: "Runs of sales_orders" })).toHaveAttribute("href", "/monitoring/prod/runs?job=sales_orders");
   });
 
   it.each([
@@ -881,7 +924,7 @@ describe("alert incidents", () => {
   ] as const)("shows a %s delivery in words", async (_, delivery, word, line) => {
     show(incidentsOf({ incidents: [incident("i-1", delivery)] }));
     open();
-    const row = await within(await screen.findByRole("region", { name: "Open alert incidents" })).findByRole("row", { name: /incident i-1/ });
+    const row = await within(await screen.findByRole("region", { name: "What needs attention" })).findByRole("row", { name: /incident i-1/ });
     expect(row.querySelector(".mon-delivery")).toHaveTextContent(new RegExp(`^${word}$`));
     expect(row).toHaveTextContent(line);
     expect(row).toHaveTextContent("Critical");
@@ -893,7 +936,7 @@ describe("alert incidents", () => {
   it("says no open incidents only for a current evaluation, and offers no acknowledgement", async () => {
     show(incidentsOf());
     open();
-    expect(await within(await screen.findByRole("region", { name: "Open alert incidents" })).findByText("No open incidents.")).toBeInTheDocument();
+    expect(await within(await screen.findByRole("region", { name: "What needs attention" })).findByText("Nothing needs attention: no pipeline signal is warning or critical and no alert incident is open.")).toBeInTheDocument();
     expect(within(card()).getByText("Healthy")).toBeInTheDocument();
     expect(card()).toHaveTextContent(/0 open incidents.*Evaluated \d+ s ago/);
     expect(screen.queryByRole("button", { name: /acknowledge/i })).toBeNull();
@@ -903,7 +946,7 @@ describe("alert incidents", () => {
     const state = { status: "available" as const, reason: "the alert evaluator has not run since 2026-11-19T09:00:00+00:00", evaluated_at: "2026-11-19T09:00:00Z", stale: true };
     show(incidentsOf({ state, incidents: [incident("i-1", { status: "delivered", event: "opened", attempts: 1, receivers: 1, delivered: 1 }, { severity: "warning" })] }));
     open();
-    expect(await screen.findByRole("note")).toHaveTextContent("Stale: the alert evaluator has not run since 2026-11-19T09:00:00+00:00. This list may be out of date.");
+    expect(await screen.findByRole("note")).toHaveTextContent("Stale: the alert evaluator has not run since 2026-11-19T09:00:00+00:00. Its incidents and notifications may be out of date.");
     expect(within(table()).getByRole("row", { name: /incident i-1/ })).toBeInTheDocument();
     expect(within(card()).getByText("Warning")).toBeInTheDocument(); // as the rollup ranks it: a warning outranks unknown
     expect(card()).toHaveTextContent("Stale: the alert evaluator has not run since");
@@ -914,7 +957,7 @@ describe("alert incidents", () => {
     show(incidentsOf({ state: { status: "available", reason: "the alert evaluator has not run since 09:00", evaluated_at: null, stale: true } }));
     open();
     expect(await screen.findByText(/none can be ruled out/)).toBeInTheDocument();
-    expect(screen.queryByText("No open incidents.")).toBeNull();
+    expect(screen.queryByText("Nothing needs attention: no pipeline signal is warning or critical and no alert incident is open.")).toBeNull();
     expect(within(card()).getByText("Unknown")).toBeInTheDocument();
   });
 
@@ -924,17 +967,17 @@ describe("alert incidents", () => {
   ] as const)("shows an %s state with incidents null as such, never as none", async (status, reason, word, title) => {
     show(incidentsOf({ state: { status, reason, evaluated_at: null, stale: null }, incidents: null }));
     open();
-    const row = await within(await screen.findByRole("region", { name: "Open alert incidents" })).findByRole("row", { name: new RegExp(title) });
+    const row = await within(await screen.findByRole("region", { name: "What needs attention" })).findByRole("row", { name: new RegExp(title) });
     expect(row).toHaveTextContent(reason);
     expect(row).toHaveTextContent(word);
     expect(card()).toHaveTextContent("—");
-    expect(screen.queryByText("No open incidents.")).toBeNull();
+    expect(screen.queryByText("Nothing needs attention: no pipeline signal is warning or critical and no alert incident is open.")).toBeNull();
   });
 
   it("reads incidents null as unknown even when the state says available", async () => {
     show(incidentsOf({ incidents: null }));
     open();
-    expect(await within(await screen.findByRole("region", { name: "Open alert incidents" })).findByRole("row", { name: /Incidents cannot be read/ })).toHaveTextContent("Unknown");
+    expect(await within(await screen.findByRole("region", { name: "What needs attention" })).findByRole("row", { name: /Incidents cannot be read/ })).toHaveTextContent("Unknown");
   });
 
   it("does not read incidents for a role without list_alert_incidents", async () => {
@@ -950,17 +993,17 @@ describe("alert incidents", () => {
     let reply: Reply = { status: 403, body: { detail: "role analyst may not call list_alert_incidents" } };
     api(() => ({ body: health() }), undefined, undefined, { alerts: () => reply });
     open();
-    const refused = await within(await screen.findByRole("region", { name: "Open alert incidents" })).findByRole("row", { name: /Alert incidents are not available/ });
+    const refused = await within(await screen.findByRole("region", { name: "What needs attention" })).findByRole("row", { name: /Alert incidents are not available/ });
     expect(refused).toHaveTextContent("role analyst may not call list_alert_incidents");
     expect(within(table()).queryByRole("button", { name: /Retry/ })).toBeNull();
     cleanup();
     reply = { status: 503, body: {} };
     open();
-    const gap = await within(await screen.findByRole("region", { name: "Open alert incidents" })).findByRole("row", { name: /Incidents cannot be read/ });
+    const gap = await within(await screen.findByRole("region", { name: "What needs attention" })).findByRole("row", { name: /Incidents cannot be read/ });
     expect(gap).toHaveTextContent("The monitoring API failed (503)");
     reply = { body: incidentsOf() };
     await userEvent.click(within(gap).getByRole("button", { name: /Retry/ }));
-    expect(await within(table()).findByText("No open incidents.")).toBeInTheDocument();
+    expect(await within(table()).findByText("Nothing needs attention: no pipeline signal is warning or critical and no alert incident is open.")).toBeInTheDocument();
   });
 
   it.each([
@@ -973,8 +1016,109 @@ describe("alert incidents", () => {
     spoil(body);
     show(body);
     open();
-    expect(await within(await screen.findByRole("region", { name: "Open alert incidents" })).findByRole("row", { name: /Incidents cannot be read/ })).toHaveTextContent("Unknown");
+    expect(await within(await screen.findByRole("region", { name: "What needs attention" })).findByRole("row", { name: /Incidents cannot be read/ })).toHaveTextContent("Unknown");
     expect(within(card()).getByText("Unknown")).toBeInTheDocument();
+  });
+});
+
+describe("one list to act on", () => {
+  const RUN = "c94cbcb0-5d1e-4a8e";
+  const failing = () => pipes({
+    pipelines: [
+      pipeline("sales_orders", {
+        state: "critical", latest_run: run("sales_orders", "FAILURE", RUN), failed_runs: 2,
+        signals: [
+          sig("execution", "critical", { reason: "latest run failed", run: RUN }),
+          sig("freshness", "critical", { reason: "data is stale" }),
+          sig("quality", "critical", { reason: "a blocking quality check failed", run: RUN }),
+        ],
+      }),
+      pipeline("web_events", { failed_runs: 0 }),
+    ],
+  });
+  const delivered = { status: "delivered", event: "opened", attempts: 1, receivers: 2, delivered: 2 } as const;
+  const inc = (id: string, condition: string, over: Partial<AlertIncident> = {}): AlertIncident => ({
+    id, condition, severity: "critical", job: "sales_orders", domain: "sales", product: "orders", table: null, component: null,
+    opened_at: new Date(Date.now() - 600_000).toISOString(), last_seen_at: new Date().toISOString(), summary: `summary of ${id}`,
+    run_ids: [RUN], delivery: delivered, ...over,
+  });
+  const list = () => screen.getByRole("region", { name: "What needs attention" });
+  const names = () => within(list()).getAllByRole("row").slice(1).map((r) => r.querySelector(".mon-what")?.textContent);
+
+  it("joins an incident to the signal it is about, so neither is shown twice, and keeps an incident about nothing listed", async () => {
+    const incidents = [
+      inc("failed", "run_failed"),
+      inc("quality", "quality", { delivery: { status: "undeliverable", event: "opened", attempts: 10, receivers: 1, delivered: 0 } }),
+      inc("spool", "service_degraded", { job: null, domain: null, product: null, component: "log-archive.spool-age", severity: "warning", summary: "the spool is not draining", run_ids: [] }),
+    ];
+    api(() => ({ body: health({ state: "critical" }) }), () => ({ body: failing() }), undefined, { alerts: () => ({ body: incidentsOf({ incidents }) }) });
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    // 3 signals + 1 incident about no signal: 4 rows, not 3 + 3.
+    expect(names()).toEqual(["Run failed", "Data is late", "Quality check failed", "the spool is not draining"]);
+    expect(new Set(names()).size).toBe(names().length);
+    expect(screen.queryByRole("region", { name: "Open alert incidents" })).toBeNull();
+    expect(screen.queryByText("summary of failed")).toBeNull(); // the joined incident adds its notification, not a second row
+    expect(within(list()).getAllByRole("link", { name: "Open run c94cbcb0" })).toHaveLength(2); // once per row that names it
+    const failed = attentionRow("Run failed");
+    expect(failed.querySelector(".mon-delivery")).toHaveTextContent(/^Delivered$/);
+    expect(failed).toHaveTextContent("opened notification · 2 of 2 receivers · 1 attempt");
+    expect(attentionRow("Quality check failed").querySelector(".mon-delivery")).toHaveTextContent(/^Undeliverable$/);
+    // A signal no incident is about says no notification went out, in words.
+    expect(attentionRow("Data is late").querySelector(".mon-delivery")).toHaveTextContent(/^None$/);
+    expect(attentionRow("Data is late")).toHaveTextContent("no incident is open for it, so none was sent");
+    const spool = attentionRow("the spool is not draining");
+    expect(spool).toHaveTextContent("log-archive.spool-age");
+    expect(spool).toHaveTextContent("Warning");
+    expect(spool).toHaveTextContent(/last seen \d+ s ago/);
+    expect(within(screen.getByRole("region", { name: "Needs attention" })).getByText("4")).toBeInTheDocument();
+  });
+
+  it("says a notification is unknown, not none, when the incidents are stale or cannot be read", async () => {
+    const state = { status: "available" as const, reason: "the alert evaluator has not run since 09:00", evaluated_at: null, stale: true };
+    api(() => ({ body: health({ state: "critical" }) }), () => ({ body: failing() }), undefined, { alerts: () => ({ body: incidentsOf({ state, incidents: [] }) }) });
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    expect(attentionRow("Data is late").querySelector(".mon-delivery")).toHaveTextContent(/^Unknown$/);
+    expect(attentionRow("Data is late")).toHaveTextContent("the alert evaluation is stale");
+    cleanup();
+    api(() => ({ body: health({ state: "critical" }) }), () => ({ body: failing() }), undefined, { alerts: () => ({ status: 503, body: {} }) });
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    expect(attentionRow("Data is late").querySelector(".mon-delivery")).toHaveTextContent(/^Unknown$/);
+    expect(attentionRow("Incidents cannot be read")).toHaveTextContent("The monitoring API failed (503)");
+  });
+
+  it("links pipeline names to their runs and a failed count to those failed runs in the window shown", async () => {
+    api(() => ({ body: health({ state: "critical" }) }), () => ({ body: failing() }));
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    expect(within(pipelineRow("sales_orders")).getByRole("link", { name: "Runs of sales_orders" })).toHaveAttribute("href", "/monitoring/prod/runs?job=sales_orders");
+    expect(within(attentionRow("Run failed")).getByRole("link", { name: "Runs of sales_orders" })).toHaveAttribute("href", "/monitoring/prod/runs?job=sales_orders");
+    const failed = within(pipelineRow("sales_orders")).getByRole("link", { name: /^2 failed in last 24h/ });
+    expect(failed).toHaveAttribute("href", "/monitoring/prod/runs?job=sales_orders&status=failed&window=24h");
+    expect(within(pipelineRow("sales_orders")).getByRole("link", { name: "Open run c94cbcb0" })).toHaveAttribute("href", `/monitoring/prod/runs/${RUN}`);
+    // Zero failed runs is a count, but there is nothing to open.
+    expect(pipelineRow("web_events")).toHaveTextContent("0 failed in last 24h");
+    expect(within(pipelineRow("web_events")).queryByRole("link", { name: /failed/ })).toBeNull();
+  });
+
+  it("keeps four summary cards, counts only, when the role may not read the stage health", async () => {
+    api(() => ({ body: health() }), undefined, () => ({ body: caps(access("prod", { operations: ["list_pipeline_health", "list_alert_incidents"] })) }));
+    open();
+    expect(await screen.findByRole("heading", { level: 2, name: "Disabled PROD health is not available" })).toBeInTheDocument();
+    const cards = ["Services summary", "Pipelines summary", "Data quality summary", "Alerts summary"].map((name) => screen.getByRole("region", { name }));
+    expect(cards).toHaveLength(4);
+    expect(cards[0]).toHaveTextContent("Your role may not read the stage health.");
+  });
+
+  it("keeps the services card to counts", async () => {
+    api(() => ({ body: health({ services: [svc("trino.readiness", "warning"), svc("polaris.readiness", "healthy")] }) }));
+    open();
+    const card = await screen.findByRole("region", { name: "Services summary" });
+    expect(card).toHaveTextContent("1 of 2 ready");
+    expect(card).toHaveTextContent("1 warning · 1 healthy");
+    expect(card).not.toHaveTextContent(/Trino|Polaris/);
   });
 });
 
@@ -984,6 +1128,7 @@ describe("status badges in rows", () => {
     open();
     const region = await screen.findByRole("region", { name: "Service health" });
     expect(within(region).getByRole("row", { name: /^Trino Warning/ })).toBeInTheDocument();
+    await showAllServices();
     expect(within(region).getByRole("row", { name: /^Resource metrics Disabled/ })).toBeInTheDocument();
     for (const dot of document.querySelectorAll(".mon-dot")) expect(dot).toHaveAttribute("aria-hidden", "true");
   });
