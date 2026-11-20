@@ -5,6 +5,8 @@
 // Health (#1127): prod needs attention (a failed pipeline, a stale log spool), dev cannot read Dagster (unknown).
 // Monitoring capabilities (#1259) decide what the page calls; `?mock=<scenario>` on the page (read from the Referer)
 // picks another role or state, see MONITORING_SCENARIOS and the README.
+// Metrics (#21, ADR 0024): the stage catalog and named series over a fixed range, and the platform's node series;
+// metrics are on by default, off with `mock=slim`, and the backend is down with `mock=unavailable`.
 // Files routes (#1114) keep an in-memory object store, so upload, folders, rename and delete change the listings.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -133,6 +135,7 @@ async function route(req: IncomingMessage, url: URL): Promise<{ status?: number;
     return { json: { query_available: true, stages: STAGES.map((stage) => ({ stage, query: { engine: "trino", available: true, export_formats: ["csv", "json"] } })) } };
   }
   if (parts[0] === "monitoring-capabilities" && method === "GET") return { json: monitoringCapabilities(scenarioOf(req)) };
+  if (parts[0] === "platform" && parts[1] === "metrics" && parts[2] && method === "GET") return platformMetric(scenarioOf(req), parts[2], url);
   if (parts[0] === "file-capabilities" && method === "GET") {
     return { json: { stages: [{ stage: "dev", operations: FILE_OPS }], max_upload_bytes: MAX_UPLOAD } };
   }
@@ -141,6 +144,7 @@ async function route(req: IncomingMessage, url: URL): Promise<{ status?: number;
   if (!STAGES.includes(stage)) throw new HttpError(404, `stage '${stage}' offers no query`);
   if (parts[2] === "buckets") return filesRoute(req, url, parts);
   if ((parts[2] === "health" || parts[2] === "alerts") && method === "GET") return monitoringRoute(scenarioOf(req), stage, parts.slice(2).join("/"));
+  if (parts[2] === "metrics" && method === "GET") return metricsRoute(scenarioOf(req), stage, parts[3], url);
   if (parts[2] === "runs" && parts[3] && method === "GET") return runRoute(scenarioOf(req), stage, parts[3], parts.slice(4), url);
   if (parts[2] === "logs" && method === "GET") return logsRoute(scenarioOf(req), stage, url);
   if (parts[2] === "schemas" && method === "GET") {
@@ -332,8 +336,9 @@ async function filesRoute(req: IncomingMessage, url: URL, parts: string[]): Prom
  * pipelines, quality or incidents read is made), `unauthorized` (the routes answer 403 although the capabilities
  * offered them), `not-provided` (no quality reader, no alert evaluator), and for quality and incidents `unknown`,
  * `unavailable`, `stale` and `empty` (see qualityHealth and alertIncidents). `admin` is a platform admin: the log
- * archive is read on prod too, so a failed run there shows its archived lines. */
-const MONITORING_SCENARIOS = ["no-access", "limited", "unauthorized", "not-provided", "unknown", "unavailable", "stale", "empty", "admin"] as const;
+ * archive is read on prod too, so a failed run there shows its archived lines. `slim` turns metrics off (the Slim profile),
+ * and `unavailable` also makes the metrics backend unreachable. */
+const MONITORING_SCENARIOS = ["no-access", "limited", "unauthorized", "not-provided", "unknown", "unavailable", "stale", "empty", "admin", "slim"] as const;
 type Scenario = (typeof MONITORING_SCENARIOS)[number] | undefined;
 function scenarioOf(req: IncomingMessage): Scenario {
   let asked: string | null = null;
@@ -370,7 +375,7 @@ function monitoringCapabilities(scenario: Scenario) {
         scenario === "not-provided" ? { name: "logs", status: "not_provided", reason: "no log archive is configured for this stage" }
           : stage === "dev" || scenario === "admin" ? { name: "logs", status: "available", reason: "a log archive is configured" }
             : { name: "logs", status: "unavailable", reason: "the platform API holds no object-store key for the log archive" },
-        { name: "metrics", status: "not_provided", reason: "no metrics source is connected to the API" },
+        metricsConfigured(scenario),
         scenario === "not-provided" ? { name: "alerts", status: "not_provided", reason: "no alert evaluator, or no key to read its state, is configured" }
           : { name: "alerts", status: "available", reason: "the alert evaluator's state is configured" },
       ],
@@ -384,9 +389,9 @@ function monitoringRoute(scenario: Scenario, stage: string, path: string): { sta
   if (!op) throw new HttpError(404, "Not Found");
   const access = monitoringCapabilities(scenario).stages.find((s) => s.stage === stage);
   if (!access?.operations.includes(op) || scenario === "unauthorized") throw new HttpError(403, `role analyst may not call ${op} on stage '${stage}'`);
-  if (path === "health") return { json: stageHealth(stage) };
-  if (path === "health/services") return { json: { stage, services: stageHealth(stage).services } };
-  if (path === "health/pipelines") return { json: pipelinesHealth(stage) };
+  if (path === "health") return { json: stageHealth(stage, scenario) };
+  if (path === "health/services") return { json: { stage, services: stageHealth(stage, scenario).services } };
+  if (path === "health/pipelines") return { json: pipelinesHealth(stage, scenario) };
   if (path === "health/quality") return { json: qualityHealth(stage, scenario) };
   if (path === "alerts/incidents") return { json: alertIncidents(stage, scenario) };
   throw new HttpError(404, "Not Found");
@@ -405,7 +410,7 @@ const SERVICE_LABELS: Record<string, [string, string, string]> = {
   "quality-sync.publication": ["Quality publication", "quality-sync", "Quality sync"],
 };
 
-function stageHealth(stage: string) {
+function stageHealth(stage: string, scenario?: Scenario) {
   const now = Date.now();
   const iso = (offset: number) => new Date(now + offset * 1000).toISOString();
   const svc = (component: string, source: string, state: string, reason: string, lastSuccess: number | null = null) => {
@@ -440,7 +445,7 @@ function stageHealth(stage: string) {
         : { name: "quality", status: "not_provided", reason: "no quality manifest reader is configured for this stage" },
       prod ? { name: "quality-sync", status: "available", reason: "read from the reconciler's quality-sync summary" }
         : { name: "quality-sync", status: "not_provided", reason: "no quality results are published from this stage" },
-      { name: "metrics", status: "not_provided", reason: "no metrics source is connected to the API" },
+      metricsIntegration(scenario),
     ],
   };
 }
@@ -470,7 +475,7 @@ const PROD_PIPELINES = [
   { job: "web_events", state: "healthy" },
 ] as const;
 
-function pipelinesHealth(stage: string) {
+function pipelinesHealth(stage: string, scenario?: Scenario) {
   const now = Date.now();
   const iso = (offset: number) => new Date(now + offset * 1000).toISOString();
   const secs = (offset: number) => Math.round(now / 1000 + offset);
@@ -490,7 +495,7 @@ function pipelinesHealth(stage: string) {
     { name: "services", status: "unavailable", reason: "service signals are served by the stage health route" },
     stage === "prod" ? { name: "quality", status: "available", reason: "read from the stage's quality manifests" }
       : { name: "quality", status: "not_provided", reason: "no quality manifest reader is configured for this stage" },
-    { name: "metrics", status: "not_provided", reason: "no metrics source is connected to the API" },
+    metricsIntegration(scenario),
   ];
   const thresholds = { run_max_age_seconds: 7 * 24 * H, schedule_max_age_seconds: 300, schedule_grace_seconds: 900, run_window: 25 };
   // The counts cover the default 24h window (openlakeforge#1319); the state and signals are never windowed.
@@ -877,4 +882,175 @@ function logsRoute(scenario: Scenario, stage: string, url: URL): { json: unknown
     line("dagster", "INFO", "03:04:05.240", "Step floe_silver_orders failed · Gold skipped"),
   ];
   return { json: { lines: lines.filter((l) => rank[l.level] >= min).map(({ level: _, ...l }) => l), truncated: false } };
+}
+
+// ── Metrics (openlakeforge #21, ADR 0024): MetricCatalog and MetricSeriesData. Metrics are on (a Full deployment
+// keeping 3 days of resource history, so 7d is refused for a Prometheus series), `slim` turns them off, `unavailable`
+// takes the backend down. Pipeline series come from Dagster and exist on Slim too; dev's Dagster cannot be read.
+// `empty` gives the pipeline series no line (no pipeline in the range). Values are deterministic waves of the time.
+
+const METRICS_RETENTION_DAYS = 3;
+const METRIC_RANGES: Record<string, [number, number]> = { "1h": [3600, 60], "6h": [6 * 3600, 60], "24h": [24 * 3600, 300], "7d": [7 * 24 * 3600, 1800] };
+type MockSeries = { name: string; unit: string; scope: "stage" | "platform" | "both"; labels: string[]; source: "prometheus" | "dagster" };
+const SERIES: MockSeries[] = [
+  { name: "cpu_usage_cores", unit: "cores", scope: "both", labels: ["stage", "component"], source: "prometheus" },
+  { name: "memory_working_set_bytes", unit: "bytes", scope: "both", labels: ["stage", "component"], source: "prometheus" },
+  { name: "container_restarts", unit: "restarts", scope: "both", labels: ["stage", "component"], source: "prometheus" },
+  { name: "node_cpu_usage_cores", unit: "cores", scope: "platform", labels: [], source: "prometheus" },
+  { name: "node_memory_working_set_bytes", unit: "bytes", scope: "platform", labels: [], source: "prometheus" },
+  { name: "trino_running_queries", unit: "queries", scope: "stage", labels: ["stage"], source: "prometheus" },
+  { name: "trino_queued_queries", unit: "queries", scope: "stage", labels: ["stage"], source: "prometheus" },
+  { name: "trino_failed_queries", unit: "queries", scope: "stage", labels: ["stage"], source: "prometheus" },
+  { name: "trino_heap_used_bytes", unit: "bytes", scope: "stage", labels: ["stage"], source: "prometheus" },
+  { name: "object_store_bucket_bytes", unit: "bytes", scope: "both", labels: ["stage"], source: "prometheus" },
+  { name: "object_store_disk_used_bytes", unit: "bytes", scope: "platform", labels: ["service"], source: "prometheus" },
+  { name: "object_store_disk_free_bytes", unit: "bytes", scope: "platform", labels: ["service"], source: "prometheus" },
+  { name: "pipeline_runs", unit: "runs", scope: "stage", labels: ["stage", "job", "status"], source: "dagster" },
+  { name: "pipeline_run_duration_seconds", unit: "seconds", scope: "stage", labels: ["stage", "job"], source: "dagster" },
+];
+
+/** The monitoring capability, as platform-api's metrics_configuration decides it: one setting for the deployment. */
+function metricsConfigured(scenario: Scenario) {
+  return scenario === "slim" ? { name: "metrics", status: "disabled", reason: "the deployment profile turns metrics off" }
+    : { name: "metrics", status: "available", reason: "a metrics backend is configured" };
+}
+/** The health routes' `metrics` integration: whether the backend answers a query now. */
+function metricsIntegration(scenario: Scenario) {
+  if (scenario === "slim") return metricsConfigured(scenario);
+  return scenario === "unavailable" ? { name: "metrics", status: "unavailable", reason: "the metrics backend did not answer" }
+    : { name: "metrics", status: "available", reason: "the metrics backend answered a query" };
+}
+/** A Prometheus series' state and reason, or a Dagster series' for the stage. */
+function seriesState(scenario: Scenario, s: MockSeries, stage: string | null): [string, string] {
+  if (s.source === "dagster") return stage === "prod" ? ["available", "read from Dagster"] : ["unavailable", "Dagster could not be read"];
+  if (scenario === "slim") return ["disabled", "the deployment profile turns metrics off"];
+  if (scenario === "unavailable") return ["unavailable", "the metrics backend did not answer"];
+  return ["available", "a target behind the series is up"];
+}
+const rangesOf = (s: MockSeries) =>
+  Object.entries(METRIC_RANGES).filter(([, [d]]) => s.source === "dagster" || d <= METRICS_RETENTION_DAYS * 86400).map(([r]) => r);
+
+function metricsAccess(scenario: Scenario, stage: string, op: string) {
+  const access = monitoringCapabilities(scenario).stages.find((s) => s.stage === stage);
+  if (!access?.operations.includes(op) || scenario === "unauthorized" || scenario === "limited") {
+    throw new HttpError(403, `role analyst may not call ${op} on stage '${stage}'`);
+  }
+}
+
+function metricsRoute(scenario: Scenario, stage: string, name: string | undefined, url: URL): { json: unknown } {
+  if (!name) {
+    metricsAccess(scenario, stage, "list_stage_metrics");
+    return {
+      json: {
+        stage, observed_at: new Date().toISOString(),
+        series: SERIES.filter((s) => s.scope !== "platform").map((s) => {
+          const [state, reason] = seriesState(scenario, s, stage);
+          return { name: s.name, unit: s.unit, source: s.source, labels: s.labels, ranges: rangesOf(s), state, reason };
+        }),
+      },
+    };
+  }
+  metricsAccess(scenario, stage, "get_stage_metric");
+  const s = SERIES.find((x) => x.name === name && x.scope !== "platform");
+  if (!s) throw new HttpError(404, `no stage series named '${name}'`);
+  return { json: seriesData(scenario, s, stage, url) };
+}
+
+function platformMetric(scenario: Scenario, name: string, url: URL): { json: unknown } {
+  // get_platform_metric names no stage: its floor is data-engineer, which an analyst (no-access, limited) is below.
+  if (scenario === "unauthorized" || scenario === "no-access" || scenario === "limited") throw new HttpError(403, "role analyst may not call get_platform_metric");
+  const s = SERIES.find((x) => x.name === name && x.scope !== "stage");
+  if (!s) throw new HttpError(404, `no platform series named '${name}'`);
+  return { json: seriesData(scenario, s, null, url) };
+}
+
+function seriesData(scenario: Scenario, s: MockSeries, stage: string | null, url: URL) {
+  const range = url.searchParams.get("range") ?? "";
+  if (!(range in METRIC_RANGES)) throw new HttpError(422, [{ type: "literal_error", loc: ["query", "range"], msg: "Input should be '1h', '6h', '24h' or '7d'" }]);
+  if (!rangesOf(s).includes(range)) throw new HttpError(400, `range ${range} is longer than the metrics retention of ${METRICS_RETENTION_DAYS} days`);
+  const [duration, step] = METRIC_RANGES[range];
+  const end = Math.floor(Date.now() / 1000 / step) * step;
+  const times = Array.from({ length: duration / step }, (_, i) => end - step * (duration / step - 1 - i));
+  const [state, reason] = seriesState(scenario, s, stage);
+  const envelope = {
+    series: s.name, stage, source: s.source, state, reason: state === "available" ? (s.source === "dagster" ? "read from Dagster" : "read from the metrics backend") : reason,
+    range, step_seconds: step, unit: s.unit, observed_at: new Date().toISOString(), complete: true, covered_from: null as string | null, lines: [] as unknown[],
+  };
+  if (state !== "available") return envelope;
+  const iso = (t: number) => new Date(t * 1000).toISOString();
+  const line = (labels: Record<string, string>, value: (t: number, i: number) => number | null) =>
+    ({ labels, points: times.map((t, i) => [iso(t), value(t, i)]) });
+  const wave = (t: number, hours: number, phase = 0) => (1 + Math.sin((t / 3600 / hours) * 2 * Math.PI + phase)) / 2;
+  const st = { stage: stage ?? "platform" };
+  const GiB = 1024 ** 3;
+  const COMPONENTS: [string, number, number][] = [
+    ["trino-coordinator", 0.55, 0.9], ["trino-worker", 0.35, 0.8], ["dagster-webserver", 0.08, 0.05], ["dagster-daemon", 0.06, 0.04],
+    ["polaris", 0.05, 0.03], ["object-store", 0.12, 0.06],
+  ];
+  // A run pod only exists while a run does: between runs it has no sample, which is a gap, never 0.
+  const running = (t: number) => (Math.floor(t / 3600) % 3 === 0 && t % 3600 < 1500);
+  switch (s.name) {
+    case "cpu_usage_cores":
+      return { ...envelope, lines: [...COMPONENTS.map(([c, base, amp], k) => line({ ...st, component: c }, (t) => +(base + amp * wave(t, 6, k)).toFixed(3))),
+        line({ ...st, component: "dagster-run" }, (t) => (running(t) ? 0.9 : null))] };
+    case "memory_working_set_bytes":
+      return { ...envelope, lines: [...COMPONENTS.map(([c, base], k) => line({ ...st, component: c }, (t) => Math.round((base * 3 + 0.4 * wave(t, 12, k)) * GiB))),
+        line({ ...st, component: "dagster-run" }, (t) => (running(t) ? Math.round(1.1 * GiB) : null))] };
+    case "object_store_bucket_bytes":
+      return { ...envelope, lines: [line(st, (t) => Math.round((48 + (t % (30 * 86400)) / 86400 * 0.6) * GiB))] };
+    case "trino_running_queries":
+      return { ...envelope, lines: [line(st, (t) => Math.round(6 * wave(t, 4)))] };
+    case "trino_failed_queries":
+      return { ...envelope, lines: [line(st, (t) => (scenario === "empty" ? 0 : Math.floor(t / step) % 17 === 0 ? 2 : Math.floor(t / step) % 7 === 0 ? 1 : 0))] };
+    case "node_cpu_usage_cores":
+      return { ...envelope, lines: [line({}, (t) => +(2.4 + 1.6 * wave(t, 6)).toFixed(3))] };
+    case "node_memory_working_set_bytes":
+      return { ...envelope, lines: [line({}, (t) => Math.round((9.5 + 2 * wave(t, 12)) * GiB))] };
+    case "pipeline_runs":
+    case "pipeline_run_duration_seconds":
+      return pipelineSeries(scenario, s.name, envelope, times, step, range);
+    default:
+      return { ...envelope, lines: [line(st, (t) => Math.round(3 * wave(t, 8)))] };
+  }
+}
+
+/** Runs created per step by job and outcome, or the longest finished run per step, from a fixed history: web_events
+ * hourly, the others daily, sales_orders' latest run failed. The 7d read reaches its run cap 5 days back. */
+function pipelineSeries(scenario: Scenario, name: string, envelope: Record<string, unknown>, times: number[], step: number, range: string) {
+  if (scenario === "empty") return envelope;
+  const now = Math.floor(Date.now() / 1000);
+  const first = times[0] - step;
+  type MockRun = { job: string; created: number; status: string; took: number };
+  const runs: MockRun[] = [];
+  for (let t = Math.floor(first / 3600) * 3600; t <= now; t += 3600) {
+    if (t + 300 > first && t + 300 <= now) runs.push({ job: "web_events", created: t + 300, status: (t / 3600) % 23 === 5 ? "failed" : "succeeded", took: 60 + ((t / 3600) % 5) * 12 });
+    if ((t / 3600) % 24 === 3) {
+      for (const [job, took] of [["sales_orders", 240], ["crm_accounts", 410], ["finance_ledger", 1260]] as const) {
+        const created = t + 120;
+        if (created > first && created <= now) runs.push({ job, created, status: job === "sales_orders" && created > now - 86400 ? "failed" : "succeeded", took });
+      }
+    }
+  }
+  const coveredFrom = range === "7d" ? now - 5 * 86400 : null;
+  const bucket = (r: MockRun) => times.findIndex((t) => r.created > t - step && r.created <= t);
+  const jobs = ["crm_accounts", "finance_ledger", "sales_orders", "web_events"];
+  const iso = (t: number) => new Date(t * 1000).toISOString();
+  const blank = (t: number) => coveredFrom !== null && t - step < coveredFrom;
+  let lines;
+  if (name === "pipeline_runs") {
+    lines = jobs.flatMap((job) => ["succeeded", "failed", "canceled", "running"].map((status) => ({
+      labels: { stage: "prod", job, status },
+      points: times.map((t, i) => [iso(t), blank(t) ? null : runs.filter((r) => r.job === job && r.status === status && bucket(r) === i).length]),
+    })));
+  } else {
+    lines = jobs.map((job) => ({
+      labels: { stage: "prod", job },
+      points: times.map((t, i) => {
+        const took = runs.filter((r) => r.job === job && bucket(r) === i).map((r) => r.took);
+        return [iso(t), blank(t) || !took.length ? null : Math.max(...took)];
+      }),
+    }));
+  }
+  return { ...envelope, lines, complete: coveredFrom === null, covered_from: coveredFrom === null ? null : iso(coveredFrom),
+    reason: coveredFrom === null ? "read from Dagster" : `read from Dagster; the newest 500 runs cover the range from ${iso(coveredFrom)} only` };
 }
