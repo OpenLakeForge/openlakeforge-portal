@@ -911,7 +911,8 @@ function shape(stage: string, l: ArchiveLine) {
 const LEVEL_RANK: Record<string, number> = { debug: 0, info: 1, warning: 2, error: 3, critical: 4 };
 
 /** The filters list_logs and list_run_logs share: severity is a floor on each line's level; pod, container and
- * component match exactly (component a v2 record's only). */
+ * component match exactly (component a v2 record's only); `q` (openlakeforge#1349) is a case-insensitive substring of
+ * the message, 1 to 200 characters with no control character. */
 function sharedFilters(url: URL) {
   const limit = Number(url.searchParams.get("limit") ?? 500);
   if (!Number.isInteger(limit) || limit < 1 || limit > 5000) throw new HttpError(422, "limit must be between 1 and 5000");
@@ -920,15 +921,30 @@ function sharedFilters(url: URL) {
   const pod = url.searchParams.get("pod") ?? "";
   const container = url.searchParams.get("container") ?? "";
   const component = url.searchParams.get("component") ?? "";
+  const q = url.searchParams.get("q");
+  // eslint-disable-next-line no-control-regex
+  if (q !== null && (q.length < 1 || q.length > 200 || /[\u0000-\u001f\u007f]/.test(q))) throw new HttpError(422, "q must be 1 to 200 characters with no control characters");
+  const needle = q?.toLowerCase();
   const keep = (l: ReturnType<typeof shape>) => (floor === null || (l.level !== null && LEVEL_RANK[l.level] >= LEVEL_RANK[floor]))
-    && (!pod || l.pod === pod) && (!container || l.container === container) && (!component || l.component === component);
+    && (!pod || l.pod === pod) && (!container || l.container === container) && (!component || l.component === component)
+    && (!needle || (l.line ?? "").toLowerCase().includes(needle));
   return { limit, keep };
 }
 
-/** The run's window, as list_run_logs reads it, paged by an opaque `next`; `match_run` keeps only the tagged lines. */
+/** The run's window, as list_run_logs reads it, paged by an opaque `next`; `match_run` keeps only the tagged lines.
+ * `since` and `until` narrow the window (never widen it), and the answer names the narrowed window. */
 function runLogs(stage: string, run: MockRun, url: URL) {
-  const start = (run.started_at ?? run.created_at) * 1000;
-  const end = (run.ended_at ?? Date.now() / 1000) * 1000;
+  const time = (k: string) => {
+    const v = url.searchParams.get(k);
+    if (v === null) return undefined;
+    const t = Date.parse(v);
+    if (Number.isNaN(t)) throw new HttpError(422, `${k} must be a date-time`);
+    return t;
+  };
+  const runStart = (run.started_at ?? run.created_at) * 1000;
+  const runEnd = (run.ended_at ?? Date.now() / 1000) * 1000;
+  const start = Math.min(runEnd, Math.max(runStart, time("since") ?? runStart));
+  const end = Math.max(start, Math.min(runEnd, time("until") ?? runEnd));
   const { limit, keep } = sharedFilters(url);
   const matchRun = url.searchParams.get("match_run") === "true";
   const after = url.searchParams.get("after");
@@ -937,11 +953,14 @@ function runLogs(stage: string, run: MockRun, url: URL) {
     from = Number(Buffer.from(after, "base64url").toString().replace(/^p:/, ""));
     if (!Number.isInteger(from) || from < 0) throw new HttpError(422, "`after` is not a cursor this route returned");
   }
-  const kept = runLines(run).filter((l) => !matchRun || l.tagged).map((l) => shape(stage, l)).filter(keep);
+  // Only `since`/`until` cut lines: the run's own lines (its last ones may be written just after Dagster's end) all belong to it.
+  const since = time("since"), until = time("until");
+  const kept = runLines(run).filter((l) => (!matchRun || l.tagged) && (since === undefined || l.placed >= start) && (until === undefined || l.placed < end))
+    .map((l) => shape(stage, l)).filter(keep);
   const page = kept.slice(from, from + limit);
   const more = from + limit < kept.length;
   return {
-    lines: page.map((l) => ({ ...l, archived_at: new Date(end + 90_000).toISOString() })),
+    lines: page.map((l) => ({ ...l, archived_at: new Date(runEnd + 90_000).toISOString() })),
     truncated: more,
     since: new Date(start).toISOString(),
     until: new Date(end).toISOString(),

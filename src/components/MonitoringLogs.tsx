@@ -1,11 +1,12 @@
 // Monitoring · Logs (portal#39): a stage's archived pod logs, browsed by UTC day and hour and narrowed by level, product,
 // pod, container and component, from GET /api/v1/stages/{stage}/logs; or one run's window, paged with "Load more", from
-// GET /api/v1/stages/{stage}/runs/{run_id}/logs. Free-text search is not served by the API yet (openlakeforge#1347): it
-// filters the lines already read, in the browser, and the page says so. Nothing here claims a line it did not read.
+// GET /api/v1/stages/{stage}/runs/{run_id}/logs. Free-text search is the API's `q` (openlakeforge#1349); an API from
+// before it ignores `q`, and then the page filters the lines already read, in the browser, and says so. Nothing here
+// claims a line it did not read.
 //
 // Its address is a contract other pages link to: /monitoring/<stage>/logs?date=YYYY-MM-DD&hour=HH&run=<run_id>&pod=
-// &container=&component=&product=&level=info|warning|error|critical&q=<text>. With no date and no run it opens on the
-// current UTC hour; a date with no hour is the whole UTC day.
+// &container=&component=&product=&level=info|warning|error|critical&q=<text>, and in run mode match_run=true (only the
+// run's own lines). With no date and no run it opens on the current UTC hour; a date with no hour is the whole UTC day.
 
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
@@ -26,12 +27,20 @@ const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
 /** A run window's page, as on the failed-run screen: it has a cursor, so "Load more" reads on. */
 const RUN_PAGE = 200;
+/** How often the clock behind the day and hour bounds (today, the latest hour, "Next hour") moves on. */
+export const CLOCK_MS = 30_000;
+/** How long typing pauses before the search is sent to the API. */
+export const Q_DEBOUNCE_MS = 300;
+/** The longest `q` the API takes (openlakeforge#1349); a longer one, or one with control characters, is a 422. */
+const Q_MAX = 200;
 
 /** What the page shows, as its address says it. `hour` undefined is the whole day. */
 export type LogsView = {
   date?: string; hour?: number; run?: string;
   pod?: string; container?: string; component?: string; product?: string;
   level?: Floor; q?: string;
+  /** Run mode only: the API's `match_run`, the lines tagged with the run and no other workload's. */
+  matchRun?: boolean;
 };
 
 /** The address of a stage's Logs page; empty filters are left out, the hour is two digits. */
@@ -41,6 +50,7 @@ export function logsHref(stage: string, v: LogsView = {}): string {
   if (v.date) q.set("date", v.date);
   if (v.hour !== undefined) q.set("hour", pad(v.hour));
   for (const k of ["product", "pod", "container", "component", "level", "q"] as const) if (v[k]) q.set(k, v[k]!);
+  if (v.run && v.matchRun) q.set("match_run", "true");
   const s = q.toString();
   return `/monitoring/${encodeURIComponent(stage)}/logs${s ? `?${s}` : ""}`;
 }
@@ -73,7 +83,7 @@ export function readLogsParams(params: URLSearchParams, now: number): LogsView &
   let level: Floor | undefined;
   if (l) { if ((FLOORS as string[]).includes(l)) level = l as Floor; else ignored.push(`level=${l}`); }
   return {
-    date, hour, run, level, q: params.get("q") ?? undefined,
+    date, hour, run, level, q: params.get("q") ?? undefined, matchRun: !!run && params.get("match_run") === "true",
     pod: text("pod"), container: text("container"), component: text("component"), product: text("product"), ignored,
   };
 }
@@ -91,6 +101,23 @@ export function search(lines: LogLine[], q: string): LogLine[] {
   return lines.filter((l) => (l.line ?? l.error ?? "").toLowerCase().includes(needle));
 }
 
+/** The text sent as the API's `q`, or undefined when there is none or the API would refuse it (too long, control
+ * characters): then the lines read are filtered here instead. */
+export function sendable(q: string): string | undefined {
+  const t = q.trim();
+  // eslint-disable-next-line no-control-regex
+  return t && t.length <= Q_MAX && !/[\u0000-\u001f\u007f]/.test(t) ? t : undefined;
+}
+
+/** Whether an answer to `q` was searched by the API. There is no capability flag for a parameter, and an API from before
+ * openlakeforge#1349 ignores `q` rather than refusing it: an answer in which every line contains the text, ignoring case,
+ * was searched; one with any other line was not (an unreadable record has no message, so it never matches). An empty
+ * answer says nothing either way and is taken as searched. */
+export function searchedBy(lines: LogLine[], q: string): boolean {
+  const needle = q.toLowerCase();
+  return lines.every((l) => (l.line ?? "").toLowerCase().includes(needle));
+}
+
 /** The stages whose log archive the role may read: `list_logs` (which a run's window shares) is listed there. */
 export function logStages(caps: MonitoringCapabilities): string[] {
   return caps.stages.filter((s) => s.operations.includes("list_logs")).map((s) => s.stage);
@@ -106,7 +133,11 @@ const fmt = (n: number) => n.toLocaleString("en-US");
 type Caps = { status: "loading" } | { status: "ok"; data: MonitoringCapabilities } | { status: "error"; error: ApiError };
 /** One read: the browse route (no cursor) or a run's window (`next`). `day` is set when an older API's run was read
  * from the stage route by its UTC day. */
-type Page = { lines: LogLine[]; truncated: boolean; next: string | null; since?: string; until?: string; day?: string; levelIgnored?: Floor };
+type Page = {
+  lines: LogLine[]; truncated: boolean; next: string | null; since?: string; until?: string; day?: string; levelIgnored?: Floor;
+  /** The text the API searched for, when it did: the lines are its matches across the window, not a filter of a page. */
+  searched?: string;
+};
 type Load = { status: "loading"; key: string } | { status: "ok"; key: string; data: Page } | { status: "error"; key: string; error: ApiError };
 type More = { status: "idle" } | { status: "loading" } | { status: "error"; error: ApiError };
 
@@ -127,7 +158,14 @@ function Problem({ state, title, error, onRetry }: { state: HealthState; title: 
 export function MonitoringLogs({ stage, stages }: { stage: string; stages: string[] }) {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
-  const [now] = useState(() => Date.now());
+  // `opened` fixes what an address without a date means (the hour the page opened on); `now` moves on, for the bounds
+  // only (today, the latest hour, "Next hour"), so an open page crossing an hour or midnight never changes its lines.
+  const [opened] = useState(() => Date.now());
+  const [now, setNow] = useState(opened);
+  useEffect(() => {
+    const tick = setInterval(() => setNow(Date.now()), CLOCK_MS);
+    return () => clearInterval(tick);
+  }, []);
   const [caps, setCaps] = useState<Caps>({ status: "loading" });
   const [capsAttempt, setCapsAttempt] = useState(0);
   const [attempt, setAttempt] = useState(0);
@@ -135,9 +173,21 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
   const [more, setMore] = useState<More>({ status: "idle" });
   const moreCtl = useRef<AbortController | null>(null);
 
-  const view = readLogsParams(params, now);
+  const view = readLogsParams(params, opened);
   const { date, hour, run, pod, container, component, product, level } = view;
   const q = view.q ?? "";
+  const matchRun = !!view.matchRun;
+  // The search reaches the API once typing pauses; until then, and on an API that does not search, the lines read are
+  // filtered here. Once an answer shows the API ignored `q`, it is not sent again on this page.
+  const [qSent, setQSent] = useState(() => sendable(q));
+  const [noSearch, setNoSearch] = useState(false);
+  useEffect(() => {
+    const next = sendable(q);
+    if (next === qSent) return;
+    const t = setTimeout(() => setQSent(next), Q_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [q, qSent]);
+  const adopted = useRef<string | null>(null);
   const STAGE = stage.toUpperCase();
   const access = caps.status === "ok" ? caps.data.stages.find((s) => s.stage === stage) : undefined;
   const offered = caps.status === "ok" ? logStages(caps.data) : [];
@@ -159,11 +209,21 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
     return () => { clearTimeout(deadline); ctl.abort(); };
   }, [stages.length, capsAttempt]);
 
-  // One read per address (search `q` aside: it filters the lines read). A filter change starts again from the top.
-  const key = JSON.stringify([stage, run, date, hour, pod, container, component, run ? "" : product, levelSent, older, attempt]);
+  // One read per view: the key holds every value the read depends on, and only primitives, so a capabilities answer
+  // that is equal but new, or a re-render, never reads again. A filter change starts again from the top.
   const runOpen = access ? runGate(access, "get_run", "this run") : undefined;
+  const runMode = run ? (older ? "day" : "window") : "";
+  const keyOf = (qr: string | undefined) => JSON.stringify([
+    stage, run, date, hour, pod, container, component, run ? "" : product, levelSent, older, runOpen?.open ?? null,
+    runMode === "window" && matchRun, qr ?? "", attempt,
+  ]);
+  const qRead = noSearch ? undefined : qSent;
+  const key = keyOf(qRead);
+  const open = !!access && !!g?.open;
   useEffect(() => {
     if (!access || !g?.open) return;
+    // An answer already adopted for this key (an API that ignored `q`: its lines are the unsearched read) is not read again.
+    if (adopted.current === key) { adopted.current = null; return; }
     const ctl = new AbortController();
     const deadline = setTimeout(() => { ctl.abort(); setLoad({ status: "error", key, error: timedOut(RUN_DEADLINE_MS) }); }, RUN_DEADLINE_MS);
     moreCtl.current?.abort();
@@ -173,25 +233,37 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
     let read: Promise<Page>;
     if (run && !older) {
       const window = date ? span(date, hour) : {};
-      read = listRunLogs(stage, run, { severity, pod, container, component, ...window, limit: RUN_PAGE }, ctl.signal);
+      read = listRunLogs(stage, run, { severity, pod, container, component, ...window, matchRun, q: qRead, limit: RUN_PAGE }, ctl.signal);
     } else if (run) {
       // The run's day, as the failed-run screen reads it on an older API: its start, else its creation.
       const day: Promise<string> = date ? Promise.resolve(date)
         : runOpen?.open ? getRun(stage, run, ctl.signal).then((r) => new Date((r.started_at ?? r.created_at) * 1000).toISOString().slice(0, 10))
         : Promise.reject(new ApiError(403, runOpen?.open === false ? runOpen.reason : "This run cannot be read."));
-      read = day.then((d) => listLogs(stage, { date: d, hour, pod, container, component, runId: run, severity, limit: LOGS_LIMIT }, ctl.signal)
+      read = day.then((d) => listLogs(stage, { date: d, hour, pod, container, component, runId: run, severity, q: qRead, limit: LOGS_LIMIT }, ctl.signal)
         .then((r) => ({ ...r, next: null, day: d })));
     } else {
-      read = listLogs(stage, { date: date!, hour, pod, container, component, product, severity, limit: LOGS_LIMIT }, ctl.signal)
+      read = listLogs(stage, { date: date!, hour, pod, container, component, product, severity, q: qRead, limit: LOGS_LIMIT }, ctl.signal)
         .then((r) => ({ ...r, next: null }));
     }
     read.then(
-      (data) => setLoad({ status: "ok", key, data: { ...data, levelIgnored: level && level !== levelSent ? level : undefined } }),
+      (answer) => {
+        const data: Page = { ...answer, levelIgnored: level && level !== levelSent ? level : undefined };
+        if (qRead && !searchedBy(data.lines, qRead)) {
+          // The API ignored `q`: these are the unsearched lines, kept as the read without `q`, and filtered here.
+          const plain = keyOf(undefined);
+          adopted.current = plain;
+          setNoSearch(true);
+          setLoad({ status: "ok", key: plain, data });
+          return;
+        }
+        setLoad({ status: "ok", key, data: { ...data, searched: qRead } });
+      },
       (e) => { if (!ctl.signal.aborted) setLoad({ status: "error", key, error: failure(e) }); },
     ).finally(() => clearTimeout(deadline));
     return () => { clearTimeout(deadline); ctl.abort(); moreCtl.current?.abort(); };
-    // `g` and `runOpen` are rebuilt on every render; `access` and the key say when to read again.
-  }, [access, key]);
+    // `access`, `g` and `runOpen` are rebuilt from each capabilities answer; whether the archive is open and the key
+    // (which holds `older` and the run gate) say when to read again.
+  }, [open, key]);
 
   /** The run window's next page, with the same filters, after the last line shown: appended, never re-read. */
   const loadMore = () => {
@@ -201,10 +273,11 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
     const deadline = setTimeout(() => { ctl.abort(); setMore({ status: "error", error: timedOut(RUN_DEADLINE_MS) }); }, RUN_DEADLINE_MS);
     setMore({ status: "loading" });
     const window = date ? span(date, hour) : {};
-    listRunLogs(stage, run, { severity: levelSent || undefined, pod, container, component, ...window, after: load.data.next, limit: RUN_PAGE }, ctl.signal).then(
+    const searched = load.data.searched;
+    listRunLogs(stage, run, { severity: levelSent || undefined, pod, container, component, ...window, matchRun, q: searched, after: load.data.next, limit: RUN_PAGE }, ctl.signal).then(
       (page) => {
         setLoad((prev) => prev.status === "ok" && prev.key === key
-          ? { ...prev, data: { ...prev.data, ...page, lines: [...prev.data.lines, ...page.lines], since: prev.data.since } }
+          ? { ...prev, data: { ...prev.data, ...page, lines: [...prev.data.lines, ...page.lines], since: prev.data.since, searched } }
           : prev);
         setMore({ status: "idle" });
       },
@@ -214,7 +287,7 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
 
   /** Changes the address; the effective day and hour are written out, so a link copied from here opens the same lines. */
   const pick = (next: Partial<LogsView>, opts: { replace?: boolean } = {}) => {
-    const merged: LogsView = { date, hour, run, pod, container, component, product, level, q: q || undefined, ...next };
+    const merged: LogsView = { date, hour, run, pod, container, component, product, level, q: q || undefined, matchRun, ...next };
     navigate(logsHref(stage, merged), { replace: opts.replace });
   };
   const switchStage = (s: string) => navigate(logsHref(s, { date, hour, level }));
@@ -258,7 +331,7 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
       result = <p className="mon-loading" role="status">Reading {STAGE}'s archived lines…</p>;
     } else {
       result = <Lines stage={stage} view={view} data={data} shown={shown} older={older} more={more} onMore={loadMore}
-        retention={access.log_retention_days ?? null} now={now} pick={pick} />;
+        retention={access.log_retention_days ?? null} now={now} pick={pick} noSearch={noSearch} />;
     }
     const refused = !offered.includes(stage);
     const today = utcToday(now);
@@ -266,7 +339,6 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
     const floors = older ? OLDER_FLOORS : FLOORS;
     const lines = data?.lines ?? [];
     const seen = (f: (l: LogLine) => string | null | undefined) => [...new Set(lines.map(f).filter((x): x is string => !!x))].sort();
-    const open = !!access && !!g?.open;
     body = (
       <>
         <div className="q-context mc-context rl-context lg-context">
@@ -337,15 +409,25 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
         {open && (
           <div className="lg-search">
             <label>
-              <span className="q-label">Search the lines loaded</span>
+              <span className="q-label">Search</span>
               <input className="q-select lg-q" type="search" value={q} placeholder="Text in a line…" aria-describedby="lg-search-note"
                 onChange={(e) => pick({ q: e.target.value || undefined }, { replace: true })} />
             </label>
             <p className="mon-note" id="lg-search-note">
-              {data
-                ? <>Search filters the {fmt(data.lines.length)} {data.lines.length === 1 ? "line" : "lines"} loaded, not the whole archive{data.truncated ? ": lines past them are not searched" : ""}.</>
-                : <>Search filters the lines loaded, not the whole archive.</>}
+              <SearchNote q={q} data={data} noSearch={noSearch} />
             </p>
+            {runMode === "window" && (
+              <div className="lg-match">
+                <label className="run-filter f-check">
+                  <input type="checkbox" checked={matchRun} onChange={(e) => pick({ matchRun: e.target.checked })} aria-describedby="lg-match-why" />
+                  <span className="q-label">Only this run's lines</span>
+                </label>
+                <span className="sr-only" id="lg-match-why">
+                  The window holds every workload's lines from the run's start to its end; this hides other workloads' lines,
+                  and older records that carry no run tag.
+                </span>
+              </div>
+            )}
           </div>
         )}
         {view.ignored.length > 0 && (
@@ -368,6 +450,19 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
       {body}
     </>
   );
+}
+
+/** What the search covers, in words: the archive (the API searched), or only the lines loaded (it cannot). */
+function SearchNote({ q, data, noSearch }: { q: string; data?: Page; noSearch: boolean }) {
+  const t = q.trim();
+  const loaded = data ? <>the {fmt(data.lines.length)} {data.lines.length === 1 ? "line" : "lines"} loaded</> : <>the lines loaded</>;
+  const past = data?.truncated ? ": lines past them are not searched" : "";
+  if (noSearch) return <>This Platform API does not search, so search filters {loaded}, not the whole archive{past}.</>;
+  if (t && !sendable(t)) return <>The archive is searched for at most {Q_MAX} characters with no control characters, so this search filters {loaded}, not the whole archive{past}.</>;
+  if (t && data?.searched && data.searched === sendable(t)) {
+    return <>The archive was searched for lines containing “{data.searched}”, ignoring case, over the whole time asked.</>;
+  }
+  return <>Search asks the archive for lines containing the text, ignoring case.</>;
 }
 
 function Field({ name, label, value, options }: { name: string; label: string; value?: string; options: string[] }) {
@@ -397,9 +492,9 @@ function Marked({ text, q }: { text: string; q: string }) {
   return <>{parts}</>;
 }
 
-function Lines({ stage, view, data, shown, older, more, onMore, retention, now, pick }: {
+function Lines({ stage, view, data, shown, older, more, onMore, retention, now, pick, noSearch }: {
   stage: string; view: LogsView; data: Page; shown: LogLine[]; older: boolean; more: More; onMore(): void;
-  retention: number | null; now: number; pick(next: Partial<LogsView>): void;
+  retention: number | null; now: number; pick(next: Partial<LogsView>): void; noSearch: boolean;
 }) {
   const { run, date, hour, level } = view;
   const q = view.q ?? "";
@@ -446,7 +541,9 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
     notes.push(<>This Platform API has no run window: these are run <span className="f-mono">{short(run!)}</span>'s lines of {data.day} (UTC) from the stage's archive, with no paging.</>);
   }
   if (run && !data.day) {
-    notes.push(<>The window holds every workload's lines from the run's start to its end; filter by the run's pod to see only its own.</>);
+    notes.push(view.matchRun
+      ? <>Only the lines tagged with this run: other workloads' lines in its window, and older records with no run tag, are hidden.</>
+      : <>The window holds every workload's lines from the run's start to its end; "Only this run's lines" hides the others.</>);
   }
   if (data.levelIgnored) {
     notes.push(<>This Platform API filters at warning or error only, so “{SEVERITY_LABEL[data.levelIgnored]}” is not applied: every level is shown.</>);
@@ -461,16 +558,17 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
     table = (
       <div className="lg-none">
         <p className="run-step">
-          The archive holds no {level ? `${SEVERITY_LABEL[level].toLowerCase()} ` : ""}line{filtered ? " matching these filters" : ""} for {where}.
+          The archive holds no {level ? `${SEVERITY_LABEL[level].toLowerCase()} ` : ""}line{data.searched ? <> containing “{data.searched}”</> : null}{filtered ? " matching these filters" : ""} for {where}.
           {!expired && " Lines still in the collector's spool are not archived yet."}
         </p>
-        {(filtered || level) && <p className="mon-why"><Link className="run-link" to={logsHref(stage, { run, date, hour })}>Show every line of {run ? "this run" : "this time"}</Link></p>}
+        {(filtered || level || data.searched) && <p className="mon-why"><Link className="run-link" to={logsHref(stage, { run, date, hour })}>Show every line of {run ? "this run" : "this time"}</Link></p>}
       </div>
     );
   } else if (!shown.length) {
     table = (
       <p className="run-step lg-none">
-        None of the {fmt(data.lines.length)} lines loaded contains “{q.trim()}”. The archive may hold it elsewhere: search filters the lines loaded only.
+        None of the {fmt(data.lines.length)} lines loaded contains “{q.trim()}”.
+        {(noSearch || !sendable(q)) && " The archive may hold it elsewhere: search filters the lines loaded only."}
       </p>
     );
   } else {
@@ -490,7 +588,7 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
           <td className="f-mono run-time">{ts && <time dateTime={ts} title={ts}>{lineTime(ts)}</time>}</td>
           <td>{lv && <span className="run-level" data-level={lv}>{lv.toUpperCase()}</span>}</td>
           <td className="lg-where">
-            <Link className="run-link f-mono" to={logsHref(stage, { run, date, hour, pod: l.pod, level })} aria-label={`Only pod ${l.pod}`}>{l.pod}</Link>
+            <Link className="run-link f-mono" to={logsHref(stage, { run, date, hour, pod: l.pod, level })} aria-label={`Filter to ${l.pod}`}>{l.pod}</Link>
             <span className="mon-why f-mono">{l.container}</span>
             {l.run_id && l.run_id !== run && (
               <Link className="run-link lg-run-link" to={logsHref(stage, { run: l.run_id })} aria-label={`Run ${short(l.run_id)}'s window`}>run {short(l.run_id)}</Link>

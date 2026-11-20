@@ -501,6 +501,8 @@ export type RunLogsQuery = {
   severity?: LogSeverity; matchRun?: boolean; after?: string; limit?: number;
   /** list_logs's filters, which the run window takes too (portal#39); `since`/`until` narrow the window, never widen it. */
   pod?: string; container?: string; component?: string; since?: string; until?: string;
+  /** Case-insensitive text in the message (openlakeforge#1349); an older API ignores it. */
+  q?: string;
 };
 
 const OUTCOMES = new Set<unknown>(["passed", "warn", "error", "not_run", "unknown"]);
@@ -541,7 +543,7 @@ export async function listRunLogs(stage: string, runId: string, opts: RunLogsQue
   if (opts.severity) q.set("severity", opts.severity);
   if (opts.matchRun) q.set("match_run", "true");
   if (opts.after) q.set("after", opts.after);
-  for (const k of ["pod", "container", "component", "since", "until"] as const) if (opts[k]) q.set(k, opts[k]!);
+  for (const k of ["pod", "container", "component", "since", "until", "q"] as const) if (opts[k]) q.set(k, opts[k]!);
   const body = await get(`${runPath(stage, runId)}/logs?${q}`, stage, signal, `Run ${runId} is not known on stage ${stage.toUpperCase()}.`);
   if (!isRunLogs(body)) throw new ApiError(200, explain(500, stage));
   return { ...body, next: body.next ?? null, lines: body.lines.map((l) => ({ ...l, timestamp: l.timestamp ?? null, level: l.level ?? null })) };
@@ -688,8 +690,8 @@ export function runsGate(access: MonitoringStage): Gate {
 }
 
 // ── The log archive (portal#39): GET /api/v1/stages/{stage}/logs?date=&hour=&pod=&container=&component=&product=
-// &run_id=&severity=&limit= (Logs). One UTC day, or one hour of it, oldest first; no cursor: a truncated answer is the
-// first `limit` lines. Free-text search is not served yet (openlakeforge#1347): the Logs page filters the lines read.
+// &run_id=&severity=&q=&limit= (Logs). One UTC day, or one hour of it, oldest first; no cursor: a truncated answer is the
+// first `limit` lines. `q` (openlakeforge#1349) keeps the lines whose message contains it; an older API ignores it.
 
 /** The lines the Logs page asks for at once: the API's default. */
 export const LOGS_LIMIT = 500;
@@ -699,6 +701,8 @@ export type LogsQuery = {
   hour?: number;
   pod?: string; container?: string; component?: string; product?: string; runId?: string;
   severity?: LogSeverity;
+  /** Case-insensitive text in the message (openlakeforge#1349); an older API ignores it. */
+  q?: string;
   limit?: number;
 };
 
@@ -709,6 +713,7 @@ export async function listLogs(stage: string, opts: LogsQuery, signal?: AbortSig
   for (const k of ["pod", "container", "component", "product"] as const) if (opts[k]) q.set(k, opts[k]!);
   if (opts.runId) q.set("run_id", opts.runId);
   if (opts.severity) q.set("severity", opts.severity);
+  if (opts.q) q.set("q", opts.q);
   q.set("limit", String(opts.limit ?? LOGS_LIMIT));
   const body = await get(`/api/v1/stages/${encodeURIComponent(stage)}/logs?${q}`, stage, signal, `Stage ${stage.toUpperCase()} has no log archive.`);
   if (!isLogs(body)) throw new ApiError(200, explain(500, stage));

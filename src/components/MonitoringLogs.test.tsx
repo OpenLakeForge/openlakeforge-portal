@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation, useParams } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { listLogs, listRunLogs, type LogLine, type MonitoringCapabilities, type MonitoringStage } from "../lib/health-api";
-import { logsHref, logStages, MonitoringLogs, readLogsParams, search, span } from "./MonitoringLogs";
+import { CLOCK_MS, logsHref, logStages, MonitoringLogs, readLogsParams, search, searchedBy, sendable, span } from "./MonitoringLogs";
 
 const RUN = "c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21";
 const SOURCES = ["dagster", "services", "quality", "logs", "metrics", "alerts"] as const;
@@ -79,6 +79,8 @@ describe("logs helpers", () => {
     expect(logsHref("dev")).toBe("/monitoring/dev/logs");
     expect(logsHref("dev", { date: "2026-11-19", hour: 4, pod: "trino-0", level: "warning", q: "" })).toBe("/monitoring/dev/logs?date=2026-11-19&hour=04&pod=trino-0&level=warning");
     expect(logsHref("prod", { run: RUN })).toBe(`/monitoring/prod/logs?run=${RUN}`);
+    expect(logsHref("prod", { run: RUN, matchRun: true })).toBe(`/monitoring/prod/logs?run=${RUN}&match_run=true`);
+    expect(logsHref("prod", { matchRun: true })).toBe("/monitoring/prod/logs");
   });
 
   it("reads the address back: today's current hour by default, a date alone is the whole day, nonsense is named", () => {
@@ -97,6 +99,12 @@ describe("logs helpers", () => {
     expect(search(LINES(), "MEMORY").map((l) => l.line)).toEqual(["Memory pool general reserved above 80% for 30 s"]);
     expect(search(LINES(), "json")).toHaveLength(1);
     expect(search(LINES(), "  ")).toHaveLength(5);
+    expect(sendable(" boom ")).toBe("boom");
+    expect(sendable("a\tb")).toBeUndefined();
+    expect(sendable("x".repeat(201))).toBeUndefined();
+    expect(searchedBy(search(LINES(), "memory"), "MEMORY")).toBe(true);
+    expect(searchedBy(LINES(), "memory")).toBe(false);
+    expect(searchedBy([], "memory")).toBe(true);
   });
 
   it("offers the stages whose archive the role may read", () => {
@@ -122,7 +130,7 @@ describe("MonitoringLogs", () => {
     expect(r).toHaveLength(5);
     expect(r[1]).toHaveTextContent(/14:03:00\.339\s*INFO\s*trino-coordinator-0\s*trino\s*Query 0001_03/);
     expect(within(r[3]).getByRole("link", { name: "Run 8ad7e2f8's window" })).toHaveAttribute("href", "/monitoring/dev/logs?run=8ad7e2f8-0000-4000-a000-000000000000");
-    expect(within(r[0]).getByRole("link", { name: "Only pod dagster-daemon-5f7c9" })).toHaveAttribute("href", "/monitoring/dev/logs?date=2026-11-19&hour=14&pod=dagster-daemon-5f7c9");
+    expect(within(r[0]).getByRole("link", { name: "Filter to dagster-daemon-5f7c9" })).toHaveAttribute("href", "/monitoring/dev/logs?date=2026-11-19&hour=14&pod=dagster-daemon-5f7c9");
     expect(r[4]).toHaveTextContent("Unreadable record: the record is not valid JSON");
     expect(reads(fetch)).toEqual(["/api/v1/stages/dev/logs?date=2026-11-19&hour=14&pod=trino-coordinator-0&limit=500"]);
     expect(screen.getByLabelText("Pod")).toHaveValue("trino-coordinator-0");
@@ -142,21 +150,78 @@ describe("MonitoringLogs", () => {
     await waitFor(() => expect(reads(fetch).at(-1)).toBe("/api/v1/stages/dev/logs?date=2026-11-18&hour=23&severity=warning&limit=500"));
   });
 
-  it("search filters the lines loaded, says so, keeps `q` in the address and never asks the API", async () => {
-    const fetch = api({ logs: () => ({ body: { lines: LINES(), truncated: true } }) });
+  it("search asks the API with `q` once typing pauses, and says the archive was searched", async () => {
+    const fetch = api({ logs: (u) => {
+      const q = u.searchParams.get("q");
+      return { body: { lines: q ? LINES().filter((l) => (l.line ?? "").toLowerCase().includes(q.toLowerCase())) : LINES(), truncated: false } };
+    } });
     open("/monitoring/dev/logs?date=2026-11-19&hour=14");
     await rows();
-    fireEvent.change(screen.getByRole("searchbox", { name: "Search the lines loaded" }), { target: { value: "memory" } });
-    expect(where()).toBe("/monitoring/dev/logs?date=2026-11-19&hour=14&q=memory");
+    expect(screen.getByRole("searchbox", { name: "Search" })).toHaveAccessibleDescription("Search asks the archive for lines containing the text, ignoring case.");
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search" }), { target: { value: "Memory" } });
+    expect(where()).toBe("/monitoring/dev/logs?date=2026-11-19&hour=14&q=Memory");
+    await waitFor(() => expect(screen.getByRole("searchbox")).toHaveAccessibleDescription("The archive was searched for lines containing “Memory”, ignoring case, over the whole time asked."));
     const r = await rows();
     expect(r).toHaveLength(1);
     expect(r[0].querySelector("mark")).toHaveTextContent("Memory");
-    expect(screen.getByRole("searchbox")).toHaveAccessibleDescription("Search filters the 5 lines loaded, not the whole archive: lines past them are not searched.");
+    expect(reads(fetch)).toEqual([
+      "/api/v1/stages/dev/logs?date=2026-11-19&hour=14&limit=500",
+      "/api/v1/stages/dev/logs?date=2026-11-19&hour=14&q=Memory&limit=500",
+    ]);
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "nowhere" } });
+    expect(await screen.findByText(text(/The archive holds no line containing “nowhere” for 2026-11-19, 14:00–15:00 \(UTC\)/))).toBeInTheDocument();
+  });
+
+  it("an API that ignores `q` is detected: the lines loaded are filtered here, the page says so, and `q` is not sent again", async () => {
+    const fetch = api({ logs: () => ({ body: { lines: LINES(), truncated: true } }) });
+    open("/monitoring/dev/logs?date=2026-11-19&hour=14&q=memory");
+    await waitFor(() => expect(screen.getByRole("searchbox")).toHaveAccessibleDescription("This Platform API does not search, so search filters the 5 lines loaded, not the whole archive: lines past them are not searched."));
+    const r = await rows();
+    expect(r).toHaveLength(1);
     expect(screen.getByText("1 of 5+ lines")).toBeInTheDocument();
     expect(screen.getByText(/The first 5 lines only: the archive holds more, and this route has no way to read on/)).toBeInTheDocument();
     fireEvent.change(screen.getByRole("searchbox"), { target: { value: "nowhere" } });
-    expect(await screen.findByText(/None of the 5 lines loaded contains “nowhere”/)).toBeInTheDocument();
-    expect(reads(fetch)).toHaveLength(1);
+    expect(await screen.findByText(/None of the 5 lines loaded contains “nowhere”\. The archive may hold it elsewhere/)).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 400));
+    // One read with `q`, its answer adopted as the unsearched read: no second read, now or for the next search.
+    expect(reads(fetch)).toEqual(["/api/v1/stages/dev/logs?date=2026-11-19&hour=14&q=memory&limit=500"]);
+  });
+
+  it("a search the API would refuse (too long, control characters) is not sent, and filters the lines loaded", async () => {
+    const fetch = api();
+    open(`/monitoring/dev/logs?date=2026-11-19&hour=14&q=${"x".repeat(201)}`);
+    await rows().catch(() => undefined);
+    expect(await screen.findByText(/at most 200 characters with no control characters, so this search filters the 5 lines loaded/)).toBeInTheDocument();
+    expect(reads(fetch)).toEqual(["/api/v1/stages/dev/logs?date=2026-11-19&hour=14&limit=500"]);
+  });
+
+  it("keeps the selected window when the clock crosses an hour and midnight, while the bounds move on", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setInterval", "clearInterval", "Date"] });
+    vi.setSystemTime(new Date("2026-11-19T23:59:40Z"));
+    const fetch = api();
+    open("/monitoring/dev/logs");
+    await rows();
+    expect(screen.getByRole("button", { name: /Next hour/ })).toBeDisabled();
+    expect(screen.getByLabelText("Day (UTC)")).toHaveAttribute("max", "2026-11-19");
+    expect(screen.getByRole("option", { name: "00:00–01:00" })).not.toBeDisabled();
+    await vi.advanceTimersByTimeAsync(CLOCK_MS);
+    await waitFor(() => expect(screen.getByRole("button", { name: /Next hour/ })).toBeEnabled());
+    expect(screen.getByLabelText("Day (UTC)")).toHaveAttribute("max", "2026-11-20");
+    // Still the hour the page opened on: the address has no date, and its lines are not read again.
+    expect(screen.getByText(/DEV · 2026-11-19, 23:00–00:00 \(UTC\)/)).toBeInTheDocument();
+    expect(reads(fetch)).toEqual(["/api/v1/stages/dev/logs?date=2026-11-19&hour=23&limit=500"]);
+  });
+
+  it("offers only this run's lines in run mode, as `match_run`, kept in the address", async () => {
+    const user = userEvent.setup();
+    const fetch = api({ capsBody: caps(access("prod")) });
+    open(`/monitoring/prod/logs?run=${RUN}`);
+    await rows("PROD");
+    const only = screen.getByRole("checkbox", { name: "Only this run's lines" });
+    expect(only).toHaveAccessibleDescription(/hides other workloads' lines/);
+    await user.click(only);
+    expect(where()).toBe(`/monitoring/prod/logs?run=${RUN}&match_run=true`);
+    await waitFor(() => expect(reads(fetch).at(-1)).toBe(`/api/v1/stages/prod/runs/${RUN}/logs?limit=200&match_run=true`));
   });
 
   it("run mode reads the run's window and pages with Load more, passing `next` back as `after`", async () => {

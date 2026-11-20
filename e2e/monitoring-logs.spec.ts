@@ -36,10 +36,10 @@ test("browse: a deep link to a day, hour and product lists its lines; a pod narr
   await expect(rows(page)).toHaveCount(2);
   await expect(rows(page).first()).toContainText(/02:00:1\d\.000\s*INFO\s*dagster-run-\w{8}\s*floe/);
   await expect(rows(page).first()).toContainText("Starting sales_orders");
-  await expect(page.getByLabel("Product")).toHaveValue("orders");
+  await expect(page.getByLabel("Product", { exact: true })).toHaveValue("orders");
   expect(asked).toEqual([`/api/v1/stages/dev/logs?date=${day}&hour=2&product=orders&limit=500`]);
   // A pod narrows to that pod's lines of the same hour; the product filter is dropped with it.
-  await rows(page).first().getByRole("link", { name: /^Only pod / }).click();
+  await rows(page).first().getByRole("link", { name: /^Filter to / }).click();
   await expect(page).toHaveURL(new RegExp(`date=${day}&hour=02&pod=dagster-run-`));
   await expect(rows(page)).toHaveCount(2);
   await page.getByRole("button", { name: "Clear filters" }).click();
@@ -49,8 +49,8 @@ test("browse: a deep link to a day, hour and product lists its lines; a pod narr
   await expect(page).toHaveURL(new RegExp(`date=${day}&hour=01$`));
   await expect(card(page)).toContainText(`${day}, 01:00–02:00 (UTC)`);
   // Filters typed in apply on Enter.
-  await page.getByLabel("Container").fill("trino");
-  await page.getByLabel("Container").press("Enter");
+  await page.getByLabel("Container", { exact: true }).fill("trino");
+  await page.getByLabel("Container", { exact: true }).press("Enter");
   await expect(page).toHaveURL(/container=trino/);
   await expect(rows(page)).not.toHaveCount(0);
   for (const row of await rows(page).all()) await expect(row).toContainText("trino");
@@ -78,21 +78,44 @@ test("the level filter asks the API with severity and is labelled as on the fail
   expect(asked.at(-1)).toBe(`/api/v1/stages/dev/logs?date=${day}&hour=14&severity=warning&limit=500`);
 });
 
-test("search filters the lines loaded in the browser, says so, and keeps q in the address", async ({ page }) => {
+test("search asks the archive with q, says so, and keeps q in the address", async ({ page }) => {
   const asked = reads(page);
   const day = yesterday();
   await page.goto(`/monitoring/dev/logs?date=${day}&hour=14&q=scheduler`);
-  const box = page.getByRole("searchbox", { name: "Search the lines loaded" });
+  const box = page.getByRole("searchbox", { name: "Search" });
   await expect(box).toHaveValue("scheduler");
-  await expect(box).toHaveAccessibleDescription(/^Search filters the \d+ lines loaded, not the whole archive\.$/);
+  await expect(box).toHaveAccessibleDescription("The archive was searched for lines containing “scheduler”, ignoring case, over the whole time asked.");
   await expect(rows(page)).toHaveCount(12);
   await expect(rows(page).first().locator("mark")).toHaveText("Scheduler");
   await box.fill("memory pool");
   await expect(page).toHaveURL(new RegExp(`q=memory\\+pool$`));
   await expect(rows(page)).toHaveCount(1);
   await box.fill("not in any line");
+  await expect(card(page)).toContainText(`The archive holds no line containing “not in any line” for ${day}, 14:00–15:00 (UTC).`);
+  expect(asked).toEqual([
+    `/api/v1/stages/dev/logs?date=${day}&hour=14&q=scheduler&limit=500`,
+    `/api/v1/stages/dev/logs?date=${day}&hour=14&q=memory+pool&limit=500`,
+    `/api/v1/stages/dev/logs?date=${day}&hour=14&q=not+in+any+line&limit=500`,
+  ]);
+});
+
+test("an API that ignores q: search filters the lines loaded in the browser and says so", async ({ page }) => {
+  // An API from before openlakeforge#1349 drops `q` and answers every line of the hour.
+  await page.route("**/api/v1/stages/dev/logs?*", async (route) => {
+    const u = new URL(route.request().url());
+    u.searchParams.delete("q");
+    await route.fulfill({ response: await route.fetch({ url: u.toString() }) });
+  });
+  const asked = reads(page);
+  const day = yesterday();
+  await page.goto(`/monitoring/dev/logs?date=${day}&hour=14&q=scheduler`);
+  const box = page.getByRole("searchbox", { name: "Search" });
+  await expect(box).toHaveAccessibleDescription(/^This Platform API does not search, so search filters the \d+ lines loaded, not the whole archive\.$/);
+  await expect(rows(page)).toHaveCount(12);
+  await box.fill("not in any line");
   await expect(card(page)).toContainText("contains “not in any line”. The archive may hold it elsewhere: search filters the lines loaded only.");
-  expect(asked).toHaveLength(1);
+  await page.waitForTimeout(500);
+  expect(asked).toEqual([`/api/v1/stages/dev/logs?date=${day}&hour=14&q=scheduler&limit=500`]);
 });
 
 test("run mode: the failed-run page links here; the run's window pages with Load more across midnight", async ({ page }) => {
@@ -115,10 +138,31 @@ test("run mode: the failed-run page links here; the run's window pages with Load
   ]);
   // A run's pod narrows the window to the run's own lines.
   await page.goto(`/monitoring/prod/logs?run=${LEDGER}&pod=trino-worker-0&mock=admin`);
-  await expect(page.getByLabel("Pod")).toHaveValue("trino-worker-0");
+  await expect(page.getByLabel("Pod", { exact: true })).toHaveValue("trino-worker-0");
   await expect(rows(page, "PROD")).toHaveCount(6);
+  // Only the run's own lines: the API's match_run.
+  await page.goto(`/monitoring/prod/logs?run=${LEDGER}&match_run=true&mock=admin`);
+  await expect(page.getByRole("checkbox", { name: "Only this run's lines" })).toBeChecked();
+  await page.getByRole("button", { name: "Load more" }).click();
+  await expect(card(page)).toContainText("301 lines");
+  await expect(rows(page, "PROD").filter({ hasText: "trino" })).toHaveCount(0);
+  await page.goto(`/monitoring/prod/logs?run=${LEDGER}&pod=trino-worker-0&mock=admin`);
   await page.getByRole("button", { name: "Browse the stage instead" }).click();
   await expect(page).toHaveURL(/\/monitoring\/prod\/logs\?date=\d{4}-\d\d-\d\d&pod=trino-worker-0$/);
+});
+
+test("run mode narrowed to one UTC day shows only that side of the run's midnight", async ({ page }) => {
+  const head = { referer: "http://localhost/?mock=admin" };
+  const whole = await (await page.request.get(`/api/v1/stages/prod/runs/${LEDGER}/logs?limit=1`, { headers: head })).json();
+  const after = (whole.until as string).slice(0, 10);
+  const asked = reads(page);
+  await page.goto(`/monitoring/prod/logs?run=${LEDGER}&date=${after}&mock=admin`);
+  await expect(card(page)).toContainText(`run e5d27b8c's window, ${after} 00:00 → `);
+  await expect(lines(page, "PROD").locator("tr.run-day")).toHaveCount(0);
+  const times = await rows(page, "PROD").locator("time").evaluateAll((ts) => ts.map((t) => t.getAttribute("datetime")!));
+  expect(times.length).toBeGreaterThan(0);
+  expect(times.every((t) => t.startsWith(after))).toBe(true);
+  expect(asked).toEqual([`/api/v1/stages/prod/runs/${LEDGER}/logs?limit=200&since=${after}T00%3A00%3A00.000Z&until=${encodeURIComponent(new Date(Date.parse(`${after}T00:00:00Z`) + 86_400_000).toISOString())}`]);
 });
 
 test("a data-engineer may not read PROD's archive: the stages offered are DEV's, and the API's 403 is shown in its words", async ({ page }) => {

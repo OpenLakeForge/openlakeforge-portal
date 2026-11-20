@@ -335,3 +335,4 @@
 .lg-log tr[data-line]:focus-visible td { background: var(--olf-card-fill-hover); box-shadow: inset 0 2px 0 var(--olf-highlight), inset 0 -2px 0 var(--olf-highlight); }
 .lg-log mark { background: color-mix(in srgb, var(--olf-warning) 35%, transparent); color: inherit; border-radius: 2px; }
 @media (forced-colors: active) { .lg-log mark { background: Mark; color: MarkText; } }
+.lg-match { margin-top: var(--olf-space-2); }

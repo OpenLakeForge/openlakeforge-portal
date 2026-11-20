@@ -160,13 +160,14 @@ a window older than the read says its earlier runs were not read, never that the
 runs (an unfiltered 7d read stops short), a run in progress and a queued one; DEV's Dagster cannot be read, `mock=empty` has
 no run, and `unauthorized`, `limited` and `no-access` refuse or skip the read.
 
-The **Logs** view (`/monitoring/<stage>/logs?date=YYYY-MM-DD&hour=HH&run=<run_id>&product=&pod=&container=&component=&level=info|warning|error|critical&q=<text>`,
+The **Logs** view (`/monitoring/<stage>/logs?date=YYYY-MM-DD&hour=HH&run=<run_id>&product=&pod=&container=&component=&level=info|warning|error|critical&q=<text>&match_run=true`,
 next to Runs) browses the stage's log archive by UTC day and hour (the current hour when no date is given; a date alone is the
 whole day) with `GET /api/v1/stages/{stage}/logs`, at most 500 lines a read: that route has no cursor, so a truncated answer
 says so and asks for a narrower filter. With `run=` it reads the run's window from `GET /api/v1/stages/{stage}/runs/{run_id}/logs`
 (narrowed to `date`/`hour` when given) and pages with Load more; an API without `log_retention_days` has no run window, so the
-run's UTC day is read from the stage route instead. Level is the API's `severity` floor. Free-text search (`q`) is not served
-by the API yet (openlakeforge#1347): it filters the lines already loaded, in the browser, and the page says so. Only stages whose
+run's UTC day is read from the stage route instead. Level is the API's `severity` floor; in run mode `match_run=true` keeps only the run's own lines. Search (`q`) is the API's
+case-insensitive text match (openlakeforge#1349), sent once typing pauses; an API from before it ignores `q`, which the page
+detects (a line without the text came back) and then filters the lines already loaded, in the browser, and says so. Only stages whose
 capabilities list `list_logs` are offered (in the mock a data-engineer reads DEV only; `mock=admin` reads PROD too); a stage
 without an archive (`mock=not-provided`) says so and reads nothing. The failed-run screen's Logs card links here with the run.
 

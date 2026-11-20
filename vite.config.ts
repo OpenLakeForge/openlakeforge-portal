@@ -12,4 +12,12 @@ const mockApi = (): Plugin => ({
   },
 });
 
-export default defineConfig({ plugins: [reactRouter(), ...(process.env.OLF_MOCK_API === "1" ? [mockApi()] : [])] });
+// The Queries page loads its editor and formatter lazily, so the dev server's dependency scan does not see them: the first
+// visit used to pre-bundle them mid-session and reload every open page ("optimized dependencies changed. reloading"),
+// which made e2e tests in other workers read twice. Pre-bundling them up front keeps the dev server from reloading.
+const LAZY_DEPS = ["sql-formatter", "codemirror", "@codemirror/lang-sql", "@codemirror/language", "@codemirror/view", "@lezer/highlight"];
+
+export default defineConfig({
+  plugins: [reactRouter(), ...(process.env.OLF_MOCK_API === "1" ? [mockApi()] : [])],
+  optimizeDeps: { include: LAZY_DEPS },
+});
