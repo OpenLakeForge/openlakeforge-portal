@@ -643,3 +643,38 @@ export async function getPlatformMetric(series: string, range: MetricRange, sign
   if (!isMetricSeriesData(body)) throw new ApiError(200, explain(500, ""));
   return body;
 }
+
+// ── A stage's runs (portal#37): GET /api/v1/stages/{stage}/runs?job=&limit= (Runs) ─────────────────────────────
+// The route filters by job only and answers the newest `limit` runs (at most 100), newest first: no status, no time
+// window and no cursor. Anything narrower is filtered in the browser among the runs read, and the page says so.
+
+/** The most runs one read may ask for: `MAX_RUNS` in platform-api reads.py. */
+export const RUNS_LIMIT = 100;
+export type Runs = { runs: Run[] };
+
+export function isRuns(body: unknown): body is Runs {
+  return isObject(body) && Array.isArray(body.runs) && body.runs.every(isRun);
+}
+
+/** The stage's newest runs, of one job when `job` is set, newest first. A stage without Dagster is a 404. */
+export async function listRuns(stage: string, opts: { job?: string; limit?: number } = {}, signal?: AbortSignal): Promise<Runs> {
+  const q = new URLSearchParams({ limit: String(opts.limit ?? RUNS_LIMIT) });
+  if (opts.job) q.set("job", opts.job);
+  const body = await get(`/api/v1/stages/${encodeURIComponent(stage)}/runs?${q}`, stage, signal);
+  if (!isRuns(body)) throw new ApiError(200, explain(500, stage));
+  return body;
+}
+
+/** Whether the Runs page may call `list_runs`. The capabilities do not list `list_runs` (it is not a monitoring
+ * operation in platform-api), so its row's twin stands in: `get_run`, with the same floor and stages in
+ * permissions.toml. An API from before #1324 lists neither: there the list is asked and a 403 is shown in the API's
+ * words. The runs come from Dagster, so a stage without it is not asked either. */
+export function runsGate(access: MonitoringStage): Gate {
+  const older = access.log_retention_days === undefined;
+  if (!older && !access.operations.includes("get_run")) {
+    return { open: false, state: "disabled", reason: `Your role may not read runs on stage ${access.stage.toUpperCase()}.` };
+  }
+  const dagster = access.capabilities.find((c) => c.name === "dagster");
+  if (!dagster || dagster.status === "available") return { open: true };
+  return { open: false, state: dagster.status === "unavailable" ? "unknown" : "disabled", reason: dagster.reason };
+}
