@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { useSearchParams } from "react-router";
 import {
   ApiError, effective, gate, getAlertIncidents, getMonitoringCapabilities, getPipelinesHealth, getQualityHealth, getStageHealth, worst,
   type Gate, type HealthState, type MonitoringCapabilities, type MonitoringStage, type ServiceHealth, type StageAlertIncidents,
   type StageHealth, type StageQualityHealth,
 } from "../lib/health-api";
-import { alerts, AlertsCard, IncidentsTable } from "./MonitoringAlerts";
-import { absent, NeedsAttention, pipes, PipelinesCard, PipelinesTable, pipesLine, type Part, type PipesLoad } from "./MonitoringPipelines";
+import { ActOn } from "./MonitoringActOn";
+import { alerts, AlertsCard } from "./MonitoringAlerts";
+import { absent, pipes, PipelinesCard, PipelinesTable, pipesLine, stateCounts, type Part, type PipesLoad } from "./MonitoringPipelines";
 import { quality, QualityCard, QualityTable } from "./MonitoringQuality";
 import { MonitoringViews } from "./MonitoringViews";
 import { LABEL, StatusBadge } from "./StatusBadge";
@@ -53,10 +54,10 @@ export function groupServices(rows: Shown[]): ServiceGroup[] {
   return [...groups.values()];
 }
 
-/** The components whose rows carry their own evidence of a last success, and how the banner names it. */
+/** The components whose rows carry their own evidence of a last success, and how the services line names it. */
 const EVIDENCE = [
-  ["log-archive.newest-object", "Log archive · last durable write"],
-  ["quality-sync.publication", "Quality sync · last publication"],
+  ["log-archive.newest-object", "log archive last durable write"],
+  ["quality-sync.publication", "quality sync last publication"],
 ] as const;
 
 /** The oldest answer in a group: the group is only as recent as its least recent probe. */
@@ -67,6 +68,66 @@ type Retry = { onRetry(): void; lastGood?: number };
 
 type Snapshot = Extract<Load, { status: "ok" }>;
 
+/** The Services panel: one line when every service is healthy; the services that are not, listed, otherwise. "Show all"
+ * lists every service. A gap (no probe answer, metrics not readable) is never folded away. */
+function ServicesPanel({ groups, line, gap, metricsGap, metricsReason, now }: {
+  groups: ServiceGroup[]; line: string; gap?: { state: HealthState; reason?: string }; metricsGap?: HealthState; metricsReason?: string; now: number;
+}) {
+  const [all, setAll] = useState(false);
+  const id = useId();
+  const problems = groups.filter((g) => g.state !== "healthy");
+  const shown = all ? groups : problems;
+  const gapRow = groups.length === 0;
+  const metricsRow = metricsGap && (all || metricsGap === "unknown");
+  const visible = shown.length > 0 || gapRow || !!metricsRow;
+  const hidden = groups.length - shown.length + (metricsGap && !metricsRow ? 1 : 0);
+  const toggle = all || hidden > 0;
+  return (
+    <section className="q-card mon-list mon-svc" aria-labelledby="mon-services-h">
+      <div className="f-card-head">
+        <h2 id="mon-services-h">Services</h2>
+        <span className="f-count">{groups.length + (metricsGap ? 1 : 0)}</span>
+        <p className="mon-svc-line">{line}</p>
+        {toggle && (
+          <button type="button" className="f-btn f-outline mon-svc-toggle" aria-expanded={all} aria-controls={id} onClick={() => setAll((x) => !x)}>
+            {all ? (problems.length ? "Show only problems" : "Hide healthy services") : `Show all ${groups.length} services`}
+          </button>
+        )}
+      </div>
+      <div id={id} className="f-scroll" role="region" aria-label="Service health" tabIndex={0} hidden={!visible}>
+        <table className="f-table mon-table mon-services">
+          <thead><tr><th scope="col">Service</th><th scope="col">State</th><th scope="col">Detail</th><th scope="col">Last checked</th></tr></thead>
+          <tbody>
+            {shown.map((g) => (
+              <tr key={g.service}>
+                <th scope="row">{g.name}</th>
+                <td><StatusBadge state={g.state} /></td>
+                <td>
+                  {g.rows.map((s) => (
+                    <span key={s.component} className="mon-part">
+                      <span className="mon-what">{s.display_name} · {LABEL[s.shown]}</span>
+                      <span className="mon-why">{s.shown !== s.state ? `Stale: no fresh answer since ${ago(s.observed_at, now)}. ${s.reason}` : s.reason}</span>
+                    </span>
+                  ))}
+                </td>
+                <td className="f-mono">{ago(oldest(g.rows), now)}</td>
+              </tr>
+            ))}
+            {gapRow && (
+              <tr><th scope="row">Service probes</th><td><StatusBadge state={gap?.state ?? "unknown"} /></td>
+                <td>{gap?.reason ?? "The API reported no services for this stage."}</td><td className="f-mono">—</td></tr>
+            )}
+            {metricsRow && (
+              <tr><th scope="row">Resource metrics</th><td><StatusBadge state={metricsGap} /></td>
+                <td>{metricsReason}</td><td className="f-mono">—</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 function Overview({ access, snap, now, retry }: { access: MonitoringStage; snap: Snapshot; now: number; retry: Retry }) {
   const stage = access.stage.toUpperCase();
   const health = snap.data;
@@ -76,15 +137,14 @@ function Overview({ access, snap, now, retry }: { access: MonitoringStage; snap:
   const pipesRetry = !p.ok && p.error && retryable(p.error) ? retry : undefined;
   const cards = (
     <>
-      <PipelinesCard p={p} now={now} />
+      <PipelinesCard p={p} />
       <QualityCard q={q} retry={retry.onRetry} />
       <AlertsCard a={a} now={now} />
     </>
   );
   const pipelinePanels = (
     <>
-      <NeedsAttention p={p} now={now} stage={access.stage} retry={pipesRetry} />
-      <IncidentsTable a={a} now={now} retry={retry.onRetry} stage={access.stage} />
+      <ActOn p={p} a={a} now={now} stage={access.stage} retryPipes={pipesRetry} retryAlerts={retry.onRetry} />
       {p.ok && <PipelinesTable p={p} now={now} stage={access.stage} />}
       {q.ok && <QualityTable q={q} now={now} stage={access.stage} />}
     </>
@@ -99,7 +159,16 @@ function Overview({ access, snap, now, retry }: { access: MonitoringStage; snap:
             <p>Your role may not read the stage health of {stage}, so no rollup or service row can be shown.</p>
           </div>
         </section>
-        <div className="mon-summary">{cards}</div>
+        <div className="mon-summary">
+          <div className="mon-cards">
+            <section className="mon-card" aria-label="Services summary">
+              <div className="mon-card-top"><h2 className="label">Services</h2><StatusBadge state="disabled" /></div>
+              <p className="mon-value"><strong>—</strong></p>
+              <p className="mon-note">Your role may not read the stage health.</p>
+            </section>
+            {cards}
+          </div>
+        </div>
         {pipelinePanels}
       </>
     );
@@ -133,11 +202,16 @@ function Overview({ access, snap, now, retry }: { access: MonitoringStage; snap:
   const metricsGap = absent(metrics);
   const servicesLine = servicesGap ? "service probes give no answer" : `${ready} of ${groups.length} services ready`;
   const pipelinesLine = noDagster ? "no Dagster on this stage" : pipesLine(p);
+  const expiredLine = expired ? `${expired} service answer${expired === 1 ? "" : "s"} expired` : "";
   // A null last_success_at is no evidence of a write: it reads unknown, never as a time.
   const evidence = EVIDENCE.flatMap(([component, label]) => {
     const row = services.find((s) => s.component === component);
     return row ? [`${label} ${row.last_success_at ? ago(row.last_success_at, now) : "unknown"}`] : [];
   });
+  const svcLine = [
+    servicesGap ? `Service probes ${LABEL[servicesGap].toLowerCase()}: ${servicesReason ?? "no answer"}` : `${ready} of ${groups.length} healthy`,
+    expiredLine, ...evidence, metricsGap ? `resource metrics ${LABEL[metricsGap].toLowerCase()}` : "",
+  ].filter(Boolean).join(" · ");
 
   return (
     <>
@@ -145,62 +219,31 @@ function Overview({ access, snap, now, retry }: { access: MonitoringStage; snap:
         <div>
           <h2 id="mon-banner-h"><StatusBadge state={stageState} /> {stage} {TITLE[stageState]}</h2>
           <p>
-            {pipelinesLine} · {servicesLine}{expired ? ` · ${expired} service answer${expired === 1 ? "" : "s"} expired` : ""}
+            {pipelinesLine} · {servicesLine}{expiredLine ? ` · ${expiredLine}` : ""}
             {p.ok && p.expired ? ` · ${p.expired} pipeline signal${p.expired === 1 ? "" : "s"} expired` : ""}
           </p>
-          {evidence.length > 0 && <p className="mon-evidence f-mono">{evidence.join(" · ")}</p>}
         </div>
       </section>
 
       <div className="mon-summary">
-        <section className="mon-card" aria-label="Services summary">
-          <div className="mon-card-top"><h2 className="label">Services</h2><StatusBadge state={servicesState} /></div>
-          {servicesGap
-            ? <p className="mon-value"><strong>—</strong></p>
-            : <p className="mon-value"><strong>{ready} of {groups.length}</strong> ready</p>}
-          <p className="mon-note">{servicesGap ? servicesReason : groups.map((g) => g.name).join(", ")}</p>
-        </section>
-        {cards}
+        <div className="mon-cards">
+          <section className="mon-card" aria-label="Services summary">
+            <div className="mon-card-top"><h2 className="label">Services</h2><StatusBadge state={servicesState} /></div>
+            {servicesGap
+              ? <p className="mon-value"><strong>—</strong></p>
+              : <p className="mon-value"><strong>{ready} of {groups.length}</strong> ready</p>}
+            <p className="mon-note">{servicesGap ? servicesReason : stateCounts(groups.map((g) => g.state)) || "No services reported."}</p>
+          </section>
+          {cards}
+        </div>
       </div>
 
       {pipelinePanels}
 
-      <section className="q-card mon-list" aria-labelledby="mon-services-h">
-        <div className="f-card-head">
-          <h2 id="mon-services-h">Services</h2>
-          <span className="f-count">{groups.length + (metricsGap ? 1 : 0)}</span>
-        </div>
-        <div className="f-scroll" role="region" aria-label="Service health" tabIndex={0}>
-          <table className="f-table mon-table mon-services">
-            <thead><tr><th scope="col">Service</th><th scope="col">State</th><th scope="col">Detail</th><th scope="col">Last checked</th></tr></thead>
-            <tbody>
-              {groups.map((g) => (
-                <tr key={g.service}>
-                  <th scope="row">{g.name}</th>
-                  <td><StatusBadge state={g.state} /></td>
-                  <td>
-                    {g.rows.map((s) => (
-                      <span key={s.component} className="mon-part">
-                        <span className="mon-what">{s.display_name} · {LABEL[s.shown]}</span>
-                        <span className="mon-why">{s.shown !== s.state ? `Stale: no fresh answer since ${ago(s.observed_at, now)}. ${s.reason}` : s.reason}</span>
-                      </span>
-                    ))}
-                  </td>
-                  <td className="f-mono">{ago(oldest(g.rows), now)}</td>
-                </tr>
-              ))}
-              {groups.length === 0 && (
-                <tr><th scope="row">Service probes</th><td><StatusBadge state={servicesGap ?? "unknown"} /></td>
-                  <td>{servicesReason ?? "The API reported no services for this stage."}</td><td className="f-mono">—</td></tr>
-              )}
-              {metricsGap && (
-                <tr><th scope="row">Resource metrics</th><td><StatusBadge state={metricsGap} /></td>
-                  <td>{metrics?.reason}</td><td className="f-mono">—</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <ServicesPanel
+        groups={groups} line={svcLine} now={now} metricsGap={metricsGap} metricsReason={metrics?.reason}
+        gap={servicesGap || groups.length === 0 ? { state: servicesGap ?? "unknown", reason: servicesReason } : undefined}
+      />
     </>
   );
 }
@@ -313,6 +356,31 @@ export function Monitoring({ stages }: { stages: string[] }) {
   const pick = (s: string) => { setLastGood(undefined); setLastGoodPipes(undefined); setParams({ stage: s }); };
   const ready = load.status === "ok" && access && load.stage === access.stage ? load : undefined;
 
+  const choices = [...offered.map((s) => ({ stage: s, label: s.toUpperCase() })), ...(refused ? [{ stage: refused, label: `${refused.toUpperCase()} · no access` }] : [])];
+  // Up to three stages are a segmented switch (native radios: Tab reaches it, the arrow keys move it); more are a list.
+  const picker = stage && caps.status === "ok" && (choices.length <= 3
+    ? (
+      <fieldset className="mc-range mon-stage">
+        <legend className="q-label">Stage</legend>
+        <div className="mc-segments">
+          {choices.map((c) => (
+            <label key={c.stage}>
+              <input type="radio" name="mon-stage" value={c.stage} checked={c.stage === stage} onChange={() => pick(c.stage)} aria-label={c.label} />
+              <span aria-hidden="true">{c.label}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+    )
+    : (
+      <label className="mon-stage">
+        <span className="q-label">Stage</span>
+        <select className="q-select" value={stage} onChange={(e) => pick(e.target.value)}>
+          {choices.map((c) => <option key={c.stage} value={c.stage}>{c.label}</option>)}
+        </select>
+      </label>
+    ));
+
   let body;
   if (stages.length === 0) {
     body = <p className="empty"><span className="label">No stages</span>This deployment has no stage to monitor yet.</p>;
@@ -330,21 +398,12 @@ export function Monitoring({ stages }: { stages: string[] }) {
   } else {
     body = (
       <>
-        <div className="q-context">
-          <label>
-            <span className="q-label">Stage</span>
-            <select className="q-select" value={stage} onChange={(e) => pick(e.target.value)}>
-              {offered.map((s) => <option key={s} value={s}>{s.toUpperCase()}</option>)}
-              {refused && <option value={refused}>{refused.toUpperCase()} · no access</option>}
-            </select>
-          </label>
-        </div>
         {refused || !access
           ? <Unavailable name={stage.toUpperCase()} error={new ApiError(403, `Your role has no monitoring access on stage ${stage.toUpperCase()}.`)} />
           : load.status === "error"
             ? <Unavailable name={stage.toUpperCase()} error={load.error} lastGood={lastGood} onRetry={retry} />
             : ready
-              ? <Overview access={access} snap={ready} now={now} retry={{ onRetry: retry, lastGood: lastGoodPipes }} />
+              ? <Overview key={access.stage} access={access} snap={ready} now={now} retry={{ onRetry: retry, lastGood: lastGoodPipes }} />
               : <p className="mon-loading" role="status">Reading {stage.toUpperCase()} health…</p>}
       </>
     );
@@ -364,7 +423,10 @@ export function Monitoring({ stages }: { stages: string[] }) {
           </div>
         )}
       </div>
-      <MonitoringViews stage={stage ?? asked ?? undefined} />
+      <div className="mon-bar">
+        <MonitoringViews stage={stage ?? asked ?? undefined} />
+        {picker}
+      </div>
       {body}
     </>
   );
