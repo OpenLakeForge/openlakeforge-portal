@@ -13,7 +13,7 @@ import {
   type Gate, type HealthRange, type HealthState, type MonitoringCapabilities, type PipelinesHealth, type Run, type Runs,
 } from "../lib/health-api";
 import { ago, DEADLINE_MS } from "./Monitoring";
-import { RunLink, when, type Part } from "./MonitoringPipelines";
+import { pipes, RunLink, when, type Part } from "./MonitoringPipelines";
 import { duration, runState } from "./MonitoringRun";
 import { MonitoringViews } from "./MonitoringViews";
 import { StatusBadge } from "./StatusBadge";
@@ -191,14 +191,17 @@ export function MonitoringRuns({ stage, stages }: { stage: string; stages: strin
   };
 
   const snap = load.status === "ok" && load.key === key ? load.snap : undefined;
-  const pipelines = snap?.pipes.status === "ok" ? snap.pipes.data.pipelines : undefined;
+  // Read as the overview reads it: a 200 whose Dagster integration is unavailable or disabled lists no pipeline, and
+  // says why; the runs' scope is then unknown, never "no product".
+  const pipesRead = snap ? pipes(snap.pipes, now) : undefined;
+  const pipelines = pipesRead?.ok ? pipesRead.pipelines : undefined;
   const scopeOf = new Map(pipelines?.map((p) => [p.job, p]) ?? []);
   const runs = snap?.runs.status === "ok" ? snap.runs.data.runs : undefined;
   const jobs = [...new Set([...(pipelines?.map((p) => p.job) ?? []), ...(runs?.map((r) => r.job_name) ?? []), ...(job ? [job] : [])])].sort();
   const products = [...new Map((pipelines ?? []).filter((p) => p.product).map((p) => [p.product!, p.domain ? `${p.domain} · ${p.product}` : p.product!])).entries()]
     .sort((a, b) => a[1].localeCompare(b[1]));
   if (product && !products.some(([p]) => p === product)) products.push([product, product]);
-  const pipesWhy = !snap ? "" : snap.pipes.status === "off" ? snap.pipes.reason : snap.pipes.status === "error" ? snap.pipes.error.message : "";
+  const pipesWhy = pipesRead && !pipesRead.ok ? pipesRead.reason : "";
 
   let body;
   if (stages.length === 0) {
@@ -252,7 +255,8 @@ export function MonitoringRuns({ stage, stages }: { stage: string; stages: strin
               {(products.length > 0 || product) && (
                 <label>
                   <span className="q-label">Product</span>
-                  <select className="q-select" value={product} onChange={(e) => pick({ product: e.target.value })}>
+                  <select className="q-select" value={product} onChange={(e) => pick({ product: e.target.value })} disabled={!pipelines}
+                    aria-describedby={!pipelines ? "rl-product-why" : undefined}>
                     <option value="">All products</option>
                     {products.map(([p, words]) => <option key={p} value={p}>{words}</option>)}
                   </select>
@@ -299,7 +303,10 @@ function RunsTable({ stage, runs, at, now, filters, scopeOf, pipesWhy, productKn
   stage: string; runs: Run[]; at: number; now: number; filters: Filters;
   scopeOf: Map<string, { domain: string | null; product: string | null }>; pipesWhy: string; productKnown: boolean;
 }) {
-  const { job, product, status, window: win } = filters;
+  const { job, status, window: win } = filters;
+  // A product filter needs each job's product: without the pipelines answer it is not applied, and the card says so.
+  const product = productKnown ? filters.product : "";
+  const productIgnored = !!filters.product && !productKnown;
   const windowStart = at / 1000 - WINDOW_SECONDS[win];
   const cover = coverage(runs, RUNS_LIMIT, windowStart);
   const shown = runs
@@ -317,14 +324,7 @@ function RunsTable({ stage, runs, at, now, filters, scopeOf, pipesWhy, productKn
   const clear = runsHref(stage, { window: win });
 
   let table;
-  if (product && !productKnown) {
-    table = (
-      <p className="empty">
-        <span className="label">Product cannot be matched</span>
-        A run's product comes from the pipelines answer, which cannot be read: {pipesWhy}. No run is shown as matching.
-      </p>
-    );
-  } else if (!runs.length) {
+  if (!runs.length) {
     table = (
       <p className="empty">
         <span className="label">No runs</span>
@@ -386,6 +386,12 @@ function RunsTable({ stage, runs, at, now, filters, scopeOf, pipesWhy, productKn
         <p className="mon-note">{read}</p>
         <p className="mon-note">The API filters runs by pipeline only: status{productKnown ? ", product" : ""} and window are applied here, to the runs read.</p>
         {pipesWhy && <p className="mon-note">Domain and product cannot be shown: {pipesWhy}</p>}
+        {productIgnored && (
+          <p className="mon-note" id="rl-product-why">
+            <StatusBadge state="unknown" />{" "}
+            <strong className="rl-short">The product filter <span className="f-mono">{filters.product}</span> is not applied</strong>: a run's product cannot be determined, so runs of every product are listed.
+          </p>
+        )}
       </div>
       {table}
     </section>

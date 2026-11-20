@@ -290,6 +290,25 @@ describe("MonitoringRuns", () => {
     expect(screen.queryByRole("combobox", { name: "Product" })).toBeNull();
   });
 
+  it("a 200 pipelines answer whose Dagster is unavailable leaves scope unknown: the product filter is not applied, and says why", async () => {
+    api({
+      pipesReply: () => ({
+        body: { ...PIPES(), pipelines: [], integrations: [{ name: "dagster", status: "unavailable", reason: "Dagster could not be read" }] },
+      }),
+    });
+    open("/monitoring/prod/runs?product=orders");
+    const r = await rows();
+    // Every run of the window is listed, unfiltered by product; none is called "No data product".
+    expect(r).toHaveLength(6);
+    expect(r.every((x) => x.textContent!.includes("Not known"))).toBe(true);
+    expect(screen.queryByText("No data product")).toBeNull();
+    expect(screen.queryByText("No matching runs")).toBeNull();
+    expect(screen.getByText(/Domain and product cannot be shown: Dagster could not be read/)).toBeInTheDocument();
+    expect(screen.getByText(/runs of every product are listed/)).toHaveTextContent("The product filter orders is not applied");
+    expect(screen.getByRole("combobox", { name: "Product" })).toBeDisabled();
+    expect(screen.getByText((_, el) => !!el?.matches(".mc-head .mon-why") && el.textContent === "Runs created in the last 24 hours")).toBeInTheDocument();
+  });
+
   it("switching stage goes to that stage's page, keeping status and window but not the pipeline", async () => {
     const user = userEvent.setup();
     api();

@@ -98,6 +98,21 @@ test("a refused read (403) is Disabled in the API's words; a role without access
   expect(reads).toEqual([]);
 });
 
+test("a pipelines answer whose Dagster is unavailable leaves products unknown: runs stay listed, the product filter is not applied", async ({ page }) => {
+  // A 200 with Dagster unavailable and no pipelines, as the API answers when its pipelines pass cannot read Dagster.
+  await page.route("**/api/v1/stages/prod/health/pipelines", async (route) => {
+    const body = await (await route.fetch()).json();
+    await route.fulfill({ json: { ...body, pipelines: [], integrations: [{ name: "dagster", status: "unavailable", reason: "Dagster could not be read" }] } });
+  });
+  await page.goto("/monitoring/prod/runs?product=orders");
+  await expect(page.getByText(/The product filter orders is not applied/)).toBeVisible();
+  await expect(page.getByText(/Domain and product cannot be shown: Dagster could not be read/)).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Product" })).toBeDisabled();
+  await expect(rows(page).filter({ hasText: "web_events" }).first()).toBeVisible();
+  await expect(page.getByText("No matching runs")).toHaveCount(0);
+  await expect(runs(page).getByText("No data product")).toHaveCount(0);
+});
+
 test("a stage with no run reads 'No runs'", async ({ page }) => {
   await page.goto("/monitoring/prod/runs?mock=empty");
   await expect(page.getByText("No runs", { exact: true })).toBeVisible();
