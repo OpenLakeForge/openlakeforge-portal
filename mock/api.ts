@@ -141,7 +141,7 @@ async function route(req: IncomingMessage, url: URL): Promise<{ status?: number;
   if (!STAGES.includes(stage)) throw new HttpError(404, `stage '${stage}' offers no query`);
   if (parts[2] === "buckets") return filesRoute(req, url, parts);
   if ((parts[2] === "health" || parts[2] === "alerts") && method === "GET") return monitoringRoute(scenarioOf(req), stage, parts.slice(2).join("/"));
-  if (parts[2] === "runs" && parts[3] && method === "GET") return runRoute(scenarioOf(req), stage, parts[3], parts[4]);
+  if (parts[2] === "runs" && parts[3] && method === "GET") return runRoute(scenarioOf(req), stage, parts[3], parts.slice(4), url);
   if (parts[2] === "logs" && method === "GET") return logsRoute(scenarioOf(req), stage, url);
   if (parts[2] === "schemas" && method === "GET") {
     const schemas = schemasOf(stage);
@@ -341,14 +341,17 @@ function scenarioOf(req: IncomingMessage): Scenario {
   return MONITORING_SCENARIOS.find((s) => s === asked);
 }
 
-const MONITORING_OPS = ["get_stage_health", "get_stage_service_health", "list_pipeline_health", "get_stage_quality_health",
-  "list_logs", "list_stage_metrics", "get_stage_metric", "list_alert_incidents"];
+const MONITORING_OPS = ["get_stage_health", "get_stage_service_health", "list_pipeline_health", "get_run", "get_run_failure",
+  "get_stage_quality_health", "get_run_quality", "list_logs", "list_stage_metrics", "get_stage_metric", "list_alert_incidents"];
+/** Days each stage's log archive keeps lines (#1328); `not-provided` has no archive, so none (null). */
+const LOG_RETENTION_DAYS: Record<string, number> = { dev: 14, prod: 30 };
 const ROUTE_OPS: Record<string, string> = {
   health: "get_stage_health", "health/services": "get_stage_service_health", "health/pipelines": "list_pipeline_health",
   "health/quality": "get_stage_quality_health", "alerts/incidents": "list_alert_incidents",
 };
 
-/** As platform-api builds it from its settings: a data-engineer's view, so logs on dev only (both stages for `admin`). */
+/** As platform-api builds it from its settings: a data-engineer's view, so logs (and a run's logs and report downloads,
+ * which share the row) on dev only, both stages for `admin`. `not-provided` also has no log archive. */
 function monitoringCapabilities(scenario: Scenario) {
   if (scenario === "no-access") return { stages: [] };
   return {
@@ -356,6 +359,7 @@ function monitoringCapabilities(scenario: Scenario) {
       stage,
       operations: scenario === "limited" ? ["get_stage_health", "get_stage_service_health"]
         : MONITORING_OPS.filter((op) => op !== "list_logs" || stage === "dev" || scenario === "admin"),
+      log_retention_days: scenario === "not-provided" ? null : LOG_RETENTION_DAYS[stage],
       capabilities: [
         { name: "dagster", status: "available", reason: "a Dagster webserver is configured" },
         { name: "services", status: "available", reason: "service probes are configured" },
@@ -363,8 +367,9 @@ function monitoringCapabilities(scenario: Scenario) {
           : { name: "quality", status: "not_provided", reason: "no quality manifest reader is configured for this stage" },
         stage === "prod" ? { name: "quality-sync", status: "available", reason: "read from the reconciler's quality-sync summary" }
           : { name: "quality-sync", status: "not_provided", reason: "no quality results are published from this stage" },
-        stage === "dev" || scenario === "admin" ? { name: "logs", status: "available", reason: "a log archive is configured" }
-          : { name: "logs", status: "unavailable", reason: "the platform API holds no object-store key for the log archive" },
+        scenario === "not-provided" ? { name: "logs", status: "not_provided", reason: "no log archive is configured for this stage" }
+          : stage === "dev" || scenario === "admin" ? { name: "logs", status: "available", reason: "a log archive is configured" }
+            : { name: "logs", status: "unavailable", reason: "the platform API holds no object-store key for the log archive" },
         { name: "metrics", status: "not_provided", reason: "no metrics source is connected to the API" },
         scenario === "not-provided" ? { name: "alerts", status: "not_provided", reason: "no alert evaluator, or no key to read its state, is configured" }
           : { name: "alerts", status: "available", reason: "the alert evaluator's state is configured" },
@@ -495,7 +500,9 @@ function pipelinesHealth(stage: string) {
   const salesFail = run("sales_orders", "c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21", "FAILURE", 40 * 60, 120);
   const salesOk = run("sales_orders", "7a1f02de-93c4-4f0a-8d55-0b9e4c2a6f10", "SUCCESS", 23 * H);
   const crmOk = run("crm_accounts", "4be0c1a9-2d7f-4c63-a1e8-5f3b9d0e7c42", "SUCCESS", 23 * H + 30 * 60);
-  const ledger = run("finance_ledger", "e5d27b8c-0f41-4a9e-b6c3-1d8a2f7e9b05", "SUCCESS", 2 * 24 * H);
+  // finance_ledger's last run crossed midnight (UTC): it started 19 min before a midnight 36 to 60 h ago and took 51 min.
+  const midnight = Math.floor((now / 1000 - 36 * H) / 86400) * 86400;
+  const ledger = run("finance_ledger", LEDGER_RUN, "SUCCESS", secs(0) - (midnight - 19 * 60), 51 * 60);
   const web = run("web_events", "0d9c3e7a-6b28-4f15-a3d0-8e1c5b2f4a67", "SUCCESS", 25 * 60, 60);
   const health = (job: string, latest: ReturnType<typeof run>, success: ReturnType<typeof run> | null, failed: number | null,
     schedule: { name: string | null; status: string; last_expected_at: string | null }, signals: unknown[]) => ({
@@ -617,44 +624,231 @@ function alertIncidents(stage: string, scenario: Scenario) {
 // Floe step and rejected rows; the other runs on record succeeded. `unknown` makes the event log and the manifest
 // unreadable (steps and rows null, never empty); `unauthorized` and `limited` are refused with 403; dev's Dagster cannot
 // be read (502); an id no pipeline has is a 404.
+// Its quality (#1325): sales_orders' failed run has a complete manifest with Floe and dbt checks and both reports,
+// finance_ledger's run (which crossed midnight) an incomplete one, crm_accounts' run wrote none, and web_events has no
+// product. Report links are offered only where the role may download (`admin` on prod; a data-engineer on dev only).
+// Its log window (#1326): every line of the stage between the run's start and end, across UTC days, paged by `next`.
 
 const FAILED_RUN = "c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21";
+const LEDGER_RUN = "e5d27b8c-0f41-4a9e-b6c3-1d8a2f7e9b05";
 
 function runsOnRecord() {
   const runs = (pipelinesHealth("prod").pipelines as { latest_run: Record<string, unknown> | null; last_success: Record<string, unknown> | null }[])
     .flatMap((p) => [p.latest_run, p.last_success]).filter((r): r is Record<string, unknown> => r !== null);
   return new Map(runs.map((r) => [r.run_id as string, r]));
 }
+type MockRun = { run_id: string; job_name: string; status: string; created_at: number; started_at: number | null; ended_at: number | null };
 
-function runRoute(scenario: Scenario, stage: string, id: string, sub: string | undefined): { json: unknown } {
-  const op = sub === "failure" ? "get_run_failure" : sub === undefined ? "get_run" : undefined;
+/** As run_failure.run_manifest decides it: why a run has a quality manifest or not. */
+function manifestSource(scenario: Scenario, run: MockRun) {
+  if (scenario === "unknown" && run.status === "FAILURE") return { name: "quality", status: "unavailable", reason: "the run's quality manifest could not be read" };
+  if (!(run.job_name in SCOPES)) return { name: "quality", status: "not_provided", reason: "only a product pipeline's run writes a quality manifest" };
+  if (run.job_name === "crm_accounts") return { name: "quality", status: "not_provided", reason: "the run wrote no quality manifest" };
+  return { name: "quality", status: "available", reason: "read from the run's quality manifest" };
+}
+
+function runRoute(scenario: Scenario, stage: string, id: string, sub: string[], url: URL): { json?: unknown; raw?: [string, string, string] } {
+  const path = sub.join("/");
+  const op = path === "" ? "get_run" : path === "failure" ? "get_run_failure" : path === "quality" ? "get_run_quality"
+    : path === "logs" ? "list_run_logs" : sub[0] === "quality" && sub[1] === "reports" && sub[2] && sub.length === 3 ? "get_run_quality_report" : undefined;
   if (!op) throw new HttpError(404, "Not Found");
   if (scenario === "unauthorized" || scenario === "limited" || scenario === "no-access") throw new HttpError(403, `role analyst may not call ${op} on stage '${stage}'`);
+  // list_run_logs and get_run_quality_report have list_logs's row: a data-engineer on dev only.
+  const access = monitoringCapabilities(scenario).stages.find((s) => s.stage === stage);
+  if ((op === "list_run_logs" || op === "get_run_quality_report") && !access?.operations.includes("list_logs")) {
+    throw new HttpError(403, `role data-engineer may not call ${op} on stage '${stage}'`);
+  }
+  if (op === "list_run_logs" && scenario === "not-provided") throw new HttpError(404, `stage '${stage}' has no log archive`);
   if (stage !== "prod") throw new HttpError(502, `Dagster for stage '${stage}' could not be read`);
-  const run = runsOnRecord().get(id);
+  const run = runsOnRecord().get(id) as MockRun | undefined;
   if (!run) throw new HttpError(404, `no run '${id}' in stage '${stage}'`);
   if (op === "get_run") return { json: run };
-  const product = (run.job_name as string) in SCOPES;
+  if (op === "get_run_quality") return { json: runQuality(scenario, stage, run) };
+  if (op === "get_run_quality_report") {
+    const report = (runQuality("admin", stage, run).reports as { id: string; engine: string }[]).find((r) => r.id === sub[2]);
+    if (!report) throw new HttpError(404, `run '${id}' retained no report '${sub[2]}'`);
+    const name = report.engine === "dbt" ? "run_results.json" : "run_report.json";
+    return { raw: ["application/json", `attachment; filename="${name}"`, JSON.stringify({ run_id: id, engine: report.engine, mock: true }, null, 2)] };
+  }
+  if (op === "list_run_logs") return { json: runLogs(stage, run, url) };
+  const scope = SCOPES[run.job_name];
   const failed = run.status === "FAILURE";
   const unknown = scenario === "unknown" && failed;
+  const quality = manifestSource(scenario, run);
   return {
     json: {
-      run_id: id, job: run.job_name, status: run.status,
+      run_id: id, job: run.job_name, domain: scope?.[0] ?? null, product: scope?.[1] ?? null, status: run.status,
       steps: unknown ? null : failed ? [{
         step: "floe_silver_orders", error_class: "SchemaMismatchError",
         message: "orders.amount: expected decimal(18,2), found string in orders_2026-11-16.csv; policy abort, 0 rows written to sales_silver.orders",
         message_truncated: true,
       }] : [],
       run_message: null, steps_truncated: false,
-      rows: unknown || !product ? null : failed ? { rejected: 412, accepted: 0, complete: true } : { rejected: 0, accepted: 19402, complete: true },
+      rows: quality.status !== "available" ? null : failed ? { rejected: 412, accepted: 0, complete: true }
+        : run.run_id === LEDGER_RUN ? { rejected: 37, accepted: 8_120, complete: false } : { rejected: 0, accepted: 19402, complete: true },
       sources: [
         unknown ? { name: "dagster", status: "unavailable", reason: "the run's event log could not be read" }
           : { name: "dagster", status: "available", reason: failed ? "read from the run's event log" : "the run succeeded" },
-        unknown ? { name: "quality", status: "unavailable", reason: "the run's quality manifest could not be read" }
-          : product ? { name: "quality", status: "available", reason: "read from the run's quality manifest" }
-            : { name: "quality", status: "not_provided", reason: "only a product pipeline's run writes a quality manifest" },
+        quality,
       ],
     },
+  };
+}
+
+/** The report id the API derives from a result's artifact URI: a hash (here 64-bit FNV-1a), never an object key. */
+function reportId(uri: string): string {
+  let h = 0xcbf29ce484222325n;
+  for (const b of Buffer.from(uri)) h = BigInt.asUintN(64, (h ^ BigInt(b)) * 0x100000001b3n);
+  return h.toString(16).padStart(16, "0");
+}
+
+/** RunQuality as get_run_quality answers it: the manifest's checks, counts and reports, or null without one. */
+function runQuality(scenario: Scenario, stage: string, run: MockRun) {
+  const quality = manifestSource(scenario, run);
+  const base = { run_id: run.run_id, job: run.job_name, status: run.status, runbook: null, sources: [quality] };
+  if (quality.status !== "available") return { ...base, complete: null, counts: null, checks: null, reports: [] };
+  const at = new Date(((run.ended_at ?? run.started_at ?? run.created_at) as number) * 1000).toISOString();
+  type C = { rows?: number; accepted?: number; rejected?: number; violations?: number; failures?: number };
+  const check = (engine: string, check_id: string, table: string | null, column: string | null, engine_severity: string, outcome: string,
+    pipeline_outcome: string, c: C = {}, uri: string | null = null) => ({
+    engine, check_id, table, column, engine_severity, outcome, pipeline_outcome, observed_at: at,
+    rows: c.rows ?? null, accepted_rows: c.accepted ?? null, rejected_rows: c.rejected ?? null, violations: c.violations ?? null, failures: c.failures ?? null,
+    report_id: uri ? reportId(uri) : null,
+  });
+  const prefix = `s3://openlakeforge-${stage}-ops/activation/quality/${run.run_id}`;
+  let checks: ReturnType<typeof check>[];
+  let complete = true;
+  if (run.run_id === FAILED_RUN) {
+    const floe = `${prefix}/floe/sales_silver.orders/run_report.json`;
+    const dbt = `${prefix}/dbt/run_results.json`;
+    const f = (id: string, column: string | null, sev: string, outcome: string, pipeline: string, c: C = {}) => check("floe", id, "sales_silver.orders", column, sev, outcome, pipeline, c, floe);
+    const d = (id: string, column: string, severity = "error") => check("dbt", id, "sales_staging.stg_orders", column, severity, "passed", "continued", { failures: 0 }, dbt);
+    checks = [
+      f("schema.amount_type", "amount", "abort", "error", "blocked", { rows: 19_402, rejected: 19_402, accepted: 0 }),
+      f("range.amount_non_negative", "amount", "reject", "error", "quarantined", { rows: 19_402, violations: 3 }),
+      f("cast.ordered_at", "ordered_at", "warn", "warn", "quarantined", { rows: 19_402, rejected: 412, accepted: 18_990 }),
+      f("not_null.order_id", "order_id", "reject", "passed", "continued", { rows: 19_402, violations: 0 }),
+      f("unique.order_id", "order_id", "reject", "passed", "continued", { rows: 19_402, violations: 0 }),
+      f("not_null.customer_id", "customer_id", "reject", "passed", "continued", { rows: 19_402, violations: 0 }),
+      f("accepted_values.currency", "currency", "reject", "passed", "continued", { rows: 19_402, violations: 0 }),
+      f("not_null.ordered_at", "ordered_at", "reject", "passed", "continued", { rows: 19_402, violations: 0 }),
+      f("freshness.ordered_at", "ordered_at", "warn", "passed", "continued"),
+      f("row_count.min", null, "abort", "passed", "continued", { rows: 19_402 }),
+      f("schema.columns", null, "abort", "passed", "continued"),
+      d("not_null_stg_orders_order_id", "order_id"),
+      d("unique_stg_orders_order_id", "order_id"),
+      d("relationships_stg_orders_customer_id", "customer_id"),
+      d("accepted_values_stg_orders_status", "status"),
+      d("not_null_stg_orders_amount", "amount"),
+      d("dbt_utils_recency_stg_orders_ordered_at", "ordered_at", "warn"),
+    ];
+  } else if (run.run_id === LEDGER_RUN) {
+    // The run crossed midnight and its quality manifest was not finished: dbt never wrote its results.
+    const floe = `${prefix}/floe/finance_silver.ledger/run_report.json`;
+    const f = (id: string, column: string | null, sev: string, outcome: string, pipeline: string, c: C = {}) => check("floe", id, "finance_silver.ledger", column, sev, outcome, pipeline, c, floe);
+    complete = false;
+    checks = [
+      f("cast.posted_at", "posted_at", "warn", "warn", "quarantined", { rows: 8_157, rejected: 37, accepted: 8_120 }),
+      f("accepted_values.currency", "currency", "warn", "warn", "continued", { rows: 8_157, violations: 12 }),
+      f("not_null.entry_id", "entry_id", "reject", "passed", "continued", { rows: 8_157, violations: 0 }),
+      f("unique.entry_id", "entry_id", "reject", "passed", "continued", { rows: 8_157, violations: 0 }),
+      f("not_null.account", "account", "reject", "passed", "continued", { rows: 8_157, violations: 0 }),
+      f("balance.debit_equals_credit", null, "abort", "passed", "continued"),
+      f("schema.columns", null, "abort", "passed", "continued"),
+      f("row_count.min", null, "abort", "passed", "continued", { rows: 8_157 }),
+      f("freshness.posted_at", "posted_at", "warn", "passed", "continued"),
+      f("not_null.posted_at", "posted_at", "reject", "passed", "continued", { rows: 8_157, violations: 0 }),
+      check("dbt", "not_null_fct_ledger_entry_id", "finance_gold.fct_ledger", "entry_id", "error", "not_run", "unknown"),
+    ];
+  } else {
+    const floe = `${prefix}/floe/sales_silver.orders/run_report.json`;
+    checks = ([["not_null.order_id", "order_id"], ["unique.order_id", "order_id"], ["not_null.customer_id", "customer_id"], ["schema.amount_type", "amount"],
+      ["cast.ordered_at", "ordered_at"], ["row_count.min", null]] as const)
+      .map(([id, column]) => check("floe", id, "sales_silver.orders", column, "reject", "passed", "continued", { rows: 19_402, violations: 0 }, floe));
+  }
+  checks.sort((a, b) => `${a.engine}|${a.table ?? ""}|${a.column ?? ""}|${a.check_id}`.localeCompare(`${b.engine}|${b.table ?? ""}|${b.column ?? ""}|${b.check_id}`));
+  const tally = (o: string) => checks.filter((c) => c.outcome === o).length;
+  const counts = { passed: tally("passed"), warn: tally("warn"), error: tally("error"), not_run: tally("not_run"), unknown: tally("unknown"), blocking: checks.filter((c) => c.pipeline_outcome === "blocked").length };
+  // Downloads go through the API, for a role with the report row (list_logs's): `admin` on prod here.
+  const servable = monitoringCapabilities(scenario).stages.find((x) => x.stage === stage)?.operations.includes("list_logs") ?? false;
+  const seen = new Map<string, { id: string; engine: string; table: string | null; href: string | null }>();
+  for (const c of checks) {
+    if (!c.report_id || seen.has(c.report_id)) continue;
+    seen.set(c.report_id, {
+      id: c.report_id, engine: c.engine, table: c.engine === "floe" ? c.table : null,
+      href: servable ? `/api/v1/stages/${stage}/runs/${encodeURIComponent(run.run_id)}/quality/reports/${c.report_id}` : null,
+    });
+  }
+  const reports = [...seen.values()].sort((a, b) => `${a.engine}|${a.table ?? ""}`.localeCompare(`${b.engine}|${b.table ?? ""}`));
+  return { ...base, complete, counts, checks, reports };
+}
+
+const LEVEL_RANK: Record<string, number> = { debug: 0, info: 1, warning: 2, error: 3, critical: 4 };
+
+/** Every line of the stage's archive in the run's window, as list_run_logs reads it: its pods' lines (tagged with the
+ * run), other workloads' lines meanwhile (not tagged), and v1 records (no tag, time or level). Paged by an opaque
+ * `next`; `match_run` keeps only the tagged lines; `severity` is a floor on each line's level. */
+function runLogs(stage: string, run: MockRun, url: URL) {
+  const start = (run.started_at ?? run.created_at) * 1000;
+  const end = (run.ended_at ?? Date.now() / 1000) * 1000;
+  const limit = Number(url.searchParams.get("limit") ?? 500);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 5000) throw new HttpError(422, "limit must be between 1 and 5000");
+  const floor = url.searchParams.get("severity");
+  if (floor !== null && !(floor in LEVEL_RANK)) throw new HttpError(422, "severity must be one of debug, info, warning, error, critical");
+  const matchRun = url.searchParams.get("match_run") === "true";
+  const after = url.searchParams.get("after");
+  let from = 0;
+  if (after) {
+    from = Number(Buffer.from(after, "base64url").toString().replace(/^p:/, ""));
+    if (!Number.isInteger(from) || from < 0) throw new HttpError(422, "`after` is not a cursor this route returned");
+  }
+  const pod = `dagster-run-${run.run_id.slice(0, 8)}`;
+  const archived = new Date(end + 90_000).toISOString();
+  type L = { at: number | null; level: string | null; container: string; text: string | null; pod?: string; tagged?: boolean; v1?: boolean; error?: string };
+  const all: L[] = [];
+  const add = (offsetMs: number, level: string | null, container: string, text: string | null, extra: Partial<L> = {}) =>
+    all.push({ at: start + offsetMs, level, container, text, tagged: true, ...extra });
+  if (run.run_id === FAILED_RUN) {
+    add(1_204, "info", "floe", "Starting Silver load sales.orders");
+    add(1_882, "info", "floe", "Reading bronze crm/orders/2026-11-16 · 3 files");
+    add(4_310, "info", "floe", "Validating 19,402 rows against sales/orders");
+    add(9_500, "info", "dagster-daemon", "Scheduler tick: 4 schedules evaluated", { pod: "dagster-daemon-5f7c9", tagged: false });
+    add(102_017, "warning", "floe", "floe_cast_error orders.ordered_at · 412 rows quarantined");
+    add(113_551, "error", "floe", "floe_schema_mismatch orders.amount · expected decimal(18,2), found string");
+    add(113_552, "critical", "floe", "policy abort · stopping before commit, 0 rows written");
+    all.push({ at: null, level: null, container: "floe", text: "[v1] exit code 1", tagged: false, v1: true });
+    add(115_118, "info", "floe", "Report written to floe/reports/sales/run_c94cbcb0/");
+    add(115_240, null, "dagster", "Step floe_silver_orders failed · Gold skipped");
+    add(116_000, null, "floe", null, { error: "the record is not valid JSON" });
+  } else if (run.run_id === LEDGER_RUN) {
+    // 51 minutes across midnight: one progress line every 10 s, a warning every 40th, and other workloads meanwhile.
+    for (let i = 0; i < 300; i++) {
+      const t = 2_000 + i * 10_000;
+      if (i % 40 === 17) add(t, "warning", "floe", `floe_cast_error ledger.posted_at · ${1 + (i % 3)} rows quarantined (batch ${i + 1})`);
+      else add(t, i % 25 === 0 ? "debug" : "info", "floe", `Loaded batch ${i + 1} of 300 into finance_silver.ledger · ${27 + (i % 5)} rows`);
+      if (i % 50 === 9) add(t + 3_000, "info", "trino", `Query 20261117_${String(i).padStart(4, "0")} finished · reporting`, { pod: "trino-worker-0", tagged: false });
+    }
+    all.push({ at: null, level: null, container: "floe", text: "[v1] heartbeat", tagged: false, v1: true });
+    add(3_002_000, "info", "floe", "Report written to floe/reports/finance/run_e5d27b8c/ (dbt results not written: manifest incomplete)");
+  } else {
+    add(1_000, "info", "floe", `Starting ${run.job_name}`);
+    add(Math.max(2_000, end - start - 1_000), "info", "dagster", "Run succeeded");
+  }
+  // Oldest first by event time; a v1 record (no time) sits where the archiver wrote it, by its place in the list.
+  const kept = all.filter((l) => (!matchRun || l.tagged) && (floor === null || (l.level !== null && LEVEL_RANK[l.level] >= LEVEL_RANK[floor])));
+  const page = kept.slice(from, from + limit);
+  const more = from + limit < kept.length;
+  return {
+    lines: page.map((l) => ({
+      archived_at: archived, namespace: `olf-${stage}`, pod: l.pod ?? pod, container: l.container, line: l.text, error: l.text === null ? l.error ?? "unreadable" : null,
+      component: l.v1 ? null : l.container, product: l.tagged ? SCOPES[run.job_name]?.[1] ?? null : null, domain: l.tagged ? SCOPES[run.job_name]?.[0] ?? null : null,
+      run_id: l.tagged ? run.run_id : null, stage: l.v1 ? null : stage, source: l.v1 ? null : "pod", stream: l.v1 ? null : "stdout",
+      missing: l.v1 ? ["timestamp", "level", "run_id"] : null, timestamp: l.at === null ? null : new Date(l.at).toISOString(), level: l.level,
+    })),
+    truncated: more,
+    since: new Date(start).toISOString(),
+    until: new Date(end).toISOString(),
+    next: more ? Buffer.from(`p:${from + limit}`).toString("base64url") : null,
   };
 }
 

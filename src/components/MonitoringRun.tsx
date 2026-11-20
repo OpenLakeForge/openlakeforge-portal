@@ -1,14 +1,16 @@
 // Monitoring · Failed run (Figma "Screens — v0.4 · Monitoring", Failed run): what one run's failure was, from
-// GET /api/v1/stages/{stage}/runs/{run_id}/failure, with its scope, quality evidence, open incidents and archived lines.
+// GET /api/v1/stages/{stage}/runs/{run_id}/failure, with its scope, its quality checks and reports (.../quality, #1325),
+// open incidents and the archived lines of its window (.../logs, #1326).
 // Read-only: there is no Re-run in v0.7 (openlakeforge#333, 2026-11-16); the next step is the run in Dagster.
 // Nothing here is inferred. A part the API could not read says so in its own words, and none of it reads green.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import {
-  ApiError, gate, getAlertIncidents, getMonitoringCapabilities, getPipelinesHealth, getQualityHealth, getRun, getRunFailure, getRunLogs,
-  type AlertIncident, type Gate, type HealthState, type Integration, type LogSeverity, type Logs, type MonitoringCapabilities,
-  type MonitoringStage, type PipelinesHealth, type Run, type RunFailure, type StageAlertIncidents, type StageQualityHealth,
+  ApiError, gate, getAlertIncidents, getMonitoringCapabilities, getPipelinesHealth, getRun, getRunFailure, getRunQuality, listRunLogs, runGate,
+  type AlertIncident, type Gate, type HealthState, type Integration, type LogLine, type LogSeverity, type MonitoringCapabilities,
+  type MonitoringStage, type PipelineOutcome, type PipelinesHealth, type QualityCheck, type QualityOutcome, type QualityReport, type Run,
+  type RunFailure, type RunQuality, type StageAlertIncidents,
 } from "../lib/health-api";
 import { ago, DEADLINE_MS } from "./Monitoring";
 import { alerts, DELIVERY, deliveryLine } from "./MonitoringAlerts";
@@ -40,14 +42,11 @@ export function duration(seconds: number): string {
   return `${Math.floor(s / 3600)} h${Math.floor((s % 3600) / 60) ? ` ${Math.floor((s % 3600) / 60)} min` : ""}`;
 }
 
-/** The run's UTC day, as the log archive is laid out; the run's start, else its creation. */
-export const runDay = (r: Run) => new Date((r.started_at ?? r.created_at) * 1000).toISOString().slice(0, 10);
-
 type Snap = {
   failure: Part<RunFailure>;
   run: Part<Run>;
   pipes: Part<PipelinesHealth>;
-  quality: Part<StageQualityHealth>;
+  quality: Part<RunQuality>;
   alerts: Part<StageAlertIncidents>;
 };
 type Load = { status: "loading" } | { status: "ok"; snap: Snap; at: number };
@@ -125,76 +124,171 @@ function WhatFailed({ f }: { f: RunFailure }) {
   );
 }
 
-const SEVERITY_LABEL: Record<"" | LogSeverity, string> = { "": "All levels", warning: "Warning and above", error: "Error and above" };
+/** The level floors offered; `debug` adds nothing a reader of a failure needs. */
+const SEVERITY_LABEL: Record<"" | Exclude<LogSeverity, "debug">, string> = {
+  "": "All levels", info: "Info and above", warning: "Warning and above", error: "Error and above", critical: "Critical only",
+};
+type Floor = keyof typeof SEVERITY_LABEL;
 
-function RunLogs({ access, stage, runId, run }: { access: MonitoringStage; stage: string; runId: string; run: Part<Run> }) {
+/** "23:41:07.204" from the line's own ISO time, in UTC; a time the API sent that does not parse is shown as sent. */
+export function lineTime(ts: string): string {
+  const t = Date.parse(ts);
+  return Number.isNaN(t) ? ts : new Date(t).toISOString().slice(11, 23);
+}
+const utcDay = (ts: string) => { const t = Date.parse(ts); return Number.isNaN(t) ? undefined : new Date(t).toISOString().slice(0, 10); };
+/** "16 Nov 23:41" (UTC), for the window's ends. */
+const windowEnd = (ts: string) => {
+  const t = Date.parse(ts);
+  if (Number.isNaN(t)) return ts;
+  const d = new Date(t);
+  return `${d.getUTCDate()} ${d.toLocaleString("en-GB", { month: "short", timeZone: "UTC" })} ${d.toISOString().slice(11, 16)}`;
+};
+const kept = (days: number) => `Kept ${days} day${days === 1 ? "" : "s"}`;
+
+type Page = { lines: LogLine[]; next: string | null; truncated: boolean; since: string; until: string };
+type More = { status: "idle" } | { status: "loading" } | { status: "error"; error: ApiError };
+
+/** The run's archived lines, from its start to its end across UTC days (#1326), with each line's own time and level. */
+function RunLogs({ access, stage, runId }: { access: MonitoringStage; stage: string; runId: string }) {
+  // list_run_logs has list_logs's permission row (#1326) and is not listed on its own: list_logs gates it.
   const g = gate(access, "logs", "list_logs", "logs");
-  const day = run.status === "ok" ? runDay(run.data) : undefined;
-  const [severity, setSeverity] = useState<"" | LogSeverity>("");
+  const retention = access.log_retention_days ?? null;
+  const [severity, setSeverity] = useState<Floor>("");
+  const [matchRun, setMatchRun] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const [load, setLoad] = useState<{ status: "loading" } | Part<Logs>>({ status: "loading" });
+  const [load, setLoad] = useState<{ status: "loading" } | Part<Page>>({ status: "loading" });
+  const [more, setMore] = useState<More>({ status: "idle" });
+  const moreCtl = useRef<AbortController | null>(null);
+  const filters = { severity: severity || undefined, matchRun };
+
   useEffect(() => {
-    if (!g.open || !day) return;
+    if (!g.open) return;
     const ctl = new AbortController();
-    const deadline = setTimeout(() => { ctl.abort(); setLoad({ status: "error", error: timedOut(DEADLINE_MS) }); }, DEADLINE_MS);
+    const deadline = setTimeout(() => { ctl.abort(); setLoad({ status: "error", error: timedOut(RUN_DEADLINE_MS) }); }, RUN_DEADLINE_MS);
+    moreCtl.current?.abort();
+    setMore({ status: "idle" });
     setLoad({ status: "loading" });
-    getRunLogs(stage, runId, day, { severity: severity || undefined }, ctl.signal).then(
+    listRunLogs(stage, runId, { severity: severity || undefined, matchRun }, ctl.signal).then(
       (data) => setLoad({ status: "ok", data }),
       (e) => { if (!ctl.signal.aborted) setLoad({ status: "error", error: failure(e) }); },
     ).finally(() => clearTimeout(deadline));
-    return () => { clearTimeout(deadline); ctl.abort(); };
-  }, [g.open, stage, runId, day, severity, attempt]);
+    return () => { clearTimeout(deadline); ctl.abort(); moreCtl.current?.abort(); };
+  }, [g.open, stage, runId, severity, matchRun, attempt]);
 
+  /** The next page, with the same filters, after the last line shown; its lines are appended, never re-read. */
+  const loadMore = () => {
+    if (load.status !== "ok" || !load.data.next) return;
+    const ctl = new AbortController();
+    moreCtl.current = ctl;
+    const deadline = setTimeout(() => { ctl.abort(); setMore({ status: "error", error: timedOut(RUN_DEADLINE_MS) }); }, RUN_DEADLINE_MS);
+    setMore({ status: "loading" });
+    listRunLogs(stage, runId, { ...filters, after: load.data.next }, ctl.signal).then(
+      (page) => {
+        setLoad((prev) => prev.status === "ok"
+          ? { status: "ok", data: { ...page, lines: [...prev.data.lines, ...page.lines], since: prev.data.since } }
+          : prev);
+        setMore({ status: "idle" });
+      },
+      (e) => { if (!ctl.signal.aborted) setMore({ status: "error", error: failure(e) }); },
+    ).finally(() => clearTimeout(deadline));
+  };
+
+  const keptNote = retention !== null ? <span className="run-kept">{kept(retention)}</span> : null;
   let body;
-  if (!g.open) body = <Gap what="Archived logs" part={{ status: "off", state: g.state, reason: g.reason }} />;
-  else if (!day) {
-    body = <Gap what="Archived logs" part={{ status: "off", state: "unknown", reason: "The run's start time could not be read, so its day in the log archive is not known." }} />;
+  if (!g.open) {
+    body = <>
+      <Gap what="Archived logs" part={{ status: "off", state: g.state, reason: g.reason }} />
+      {keptNote && <p className="mon-why run-foot"><span className="label">Archive</span> {keptNote}</p>}
+    </>;
   } else if (load.status === "loading") body = <p className="mon-loading" role="status">Reading the run's archived lines…</p>;
   else if (load.status !== "ok") body = <Gap what="Archived logs" part={load} retry={() => setAttempt((n) => n + 1)} />;
-  else if (!load.data.lines.length) {
-    body = (
-      <p className="run-step">
-        The archive holds no {severity ? `${SEVERITY_LABEL[severity].toLowerCase()} ` : ""}line of this run for {day} (UTC).
-        Lines still in the collector's spool are not archived yet.
+  else {
+    const d = load.data;
+    const first = utcDay(d.since);
+    const crosses = !!first && first !== utcDay(new Date(Date.parse(d.until) - 1).toISOString());
+    const window = (
+      <p className="mon-why run-foot">
+        <span className="label">Window</span> {windowEnd(d.since)} → {windowEnd(d.until)} (UTC){crosses ? " · crosses midnight" : ""}
+        {keptNote && <> · {keptNote}</>}
       </p>
     );
-  } else {
-    body = (
-      <>
-        <div className="f-scroll run-log" role="region" aria-label="Run log lines" tabIndex={0}>
-          <table className="f-table mon-table">
-            <thead><tr><th scope="col">Container</th><th scope="col">Line</th></tr></thead>
-            <tbody>
-              {load.data.lines.map((l, i) => (
-                <tr key={i}>
-                  <td className="f-mono">{l.container}</td>
-                  <td className="f-mono run-line">{l.line ?? <span className="mon-why">Unreadable record: {l.error ?? "no reason given"}</span>}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p className="mon-why run-foot">
-          <span className="label">Archived</span> {day} (UTC) · run {short(runId)}
-          {load.data.truncated ? ` · the first ${load.data.lines.length} lines only: the rest are in Dagster` : ""}
-        </p>
-      </>
-    );
+    if (!d.lines.length && !d.truncated) {
+      body = (
+        <>
+          <p className="run-step">
+            The archive holds no {severity ? `${SEVERITY_LABEL[severity].toLowerCase()} ` : ""}line {matchRun ? "tagged with this run " : ""}in the run's window.
+            Lines still in the collector's spool are not archived yet.
+          </p>
+          {window}
+        </>
+      );
+    } else {
+      let day = crosses ? undefined : first;
+      const rows: React.ReactNode[] = [];
+      d.lines.forEach((l, i) => {
+        const ts = l.timestamp ?? null;
+        const lineDay = ts ? utcDay(ts) : undefined;
+        if (lineDay && lineDay !== day) {
+          day = lineDay;
+          rows.push(<tr key={`day-${i}`} className="run-day"><th scope="rowgroup" colSpan={4}>{lineDay} (UTC)</th></tr>);
+        }
+        const level = l.level ?? null;
+        rows.push(
+          <tr key={i}>
+            <td className="f-mono run-time">{ts && <time dateTime={ts} title={ts}>{lineTime(ts)}</time>}</td>
+            <td>{level && <span className="run-level" data-level={level}>{level.toUpperCase()}</span>}</td>
+            <td className="f-mono">{l.container}</td>
+            <td className="f-mono run-line">{l.line ?? <span className="mon-why">Unreadable record: {l.error ?? "no reason given"}</span>}</td>
+          </tr>,
+        );
+      });
+      body = (
+        <>
+          <div className="f-scroll run-log" role="region" aria-label="Run log lines" tabIndex={0}>
+            <table className="f-table mon-table">
+              <thead><tr><th scope="col">Time (UTC)</th><th scope="col">Level</th><th scope="col">Container</th><th scope="col">Line</th></tr></thead>
+              <tbody>{rows}</tbody>
+            </table>
+          </div>
+          {d.truncated && (
+            <div className="run-more">
+              <p className="mon-why">
+                {d.lines.length.toLocaleString("en-US")} lines shown: the window has more{d.next ? "." : ", but the API gave no way to read on: the rest are in Dagster."}
+              </p>
+              {d.next && (
+                <button type="button" className="f-btn f-outline" onClick={loadMore} disabled={more.status === "loading"} aria-describedby="run-logs-count">
+                  {more.status === "loading" ? "Loading…" : "Load more"}
+                </button>
+              )}
+              {more.status === "error" && <Gap what="More lines" part={more} retry={loadMore} />}
+            </div>
+          )}
+          {window}
+        </>
+      );
+    }
   }
-  const count = load.status === "ok" && g.open && day ? `${load.data.lines.length}${load.data.truncated ? "+" : ""} lines` : undefined;
+  const count = load.status === "ok" && g.open ? `${load.data.lines.length.toLocaleString("en-US")}${load.data.truncated ? "+" : ""} lines` : undefined;
   return (
     <Card
       id="run-logs-h"
       title="Logs"
       aside={<>
-        {count && <span className="f-count">{count}</span>}
-        {g.open && day && (
-          <label className="run-filter">
-            <span className="q-label">Level</span>
-            <select className="q-select" value={severity} onChange={(e) => setSeverity(e.target.value as "" | LogSeverity)}>
-              {(Object.keys(SEVERITY_LABEL) as ("" | LogSeverity)[]).map((k) => <option key={k} value={k}>{SEVERITY_LABEL[k]}</option>)}
-            </select>
-          </label>
+        {count && <span className="f-count" id="run-logs-count">{count}</span>}
+        {g.open && (
+          <div className="run-filters">
+            <label className="run-filter">
+              <span className="q-label">Level</span>
+              <select className="q-select" value={severity} onChange={(e) => setSeverity(e.target.value as Floor)}>
+                {(Object.keys(SEVERITY_LABEL) as Floor[]).map((k) => <option key={k} value={k}>{SEVERITY_LABEL[k]}</option>)}
+              </select>
+            </label>
+            <label className="run-filter f-check">
+              <input type="checkbox" checked={matchRun} onChange={(e) => setMatchRun(e.target.checked)} aria-describedby="run-match-why" />
+              <span className="q-label">Match this run only</span>
+            </label>
+            <span className="sr-only" id="run-match-why">Keeps only the lines the collector tagged with this run, which leaves older untagged records out.</span>
+          </div>
         )}
       </>}
     >
@@ -204,42 +298,145 @@ function RunLogs({ access, stage, runId, run }: { access: MonitoringStage; stage
 }
 
 const fmt = (n: number) => n.toLocaleString("en-US");
+const OUTCOME_WORD: Record<QualityOutcome, string> = { error: "ERROR", warn: "WARN", passed: "PASS", not_run: "NOT RUN", unknown: "UNKNOWN" };
+const OUTCOME_RANK: Record<QualityOutcome, number> = { error: 0, warn: 1, unknown: 2, not_run: 3, passed: 4 };
+const PIPELINE_WORD: Record<PipelineOutcome, string> = { blocked: "Blocked the run", quarantined: "Rows quarantined", continued: "Run continued", unknown: "Not recorded" };
+const ENGINE: Record<string, string> = { floe: "Floe", dbt: "dbt" };
+const engineName = (e: string) => ENGINE[e] ?? e;
 
-function Quality({ f, quality, stage, runId, now, retry }: { f?: RunFailure; quality: Part<StageQualityHealth>; stage: string; runId: string; now: number; retry(): void }) {
+/** Why a run has no checks to list: no manifest, one that cannot be read, or a source that is off, in the API's words. */
+function noManifest(q: RunQuality): { state: HealthState; what: string; reason: string } {
+  const src = q.sources.find((s) => s.name === "quality");
+  if (!src) return { state: "unknown", what: "Quality checks cannot be read", reason: "The API did not say why the run has no quality manifest." };
+  if (src.status === "not_provided") return { state: "disabled", what: "No quality manifest", reason: src.reason };
+  if (src.status === "unavailable") return { state: "unknown", what: "The quality manifest cannot be read", reason: src.reason };
+  return { state: absent(src) ?? "unknown", what: "Quality checks are not available", reason: src.reason };
+}
+
+function Manifestless({ q }: { q: RunQuality }) {
+  const m = noManifest(q);
+  return <p className="run-gap"><StatusBadge state={m.state} /><span><span className="mon-what">{m.what}</span><span className="mon-why">{m.reason}</span></span></p>;
+}
+
+/** The counts the engine recorded for one check; one it did not record is left out, never shown as 0. */
+function checkCounts(c: QualityCheck): string[] {
+  const out: string[] = [];
+  if (c.rejected_rows !== null) out.push(`${fmt(c.rejected_rows)} rejected`);
+  if (c.accepted_rows !== null) out.push(`${fmt(c.accepted_rows)} accepted`);
+  if (c.rows !== null) out.push(`of ${fmt(c.rows)} rows`);
+  if (c.violations !== null) out.push(`${fmt(c.violations)} violation${c.violations === 1 ? "" : "s"}`);
+  if (c.failures !== null) out.push(`${fmt(c.failures)} failure${c.failures === 1 ? "" : "s"}`);
+  return out;
+}
+
+/** Every check of the run's quality manifest (#1325): failures first, each with its engine, table, column and counts. */
+function QualityChecks({ quality, retry }: { quality: Part<RunQuality>; retry(): void }) {
+  let body;
+  let count: string | undefined;
+  if (quality.status !== "ok") body = <Gap what="Quality checks" part={quality} retry={retry} />;
+  else if (quality.data.checks === null) body = <Manifestless q={quality.data} />;
+  else if (!quality.data.checks.length) {
+    count = "0";
+    body = <p className="run-step">The run's quality manifest lists no check.</p>;
+  } else {
+    const q = quality.data;
+    const checks = [...q.checks!].sort((a, b) => OUTCOME_RANK[a.outcome] - OUTCOME_RANK[b.outcome]);
+    count = String(checks.length);
+    body = (
+      <>
+        {q.complete === false && (
+          <p className="run-gap">
+            <StatusBadge state="unknown" />
+            <span><span className="mon-what">Manifest incomplete</span>
+              <span className="mon-why">The run did not finish its quality manifest, so checks may be missing from this list and its counts may be partial.</span></span>
+          </p>
+        )}
+        <div className="f-scroll run-checks" role="region" aria-label="Quality check results" tabIndex={0}>
+          <table className="f-table mon-table">
+            <thead><tr><th scope="col">Outcome</th><th scope="col">Check · table · column</th><th scope="col">Pipeline</th><th scope="col">Counts</th></tr></thead>
+            <tbody>
+              {checks.map((c, i) => {
+                const counts = checkCounts(c);
+                return (
+                  <tr key={`${c.engine}-${c.check_id}-${i}`}>
+                    <td><span className="run-outcome" data-outcome={c.outcome}>{OUTCOME_WORD[c.outcome]}</span></td>
+                    <th scope="row">
+                      <span className="mon-what f-mono">{c.check_id}</span>
+                      <span className="mon-why f-mono">{c.table ?? "no table"}{c.column ? ` · ${c.column}` : ""}</span>
+                      <span className="mon-why">{engineName(c.engine)} · severity {c.engine_severity}</span>
+                    </th>
+                    <td data-pipeline={c.pipeline_outcome}>{PIPELINE_WORD[c.pipeline_outcome]}</td>
+                    <td>{counts.length ? counts.join(" · ") : <span className="mon-why">No counts recorded</span>}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </>
+    );
+  }
+  return (
+    <Card id="run-checks-h" title="Quality checks" aside={<span className="f-count">{count ?? "—"}</span>}>
+      {body}
+    </Card>
+  );
+}
+
+const reportName = (r: QualityReport) => (r.engine === "dbt" ? "dbt results" : `${engineName(r.engine)} report`);
+
+/** The reports the run retained, each a same-origin download; one the API gives no link for says why, never a dead link. */
+function Reports({ reports }: { reports: QualityReport[] }) {
+  if (!reports.length) return <p className="mon-why">The run retained no Floe or dbt report.</p>;
+  const hidden = reports.filter((r) => r.href === null);
+  return (
+    <div className="run-reports">
+      <ul aria-label="Quality reports">
+        {reports.map((r) => (
+          <li key={r.id}>
+            {r.href ? (
+              <a className="f-btn f-outline run-report" href={r.href} download>
+                {reportName(r)} <span aria-hidden="true">↗</span>
+                <span className="sr-only">{`${r.table ? ` for ${r.table}` : ""} (downloads a JSON file)`}</span>
+              </a>
+            ) : (
+              <span className="run-report-off">{reportName(r)}</span>
+            )}
+            {r.table && <span className="mon-why f-mono">{r.table}</span>}
+          </li>
+        ))}
+      </ul>
+      {hidden.length > 0 && (
+        <p className="mon-why">
+          {hidden.length === reports.length ? (reports.length === 1 ? "This report is" : "These reports are") : `${hidden.map(reportName).join(", ")}:`} not
+          downloadable here. The API gives no link to your role on this stage (a report can quote values the run read), or it holds no key to read reports.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Floe's rows from the failure answer, this run's outcome counts and its reports from get_run_quality. */
+function Quality({ f, quality, retry }: { f?: RunFailure; quality: Part<RunQuality>; retry(): void }) {
   const q = f && source(f, "quality");
   const rows = f?.rows;
-  const entry = quality.status === "ok" && f ? quality.data.pipelines.find((p) => p.job === f.job) : undefined;
-  // As the overview's quality(): a Dagster that could not be read, or a manifest reader that is not there, gives no
-  // counts at all, and says why, rather than reading as a pipeline with no evidence.
-  const missing = quality.status === "ok"
-    ? (["dagster", "quality"] as const).map((name) => quality.data.integrations.find((i) => i.name === name) ?? { name, status: "unavailable" as const, reason: `the API did not say whether ${name} could be read` })
-        .find((i) => absent(i))
-    : undefined;
   let counts;
   if (quality.status !== "ok") counts = <Gap what="Quality counts" part={quality} retry={retry} />;
-  else if (missing) counts = <Gap what="Quality counts" part={{ status: "off", state: absent(missing)!, reason: missing.reason }} />;
-  else if (!entry) counts = <p className="mon-why">The API reports no quality evidence for this pipeline.</p>;
-  else if (entry.run_id !== runId) {
+  else if (!quality.data.counts) counts = <Manifestless q={quality.data} />;
+  else {
+    const c = quality.data.counts;
     counts = (
-      <p className="mon-why">
-        The stage's quality counts are for {entry.run_id ? <>run <Link className="run-link" to={runHref(stage, entry.run_id)}>{short(entry.run_id)}</Link></> : "no run"} of this pipeline, not this one.
-      </p>
-    );
-  } else if (!entry.counts) {
-    counts = <p className="run-gap"><StatusBadge state="unknown" /><span><span className="mon-what">Counts unknown</span><span className="mon-why">{entry.reason}</span></span></p>;
-  } else {
-    const c = entry.counts;
-    counts = (
-      <div className="run-gap">
-        <StatusBadge state={entry.state} />
-        <span>
-          <span className="mon-what">{c.error} error · {c.warn} warn · {c.passed} passed{c.blocking ? ` · ${c.blocking} blocking` : ""}</span>
-          <span className="mon-why">
-            {c.not_run ? `${c.not_run} not run · ` : ""}{c.unknown ? `${c.unknown} unknown · ` : ""}{entry.reason}
-            {entry.complete === false ? " · manifest incomplete" : ""}{entry.observed_at ? ` · ${ago(entry.observed_at, now)}` : ""}
-          </span>
+      <p className="run-counts">
+        <span className="mon-what">
+          <span className="run-outcome" data-outcome={c.error ? "error" : undefined}>{c.error} error</span> ·{" "}
+          <span className="run-outcome" data-outcome={c.warn ? "warn" : undefined}>{c.warn} warn</span> · {c.passed} passed
+          {c.blocking ? ` · ${c.blocking} blocking` : ""}
         </span>
-      </div>
+        <span className="mon-why">
+          {c.not_run ? `${c.not_run} not run · ` : ""}{c.unknown ? `${c.unknown} unknown · ` : ""}
+          {quality.data.complete === false ? "manifest incomplete, so these counts may be partial" : "from the run's quality manifest"}
+        </span>
+      </p>
     );
   }
   return (
@@ -253,6 +450,7 @@ function Quality({ f, quality, stage, runId, now, retry }: { f?: RunFailure; qua
         <Gap what="Row counts" part={{ status: "off", state: absent(q) ?? "unknown", reason: q?.status === "available" ? "No Floe result in the run's quality manifest reports its rows." : q?.reason ?? "The API did not say why." }} />
       ) : null}
       {counts}
+      {quality.status === "ok" && quality.data.checks !== null && <Reports reports={quality.data.reports} />}
     </Card>
   );
 }
@@ -301,7 +499,11 @@ function OpenInDagster({ url, runId }: { url?: string; runId: string }) {
   );
 }
 
-function NextStep({ f, dagster, runId }: { f?: RunFailure; dagster?: string; runId: string }) {
+/** A runbook is shown only when the API names one as a web address (#1325 answers null until the signal catalog has one). */
+const runbookUrl = (r: string | null) => (r && /^https?:\/\//.test(r) ? r : undefined);
+
+function NextStep({ f, dagster, runId, runbook }: { f?: RunFailure; dagster?: string; runId: string; runbook: string | null }) {
+  const book = runbookUrl(runbook);
   const failed = f?.status === "FAILURE";
   return (
     <Card id="run-next-h" title="Next step">
@@ -312,6 +514,11 @@ function NextStep({ f, dagster, runId }: { f?: RunFailure; dagster?: string; run
           : "Run control is not in the portal: the run, its full event log and its re-execution are in Dagster."}
       </p>
       <OpenInDagster url={dagster} runId={runId} />
+      {book && (
+        <a className="f-btn f-outline run-dagster" href={book} target="_blank" rel="noopener noreferrer">
+          Runbook <span aria-hidden="true">↗</span><span className="sr-only"> (opens in a new tab)</span>
+        </a>
+      )}
     </Card>
   );
 }
@@ -358,17 +565,15 @@ export function MonitoringRun({ stage, runId, dagster }: { stage: string; runId:
     const part = <T,>(g: Gate, read: () => Promise<T>): Promise<Part<T>> => g.open
       ? Promise.race([read().then((data): Part<T> => ({ status: "ok", data }), (e): Part<T> => ({ status: "error", error: failure(e) })), lateness])
       : Promise.resolve({ status: "off", state: g.state, reason: g.reason });
-    // get_run_failure and get_run are not monitoring operations, so the capabilities cannot say whether the role may
-    // call them: they are asked, and a 403 is shown in the API's words.
-    const always: Gate = { open: true };
-    const qualityGate = gate(access, "quality", "get_stage_quality_health", "quality counts");
+    // The capabilities list get_run, get_run_failure and get_run_quality (#1324, #1325): a read the role lacks is not
+    // made, and the card says why. A route the capabilities offered that still answers 403 is shown in the API's words.
     let live = true;
     setLoad({ status: "loading" });
     Promise.all([
-      part(always, () => getRunFailure(stage, runId, ctl.signal)),
-      part(always, () => getRun(stage, runId, ctl.signal)),
+      part(runGate(access, "get_run_failure", "this run's failure"), () => getRunFailure(stage, runId, ctl.signal)),
+      part(runGate(access, "get_run", "this run"), () => getRun(stage, runId, ctl.signal)),
       part(gate(access, "dagster", "list_pipeline_health", "pipeline health"), () => getPipelinesHealth(stage, ctl.signal)),
-      part(qualityGate.open ? gate(access, "dagster", "get_stage_quality_health", "quality counts") : qualityGate, () => getQualityHealth(stage, ctl.signal)),
+      part(runGate(access, "get_run_quality", "this run's quality checks"), () => getRunQuality(stage, runId, ctl.signal)),
       part(gate(access, "alerts", "list_alert_incidents", "alert incidents"), () => getAlertIncidents(stage, ctl.signal)),
     ]).then(([failureLoad, run, pipes, quality, alertsLoad]) => {
       clearTimeout(deadline);
@@ -390,14 +595,18 @@ export function MonitoringRun({ stage, runId, dagster }: { stage: string; runId:
   const read = snap ? pipes(snap.pipes, now) : undefined;
   const shown = read?.ok ? read.pipelines.find((p) => p.job === job)?.shown : undefined;
   const incident = snap?.alerts.status === "ok" && job ? snap.alerts.data.incidents?.find((i) => i.job === job && (i.domain || i.product)) : undefined;
-  const domain = pipeline?.domain ?? incident?.domain ?? null;
-  const product = pipeline?.product ?? incident?.product ?? null;
+  // The failure answer names the run's own domain and product (#1327); the pipelines answer, then an incident of the
+  // job, stand in only where it has none (an older API, or a failure that could not be read).
+  const domain = f?.domain ?? pipeline?.domain ?? incident?.domain ?? null;
+  const product = f?.product ?? pipeline?.product ?? incident?.product ?? null;
   const scope = domain && product ? `${domain} · ${product}` : product ?? domain;
   const status = f?.status ?? run?.status;
   const state: HealthState = status ? runState(status) : "unknown";
   const firstStep = f?.steps?.[0]?.step;
   // Why the scope is not known, in words: the API's, or that the job declares none.
-  const scopeWhy = !snap ? "" : snap.pipes.status === "off" ? snap.pipes.reason
+  // A failure answer from an API with #1327 that names none is the job's own word; an older one says nothing either way.
+  const scopeWhy = !snap ? "" : f && access?.log_retention_days !== undefined ? "the job declares no data product"
+    : snap.pipes.status === "off" ? snap.pipes.reason
     : snap.pipes.status === "error" ? snap.pipes.error.message
     : pipeline ? "the job declares no data product" : "the pipelines answer does not list this job";
 
@@ -407,8 +616,10 @@ export function MonitoringRun({ stage, runId, dagster }: { stage: string; runId:
   else if (!access) {
     body = <Problem state="disabled" title={`${STAGE} monitoring is not available`} error={new ApiError(403, `Your role has no monitoring access on stage ${STAGE}, so this run is not read.`)} />;
   } else if (!snap) body = <p className="mon-loading" role="status">Reading run {short(runId)}…</p>;
-  else if (snap.failure.status !== "ok") {
-    const e = snap.failure.status === "error" ? snap.failure.error : new ApiError(0, "");
+  else if (snap.failure.status === "off") {
+    body = <Problem state={snap.failure.state} title="This run's failure is not available" error={new ApiError(403, snap.failure.reason)} />;
+  } else if (snap.failure.status !== "ok") {
+    const e = snap.failure.error;
     body = (
       <Problem
         state={denied(e) ? "disabled" : "unknown"}
@@ -423,19 +634,20 @@ export function MonitoringRun({ stage, runId, dagster }: { stage: string; runId:
       <div className="run-cols">
         <div className="run-col">
           <WhatFailed f={fd} />
-          <RunLogs access={access} stage={stage} runId={runId} run={snap.run} />
+          <QualityChecks quality={snap.quality} retry={retry} />
+          <RunLogs access={access} stage={stage} runId={runId} />
         </div>
         <div className="run-col">
-          <Quality f={fd} quality={snap.quality} stage={stage} runId={runId} now={now} retry={retry} />
+          <Quality f={fd} quality={snap.quality} retry={retry} />
           <Incidents a={snap.alerts} runId={runId} job={fd.job} now={now} retry={retry} />
-          <NextStep f={fd} dagster={dagster} runId={runId} />
+          <NextStep f={fd} dagster={dagster} runId={runId} runbook={snap.quality.status === "ok" ? snap.quality.data.runbook : null} />
         </div>
       </div>
     );
   }
 
   // Only Dagster's own start time is a start: a run with none has not started, or its start is unknown. Its creation
-  // time picks the log archive's day (runDay) and is never shown, or used for a duration, as a start.
+  // time is never shown, or used for a duration, as a start.
   const started = run?.started_at ?? undefined;
   const notYet = run && run.started_at === null && ["QUEUED", "NOT_STARTED", "STARTING"].includes(run.status);
   return (

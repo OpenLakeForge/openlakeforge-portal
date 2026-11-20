@@ -1,7 +1,7 @@
 // The Platform API contract for Monitoring (openlakeforge #1127, #1259, ADR 0021): GET /api/v1/monitoring-capabilities,
 // GET /api/v1/stages/{stage}/health and GET /api/v1/stages/{stage}/health/pipelines, and for one run (#1271)
 // GET /api/v1/stages/{stage}/runs/{run_id}, GET /api/v1/stages/{stage}/runs/{run_id}/failure and the run's lines from
-// GET /api/v1/stages/{stage}/logs. Same-origin and
+// GET /api/v1/stages/{stage}/logs; a run's quality and log window (#1325, #1326) beside them. Same-origin and
 // cookie-authenticated, read-only. Types follow the committed OpenAPI document (docs/schema/platform-api.openapi.json:
 // MonitoringCapabilities, StageHealth, ServiceHealth, IntegrationStatus, PipelinesHealth, PipelineHealth, HealthSignal, Run,
 // RunFailure, FailedStep, RunRows, Logs, LogLine, AlertIncident).
@@ -105,12 +105,21 @@ export type PipelinesHealth = {
 /** The stage-scoped monitoring routes (`MONITORING_OPERATIONS` in platform-api monitoring.py). */
 export type MonitoringOperation =
   | "get_stage_health" | "get_stage_service_health" | "list_pipeline_health" | "get_stage_quality_health"
-  | "list_logs" | "list_stage_metrics" | "get_stage_metric" | "list_alert_incidents";
+  | "list_logs" | "list_stage_metrics" | "get_stage_metric" | "list_alert_incidents"
+  // One run's reads (#1324, #1325). `list_run_logs` and `get_run_quality_report` are not listed: they share `list_logs`'s row.
+  | "get_run" | "get_run_failure" | "get_run_quality";
 export type SourceName = "dagster" | "services" | "quality" | "quality-sync" | "logs" | "metrics" | "alerts";
 /** Whether a stage is configured with one source. Configuration only: `available` is not an answer, let alone a healthy one. */
 export type MonitoringCapability = { name: SourceName; status: Integration["status"]; reason: string };
 /** A stage the caller may monitor: the routes its role may call there, and the sources the stage has. */
-export type MonitoringStage = { stage: string; operations: string[]; capabilities: MonitoringCapability[] };
+export type MonitoringStage = {
+  stage: string;
+  operations: string[];
+  capabilities: MonitoringCapability[];
+  /** How many days the stage's log archive keeps lines (#1328); null with no archive or no retention applied. Absent
+   * (undefined) only from an API before #1324/#1328, which did not list `get_run` and `get_run_failure` either. */
+  log_retention_days?: number | null;
+};
 export type MonitoringCapabilities = { stages: MonitoringStage[] };
 
 function explain(status: number, stage: string, detail?: string): string {
@@ -208,7 +217,8 @@ const isService = (v: unknown) =>
   && STATES.has(v.state) && isText(v.reason) && isTextOrNull(v.observed_at) && isTextOrNull(v.expires_at) && isTextOrNull(v.last_success_at);
 const isMonitoringStage = (v: unknown) =>
   isObject(v) && isText(v.stage) && Array.isArray(v.operations) && v.operations.every(isText)
-  && Array.isArray(v.capabilities) && v.capabilities.every(isIntegration);
+  && Array.isArray(v.capabilities) && v.capabilities.every(isIntegration)
+  && isOptional((d) => d === null || (Number.isInteger(d) && (d as number) >= 0))(v.log_retention_days);
 
 export function isMonitoringCapabilities(body: unknown): body is MonitoringCapabilities {
   return isObject(body) && Array.isArray(body.stages) && body.stages.every(isMonitoringStage);
@@ -361,6 +371,9 @@ export type RunRows = { rejected: number; accepted: number; complete: boolean };
 export type RunFailure = {
   run_id: string;
   job: string;
+  /** The job's domain and data product from its definition's tags (#1327); null for a job of none, or an older API. */
+  domain: string | null;
+  product: string | null;
   status: string;
   steps: FailedStep[] | null;
   run_message: string | null;
@@ -378,19 +391,29 @@ export type LogLine = {
   error: string | null;
   component?: string | null;
   run_id?: string | null;
+  /** The line's own event time and level, as the collector parsed them (#1326); null when it recorded none, never guessed. */
+  timestamp?: string | null;
+  level?: LogLevel | null;
 };
 export type Logs = { lines: LogLine[]; truncated: boolean };
-export type LogSeverity = "warning" | "error";
+/** A line's level, and the floor a `severity` filter sets (#1326). */
+export type LogLevel = "debug" | "info" | "warning" | "error" | "critical";
+export type LogSeverity = LogLevel;
 
 const isFailedStep = (v: unknown) =>
   isObject(v) && isText(v.step) && isTextOrNull(v.error_class) && isText(v.message) && typeof v.message_truncated === "boolean";
 const isRows = (v: unknown) =>
   isObject(v) && Number.isInteger(v.rejected) && Number.isInteger(v.accepted) && typeof v.complete === "boolean";
+const LEVELS = new Set<unknown>(["debug", "info", "warning", "error", "critical"]);
 const isLogLine = (v: unknown) =>
-  isObject(v) && isText(v.archived_at) && isText(v.namespace) && isText(v.pod) && isText(v.container) && isTextOrNull(v.line) && isTextOrNull(v.error);
+  isObject(v) && isText(v.archived_at) && isText(v.namespace) && isText(v.pod) && isText(v.container) && isTextOrNull(v.line) && isTextOrNull(v.error)
+  && isOptional(isTextOrNull)(v.timestamp) && isOptional((l) => l === null || LEVELS.has(l))(v.level);
+/** `timestamp` and `level` are additive (#1326): an API from before them answers none, which is null. */
+const withLevel = (l: LogLine): LogLine => ({ ...l, timestamp: l.timestamp ?? null, level: l.level ?? null });
 
 export function isRunFailure(body: unknown): body is RunFailure {
   return isObject(body) && isText(body.run_id) && isText(body.job) && isText(body.status)
+    && isOptional(isTextOrNull)(body.domain) && isOptional(isTextOrNull)(body.product)
     && (body.steps === null || (Array.isArray(body.steps) && body.steps.every(isFailedStep)))
     && isTextOrNull(body.run_message) && typeof body.steps_truncated === "boolean"
     && (body.rows === null || isRows(body.rows))
@@ -411,7 +434,8 @@ const runPath = (stage: string, runId: string) => `/api/v1/stages/${encodeURICom
 export async function getRunFailure(stage: string, runId: string, signal?: AbortSignal): Promise<RunFailure> {
   const body = await get(`${runPath(stage, runId)}/failure`, stage, signal, `Run ${runId} is not known on stage ${stage.toUpperCase()}.`);
   if (!isRunFailure(body)) throw new ApiError(200, explain(500, stage));
-  return body;
+  // `domain` and `product` are additive (#1327): an API from before them answers none, which is null.
+  return { ...body, domain: body.domain ?? null, product: body.product ?? null };
 }
 
 /** The run as Dagster reports it: its status and times. */
@@ -419,6 +443,109 @@ export async function getRun(stage: string, runId: string, signal?: AbortSignal)
   const body = await get(runPath(stage, runId), stage, signal, `Run ${runId} is not known on stage ${stage.toUpperCase()}.`);
   if (!isRun(body)) throw new ApiError(200, explain(500, stage));
   return body;
+}
+
+// ── One run's quality checks and reports (#1325) and the lines of its window (#1326) ──────────────────────────
+// GET /api/v1/stages/{stage}/runs/{run_id}/quality (RunQuality, QualityCheck, QualityReport) and
+// GET /api/v1/stages/{stage}/runs/{run_id}/logs (RunLogs). Both read what the run left; nothing is re-run or inferred.
+
+export type QualityOutcome = "passed" | "warn" | "error" | "not_run" | "unknown";
+/** What the pipeline did with the check's result: a `blocked` error is the blocking one. */
+export type PipelineOutcome = "continued" | "quarantined" | "blocked" | "unknown";
+/** One check result of the run's quality manifest, as the engine adapter recorded it: aggregates only, never a row.
+ * A count the engine did not record is null, never 0. */
+export type QualityCheck = {
+  engine: string;
+  check_id: string;
+  table: string | null;
+  column: string | null;
+  /** The engine's own word for the check's severity (dbt `warn`/`error`, Floe's policy), shown as given. */
+  engine_severity: string;
+  outcome: QualityOutcome;
+  pipeline_outcome: PipelineOutcome;
+  observed_at: string;
+  rows: number | null;
+  accepted_rows: number | null;
+  rejected_rows: number | null;
+  violations: number | null;
+  failures: number | null;
+  report_id: string | null;
+};
+/** A report the run retained: a Floe entity's run report, or dbt's run results (`table: null`). `href` is a same-origin
+ * download, null when the caller may not download it or the API holds no key to read it. */
+export type QualityReport = { id: string; engine: string; table: string | null; href: string | null };
+/** `checks: null` and `counts: null` are "no usable manifest" (`sources` says why), never no checks or passes.
+ * `complete: false` is a manifest the run did not finish. `runbook` stays null until the signal catalog names one. */
+export type RunQuality = {
+  run_id: string;
+  job: string;
+  status: string;
+  complete: boolean | null;
+  counts: QualityCounts | null;
+  checks: QualityCheck[] | null;
+  reports: QualityReport[];
+  runbook: string | null;
+  sources: Integration[];
+};
+/** The archived lines of the run's window, `since` to `until`, oldest first. `truncated` with `next`: pass `next` back
+ * as `after`, with the same filters, to read on. */
+export type RunLogs = { lines: LogLine[]; truncated: boolean; since: string; until: string; next: string | null };
+export type RunLogsQuery = { severity?: LogSeverity; matchRun?: boolean; after?: string; limit?: number };
+
+const OUTCOMES = new Set<unknown>(["passed", "warn", "error", "not_run", "unknown"]);
+const PIPELINE_OUTCOMES = new Set<unknown>(["continued", "quarantined", "blocked", "unknown"]);
+const isCount = (v: unknown) => v === null || (Number.isInteger(v) && (v as number) >= 0);
+/** Only a path on this origin is a download link: the report streams through the API, never from elsewhere. */
+const isSameOriginPath = (v: unknown) => typeof v === "string" && v.startsWith("/") && !v.startsWith("//") && !v.includes("\\");
+const isQualityCheck = (v: unknown) =>
+  isObject(v) && isText(v.engine) && isText(v.check_id) && isTextOrNull(v.table) && isTextOrNull(v.column) && isText(v.engine_severity)
+  && OUTCOMES.has(v.outcome) && PIPELINE_OUTCOMES.has(v.pipeline_outcome) && isText(v.observed_at)
+  && isCount(v.rows) && isCount(v.accepted_rows) && isCount(v.rejected_rows) && isCount(v.violations) && isCount(v.failures)
+  && isTextOrNull(v.report_id);
+const isQualityReport = (v: unknown) =>
+  isObject(v) && isText(v.id) && isText(v.engine) && isTextOrNull(v.table) && (v.href === null || isSameOriginPath(v.href));
+
+export function isRunQuality(body: unknown): body is RunQuality {
+  return isObject(body) && isText(body.run_id) && isText(body.job) && isText(body.status)
+    && (body.complete === null || typeof body.complete === "boolean") && isCountsOrNull(body.counts)
+    && (body.checks === null || (Array.isArray(body.checks) && body.checks.every(isQualityCheck)))
+    && Array.isArray(body.reports) && body.reports.every(isQualityReport)
+    && isTextOrNull(body.runbook) && Array.isArray(body.sources) && body.sources.every(isIntegration);
+}
+
+export function isRunLogs(body: unknown): body is RunLogs {
+  return isLogs(body) && isText((body as Json).since) && isText((body as Json).until) && isOptional(isTextOrNull)((body as Json).next);
+}
+
+/** Every check of the run's quality manifest, its outcome counts and the reports it retained. */
+export async function getRunQuality(stage: string, runId: string, signal?: AbortSignal): Promise<RunQuality> {
+  const body = await get(`${runPath(stage, runId)}/quality`, stage, signal, `Run ${runId} is not known on stage ${stage.toUpperCase()}.`);
+  if (!isRunQuality(body)) throw new ApiError(200, explain(500, stage));
+  return body;
+}
+
+/** At most `limit` archived lines of the run's start-to-end window, across UTC days, from `severity` up. */
+export async function listRunLogs(stage: string, runId: string, opts: RunLogsQuery = {}, signal?: AbortSignal): Promise<RunLogs> {
+  const q = new URLSearchParams({ limit: String(opts.limit ?? 200) });
+  if (opts.severity) q.set("severity", opts.severity);
+  if (opts.matchRun) q.set("match_run", "true");
+  if (opts.after) q.set("after", opts.after);
+  const body = await get(`${runPath(stage, runId)}/logs?${q}`, stage, signal, `Run ${runId} is not known on stage ${stage.toUpperCase()}.`);
+  if (!isRunLogs(body)) throw new ApiError(200, explain(500, stage));
+  return { ...body, next: body.next ?? null, lines: body.lines.map((l) => ({ ...l, timestamp: l.timestamp ?? null, level: l.level ?? null })) };
+}
+
+/** Whether the run screen may call one of a run's own reads. An API from before #1324 lists none of them (it sends no
+ * `log_retention_days` either): there `get_run` and `get_run_failure` are asked and a 403 is shown in the API's words,
+ * and `get_run_quality` does not exist. */
+export function runGate(access: MonitoringStage, op: "get_run" | "get_run_failure" | "get_run_quality", what: string): Gate {
+  const older = access.log_retention_days === undefined;
+  if (op === "get_run_quality") {
+    if (older) return { open: false, state: "unknown", reason: "This Platform API does not serve a run's quality checks yet." };
+    return gate(access, "quality", op, what);
+  }
+  if (older || access.operations.includes(op)) return { open: true };
+  return { open: false, state: "disabled", reason: `Your role may not read ${what} on stage ${access.stage.toUpperCase()}.` };
 }
 
 /** At most `limit` archived lines of one run on one UTC day (`YYYY-MM-DD`), oldest first, from `severity` up. */
