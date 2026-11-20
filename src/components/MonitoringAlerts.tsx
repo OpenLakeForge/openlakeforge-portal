@@ -1,17 +1,18 @@
-// Monitoring · alerts: the Alerts card and the open incidents table, from GET /api/v1/stages/{stage}/alerts/incidents.
+// Monitoring · alerts: the Alerts card and how an incident's notification reads, from GET /api/v1/stages/{stage}/alerts/incidents.
+// The open incidents themselves are listed with what needs attention (MonitoringActOn).
 // Read-only: there is no acknowledgement (ADR 0023, decision 3). `incidents: null` is unknown, never "none open", and a
 // stale evaluator's list is shown as stale, never as current.
 
 import { ApiError, worst, type AlertDelivery, type HealthState, type StageAlertIncidents } from "../lib/health-api";
 import { ago } from "./Monitoring";
-import { RunLink, when, type Part } from "./MonitoringPipelines";
+import { type Part } from "./MonitoringPipelines";
 import { StatusBadge } from "./StatusBadge";
 
 export type Alerts =
   | { ok: true; data: StageAlertIncidents & { incidents: NonNullable<StageAlertIncidents["incidents"]> }; state: HealthState; stale: boolean }
   | { ok: false; state: HealthState; reason: string; error?: ApiError };
 
-const denied = (e: ApiError) => e.status === 401 || e.status === 403 || e.status === 404;
+export const denied = (e: ApiError) => e.status === 401 || e.status === 403 || e.status === 404;
 
 export function alerts(load: Part<StageAlertIncidents>): Alerts {
   if (load.status === "error") return { ok: false, state: denied(load.error) ? "disabled" : "unknown", reason: load.error.message, error: load.error };
@@ -50,70 +51,6 @@ export function AlertsCard({ a, now }: { a: Alerts; now: number }) {
       <p className="mon-note">
         {!a.ok ? a.reason : a.stale ? `Stale: ${a.data.state.reason}` : `Evaluated ${ago(a.data.state.evaluated_at, now)}`}
       </p>
-    </section>
-  );
-}
-
-export function IncidentsTable({ a, now, retry, stage }: { a: Alerts; now: number; retry?(): void; stage: string }) {
-  const rows = a.ok ? a.data.incidents : [];
-  return (
-    <section className="q-card mon-list" aria-labelledby="mon-incidents-h">
-      <div className="f-card-head">
-        <h2 id="mon-incidents-h">Open incidents</h2>
-        <span className="f-count">{a.ok ? rows.length : "—"}</span>
-      </div>
-      {a.ok && a.stale && (
-        <p className="mon-stale" role="note">
-          <StatusBadge state="unknown" /> Stale: {a.data.state.reason}. This list may be out of date.
-        </p>
-      )}
-      <div className="f-scroll" role="region" aria-label="Open alert incidents" tabIndex={0}>
-        <table className="f-table mon-table mon-incidents">
-          <thead><tr><th scope="col">Severity</th><th scope="col">Incident</th><th scope="col">Scope</th><th scope="col">Opened</th><th scope="col">Notification</th></tr></thead>
-          <tbody>
-            {rows.map((i) => (
-              <tr key={i.id}>
-                <td><StatusBadge state={i.severity} /></td>
-                <th scope="row">
-                  <span className="mon-what">{i.summary}</span><span className="mon-why f-mono">{i.condition}</span>
-                  {i.run_ids.length > 0 && (
-                    <span className="mon-why run-ids">
-                      {i.run_ids.slice(-3).map((r, n) => <span key={r}>{n ? " · " : ""}<RunLink stage={stage} run={r} /></span>)}
-                      {i.run_ids.length > 3 ? ` · +${i.run_ids.length - 3} earlier` : ""}
-                    </span>
-                  )}
-                </th>
-                <td className="f-mono mon-job">
-                  {[i.domain, i.product, i.table].filter(Boolean).join(" · ") || i.component || "—"}
-                  {i.job && !i.product && <span className="mon-why">job {i.job}</span>}
-                </td>
-                <td className="f-mono">{when(i.opened_at, now)}<span className="mon-why">last seen {ago(i.last_seen_at, now)}</span></td>
-                <td>
-                  <span className="mon-delivery" data-status={i.delivery.status}>{DELIVERY[i.delivery.status]}</span>
-                  <span className="mon-why">{deliveryLine(i.delivery)}</span>
-                </td>
-              </tr>
-            ))}
-            {a.ok && rows.length === 0 && (
-              <tr><th scope="row" colSpan={5} className="mon-clear">
-                {a.stale ? "No open incident in the last evaluation, but it is stale, so none can be ruled out." : "No open incidents."}
-              </th></tr>
-            )}
-            {!a.ok && (
-              <tr>
-                <td><StatusBadge state={a.state} /></td>
-                <th scope="row" colSpan={4}>
-                  <span className="mon-what">{a.state === "disabled" ? "Alert incidents are not available" : "Incidents cannot be read"}</span>
-                  <span className="mon-why f-mono">{a.reason}</span>
-                  {a.error && !denied(a.error) && retry && (
-                    <span className="mon-why"><button type="button" className="f-btn f-outline" onClick={retry}><span aria-hidden="true">↻</span> Retry</button></span>
-                  )}
-                </th>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
     </section>
   );
 }

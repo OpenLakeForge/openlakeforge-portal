@@ -74,12 +74,17 @@ The Monitoring page (`/monitoring`) first reads `GET /api/v1/monitoring-capabili
 listed there, and each panel calls its route only when the role has that operation and the stage has its source.
 It then reads `GET /api/v1/stages/{stage}/health` and
 `GET /api/v1/stages/{stage}/health/pipelines` from the same mock, together, within one 10 s deadline. Service rows
-are grouped by service (the worst row decides), and the banner shows the log archive's last durable write and the
-last quality publication, or "unknown" when the API has none. `prod` needs
+are grouped by service (the worst row decides). When every service is healthy, Services is one line ("6 of 6 healthy ·
+log archive last durable write 12 min ago · …", "unknown" when the API has no time) with "Show all"; otherwise it lists
+the services that are not healthy. The stage switch is a segmented DEV | PROD control (a list from four stages on),
+and the four summary cards hold counts only, four across or two by two. `prod` needs
 attention: `sales_orders` failed with a failed blocking quality check, `crm_accounts` missed its run,
 `finance_ledger`'s schedule is stopped and its last run warned on quality, `web_events` is healthy, the log spool is
-past its limit. "Needs attention" lists each warning or critical pipeline signal in
-the API's words; the Pipelines table lists every job, with its failed runs in the API's 24 h window
+past its limit. "Needs attention" is the one list to act on: each warning or critical pipeline signal in the API's
+words and each open alert incident, each once (an incident about a listed signal joins its row), with whether a
+notification went out and how it was delivered. Pipeline names link to their runs
+(`/monitoring/<stage>/runs?job=<job>`) and a pipeline's "N failed in last 24h" to those failed runs
+(`&status=failed&window=24h`). The Pipelines table lists every job, with its failed runs in the API's 24 h window
 (openlakeforge#1319): `crm_accounts`' count could not be read, so it reads Unknown (never 0), and `web_events`' run read
 stopped short of the window, so its count says where it starts. `dev` reads unknown because Dagster cannot be read. No backend
 state is ever shown green: an unreachable API, an expired probe or pipeline signal, or a missing source reads Unknown
@@ -101,9 +106,10 @@ the mock reads it from the request's Referer:
 | `empty` | No open incident in a current evaluation, and no pipeline with quality evidence yet. |
 | `admin` | A platform admin: PROD's log archive and quality reports are readable too, so a failed run shows its lines and report links. |
 | `slim` | Metrics are off (the Slim profile): Resource metrics reads Disabled, and Metrics draws only the pipeline charts. |
+| `healthy` | Every PROD service probe answers healthy: Services folds to one line, with "Show all 6 services". |
 
 Without `mock=`, PROD's Data quality card sums the known counts (`crm_accounts` has none: "Counts unknown", never
-zeros; `finance_ledger`'s manifest is incomplete), and Open incidents lists one incident per delivery status
+zeros; `finance_ledger`'s manifest is incomplete), and Needs attention shows one incident per delivery status
 (delivered, pending, undeliverable, unrouted, unknown). DEV's alert evaluator is stale and DEV has no quality reader.
 
 Each run named on the page (a Needs attention row, a pipeline's latest run, a quality row, an incident) links to its
