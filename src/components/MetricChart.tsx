@@ -16,6 +16,9 @@ export type LineRule = {
   single: string;
   /** A fixed order of names (`succeeded`, `failed`…), so a name keeps its colour whatever else is drawn. */
   order?: string[];
+  /** How lines merged or folded into one combine per step: `sum` for resources and counts (the default), `max` for a
+   *  series that is already a per-step maximum, such as the longest run, where a sum would be a run nobody took. */
+  combine?: "sum" | "max";
   /** Names dropped while every value is 0 (a status no run had). */
   hideZero?: string[];
 };
@@ -24,24 +27,26 @@ export type LineRule = {
 export const MAX_LINES = 5;
 
 const sum = (xs: (number | null)[]) => (xs.every((x) => x === null) ? null : xs.reduce<number>((a, x) => a + (x ?? 0), 0));
+const max = (xs: (number | null)[]) => (xs.every((x) => x === null) ? null : xs.reduce<number>((a, x) => (x !== null && x > a ? x : a), -Infinity));
 const peak = (l: Shown) => l.values.reduce<number>((a, v) => (v !== null && v > a ? v : a), -Infinity);
 
-/** The API's lines as drawn: merged by `rule.by` (summed per step), ordered, and folded past MAX_LINES. */
+/** The API's lines as drawn: merged by `rule.by` (combined per step by `rule.combine`), ordered, and folded past MAX_LINES. */
 export function shape(lines: MetricLine[], rule: LineRule): Shape {
   const times = (lines[0]?.points ?? []).map(([t]) => Date.parse(t));
+  const combine = rule.combine === "max" ? max : sum;
   const merged = new Map<string, (number | null)[][]>();
   for (const l of lines) {
     const name = rule.by ? l.labels[rule.by] ?? "unlabelled" : rule.single;
     merged.set(name, [...(merged.get(name) ?? []), l.points.map(([, v]) => v)]);
   }
-  let shown: Shown[] = [...merged].map(([name, rows]) => ({ key: name, name, values: times.map((_, i) => sum(rows.map((r) => r[i] ?? null))) }));
+  let shown: Shown[] = [...merged].map(([name, rows]) => ({ key: name, name, values: times.map((_, i) => combine(rows.map((r) => r[i] ?? null))) }));
   shown = shown.filter((l) => !(rule.hideZero?.includes(l.name) && l.values.every((v) => v === 0 || v === null)));
   if (shown.length > MAX_LINES) {
     const ranked = [...shown].sort((a, b) => peak(b) - peak(a));
     const kept = ranked.slice(0, MAX_LINES - 1);
     const rest = ranked.slice(MAX_LINES - 1);
     shown = [...kept.sort(byName(rule)), {
-      key: "__other", name: `${rest.length} other ${rule.by ?? "line"}s`, values: times.map((_, i) => sum(rest.map((l) => l.values[i]))),
+      key: "__other", name: `${rest.length} other ${rule.by ?? "line"}s`, values: times.map((_, i) => combine(rest.map((l) => l.values[i]))),
     }];
   } else shown.sort(byName(rule));
   return { times, lines: shown };

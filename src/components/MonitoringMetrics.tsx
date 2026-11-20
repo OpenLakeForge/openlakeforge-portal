@@ -46,7 +46,7 @@ export const SECTIONS: Section[] = [
         series: "pipeline_runs", title: "Pipeline runs", what: "Runs created in each step, by outcome", perStep: true,
         rule: { by: "status", single: "Runs", order: ["succeeded", "failed", "canceled", "running"], hideZero: ["canceled", "running"] },
       },
-      { series: "pipeline_run_duration_seconds", title: "Run duration", what: "The longest finished run in each step, per pipeline", rule: { by: "job", single: "Duration" } },
+      { series: "pipeline_run_duration_seconds", title: "Run duration", what: "The longest finished run in each step, per pipeline", rule: { by: "job", single: "Duration", combine: "max" } },
     ],
   },
   {

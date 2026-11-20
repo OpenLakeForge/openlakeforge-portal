@@ -77,6 +77,13 @@ describe("chart helpers", () => {
     expect(s.lines.at(-1)!.values).toEqual([0 + 1 + 2, 1 + 2 + 3]);
   });
 
+  it("folds a per-step maximum such as the longest run by its maximum, never a sum nobody ran", () => {
+    const lines = ["a", "b", "c", "d", "e", "f"].map((j, i) => lineOf({ job: j }, [60 + i, i === 0 ? null : 30]));
+    const s = shape(lines, { by: "job", single: "Duration", combine: "max" });
+    expect(s.lines.at(-1)!.name).toBe("2 other jobs");
+    expect(s.lines.at(-1)!.values).toEqual([61, 30]);
+  });
+
   it("merges lines by label, keeps gaps as null, and orders statuses so colours follow the name", () => {
     const s = shape([
       lineOf({ job: "a", status: "failed" }, [1, null]), lineOf({ job: "b", status: "failed" }, [2, null]),
