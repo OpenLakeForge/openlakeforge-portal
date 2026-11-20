@@ -157,7 +157,8 @@
 .mc-segments label + label span { border-left: 1px solid var(--olf-hairline); }
 .mc-segments input:checked + span { background: var(--olf-bg-accent-subtle); color: var(--olf-text-primary); box-shadow: inset 0 -2px 0 var(--olf-accent); }
 .mc-segments input:focus-visible + span { outline: 2px solid var(--olf-highlight); outline-offset: -2px; }
-.mc-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--olf-space-3); }
+.mc-actions { display: flex; align-items: stretch; flex-wrap: wrap; gap: var(--olf-space-3); }
+.mc-actions .f-btn { height: auto; border-radius: var(--olf-radius-lg); } /* Refresh matches the read-time card's height and corners */
 
 .mc-section + .mc-section { margin-top: var(--olf-space-6); }
 .mc-section-h { margin: var(--olf-space-5) 0 var(--olf-space-3); font: 600 1.125rem / 1.3 var(--olf-font-heading); }
