@@ -710,7 +710,9 @@ function reportId(uri: string): string {
 /** RunQuality as get_run_quality answers it: the manifest's checks, counts and reports, or null without one. */
 function runQuality(scenario: Scenario, stage: string, run: MockRun) {
   const quality = manifestSource(scenario, run);
-  const base = { run_id: run.run_id, job: run.job_name, status: run.status, runbook: null, sources: [quality] };
+  // A failed run names the signal catalog's runbook for a failed run (runbook_base_url + "#failed_run"); others none.
+  const runbook = run.status === "FAILURE" ? "http://docs.olf.localhost/runbooks/alerting#failed_run" : null;
+  const base = { run_id: run.run_id, job: run.job_name, status: run.status, runbook, sources: [quality] };
   if (quality.status !== "available") return { ...base, complete: null, counts: null, checks: null, reports: [] };
   const at = new Date(((run.ended_at ?? run.started_at ?? run.created_at) as number) * 1000).toISOString();
   type C = { rows?: number; accepted?: number; rejected?: number; violations?: number; failures?: number };

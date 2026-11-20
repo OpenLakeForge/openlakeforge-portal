@@ -30,14 +30,41 @@ test("Needs attention opens the failed run with the keyboard; the screen names t
   await expect(card(page, "Logs")).toContainText("Your role may not read logs on stage PROD.");
   await expect(card(page, "Logs")).toContainText("Kept 30 days");
   // The run's checks are the data-engineer's to read; its reports are not theirs to download on PROD.
+  // Only the checks that did not pass are listed; the 14 passes wait behind their count.
   const checks = page.getByRole("region", { name: "Quality check results" });
-  await expect(checks.getByRole("row")).toHaveCount(18);
+  await expect(checks.getByRole("row")).toHaveCount(4);
   await expect(checks.getByRole("row").nth(1)).toContainText("ERROR");
   await expect(checks.getByRole("row", { name: /cast\.ordered_at/ })).toContainText("WARN");
   await expect(checks.getByRole("row", { name: /schema\.amount_type/ })).toContainText("Blocked the run");
+  await expect(checks).not.toContainText("PASS");
+  await expect(card(page, "Quality checks")).toContainText("3 of 17 did not pass");
+  await expect(page.getByRole("region", { name: "Passed quality checks" })).toBeHidden();
+  await card(page, "Quality checks").getByText("14 passed").click();
+  await expect(page.getByRole("region", { name: "Passed quality checks" }).getByRole("row")).toHaveCount(15);
   await expect(card(page, "Data quality")).toContainText("2 error · 1 warn · 14 passed · 1 blocking");
   await expect(page.getByRole("list", { name: "Quality reports" }).getByRole("link")).toHaveCount(0);
-  await expect(card(page, "Data quality")).toContainText("These reports are not downloadable here");
+  await expect(card(page, "What failed")).toContainText("These reports are not downloadable here");
+});
+
+test("the failure summary comes first and carries the logs, reports, runbook, Dagster and the job's runs; no Next step", async ({ page }) => {
+  await page.goto(`/monitoring/prod/runs/${FAILED}?mock=admin`);
+  const what = card(page, "What failed");
+  await expect(what).toContainText("SchemaMismatchError");
+  await expect(page.locator(".run-card h2").first()).toHaveText("What failed");
+  await expect(page.locator(".run-card h2").nth(1)).toHaveText("Logs");
+  await expect(card(page, "Next step")).toHaveCount(0);
+  await expect(what.getByText("When", { exact: true })).toBeVisible();
+  await expect(what).toContainText(/Ended .*, after 1 min 5\d s/);
+  await expect(what.getByRole("link", { name: /Runbook/ })).toHaveAttribute("href", "http://docs.olf.localhost/runbooks/alerting#failed_run");
+  await expect(what.getByRole("link", { name: /Open in Dagster/ })).toHaveAttribute("href", `http://dagster-prod.olf.localhost/runs/${FAILED}`);
+  await expect(page.getByRole("link", { name: /Open in Dagster/ })).toHaveCount(1);
+  await expect(what.getByRole("link", { name: "All runs of sales_orders" })).toHaveAttribute("href", "/monitoring/prod/runs?job=sales_orders");
+  await expect(what.getByRole("list", { name: "Quality reports" }).getByRole("link")).toHaveCount(2);
+  await what.getByRole("link", { name: /^Logs/ }).click();
+  await expect(page).toHaveURL(/#run-logs-h$/);
+  // The logs sit at full width, as wide as the summary above them.
+  const [a, b] = await Promise.all([what.boundingBox(), card(page, "Logs").boundingBox()]);
+  expect(Math.round(b!.width)).toBe(Math.round(a!.width));
 });
 
 test("with download rights the run's reports are same-origin downloads", async ({ page }) => {
@@ -71,14 +98,18 @@ test("a run that crossed midnight shows both UTC days, an incomplete manifest, a
   await expect(card(page, "Data quality")).toContainText("0 error · 2 warn · 8 passed");
   const logs = card(page, "Logs");
   await expect(logs).toContainText("crosses midnight");
+  // Opened at warning and above: the run's 8 warnings, then all 308 lines on request.
+  await expect(logs).toContainText("8 lines");
+  await logs.getByRole("button", { name: "Show all levels" }).click();
   await expect(logs).toContainText("200+ lines");
   await logs.getByRole("button", { name: "Load more" }).click();
   await expect(logs).toContainText("308 lines");
   await expect(logs.getByRole("button", { name: "Load more" })).toHaveCount(0);
   const days = page.getByRole("region", { name: "Run log lines" }).getByRole("rowheader");
   await expect(days).toHaveCount(2);
-  await logs.getByRole("checkbox", { name: "Match this run only" }).check();
-  await expect(logs).not.toContainText("trino-worker");
+  await expect(logs).toContainText("trino");
+  await logs.getByRole("checkbox", { name: "Only this run's lines" }).check();
+  await expect(page.getByRole("region", { name: "Run log lines" })).not.toContainText("trino");
 });
 
 test("a stage with no log archive (log_retention_days null) shows no retention", async ({ page }) => {
@@ -90,16 +121,52 @@ test("a stage with no log archive (log_retention_days null) shows no retention",
 test("with log access the run's window shows each line's time and level, and the filters ask the API again", async ({ page }) => {
   await page.goto(`/monitoring/prod/runs/${FAILED}?mock=admin`);
   const lines = page.getByRole("region", { name: "Run log lines" });
+  // The logs open on what matters: warning and above, with the way back to every level in plain sight.
+  await expect(card(page, "Logs").getByRole("combobox", { name: "Level" })).toHaveValue("warning");
+  await expect(lines.getByRole("row")).toHaveCount(4);
+  await expect(card(page, "Logs")).toContainText("Showing warnings and above only.");
+  await card(page, "Logs").getByRole("button", { name: "Jump to first error" }).click();
+  await expect(lines.getByRole("row", { name: /floe_schema_mismatch/ })).toBeFocused();
+  await card(page, "Logs").getByRole("button", { name: "Show all levels" }).click();
   await expect(lines.getByRole("row")).toHaveCount(12);
   await expect(lines.getByRole("row", { name: /floe_schema_mismatch/ })).toContainText(/\d\d:\d\d:\d\d\.\d{3}\s*ERROR/);
   // A v1 record has no time and no level: both cells stay empty.
   const v1 = lines.getByRole("row", { name: /\[v1\] exit code 1/ });
   await expect(v1.getByRole("cell").nth(0)).toBeEmpty();
   await expect(v1.getByRole("cell").nth(1)).toBeEmpty();
-  await card(page, "Logs").getByRole("checkbox", { name: "Match this run only" }).check();
+  const only = card(page, "Logs").getByRole("checkbox", { name: "Only this run's lines" });
+  await expect(only).toHaveAccessibleDescription(/hides other workloads' lines from that window/);
+  await only.check();
   await expect(lines.getByRole("row")).toHaveCount(10);
   await card(page, "Logs").getByRole("combobox", { name: "Level" }).selectOption("error");
   await expect(lines.getByRole("row")).toHaveCount(3);
+});
+
+test("a run with no warning line falls back to all levels and says so", async ({ page }) => {
+  await page.goto(`/monitoring/prod/runs/${CRM}?mock=admin`);
+  const logs = card(page, "Logs");
+  await expect(logs).toContainText("No line at warning or above in the run's window, so all levels are shown.");
+  await expect(logs.getByRole("combobox", { name: "Level" })).toHaveValue("");
+  await expect(page.getByRole("region", { name: "Run log lines" })).toContainText("Run succeeded");
+});
+
+test("an API without log_retention_days reads the run's day from list_logs, at warning and above", async ({ page }) => {
+  await page.route("**/api/v1/monitoring-capabilities", async (route) => {
+    const body = await (await route.fetch()).json();
+    for (const s of body.stages) delete s.log_retention_days;
+    await route.fulfill({ json: body });
+  });
+  const reads: URL[] = [];
+  page.on("request", (r) => { if (r.url().includes("/logs")) reads.push(new URL(r.url())); });
+  await page.goto(`/monitoring/prod/runs/${FAILED}?mock=admin`);
+  const logs = card(page, "Logs");
+  await expect(logs).toContainText(/Archived \d{4}-\d\d-\d\d \(UTC\) · run c94cbcb0/);
+  await expect(page.getByRole("region", { name: "Run log lines" }).getByRole("row")).toHaveCount(4);
+  await expect(logs.getByRole("checkbox")).toHaveCount(0);
+  await expect(logs.getByRole("combobox", { name: "Level" }).getByRole("option")).toHaveText(["All levels", "Warning and above", "Error and above"]);
+  expect([...new Set(reads.map((u) => `${u.pathname} ${u.searchParams.get("severity")}`))]).toEqual(["/api/v1/stages/prod/logs warning"]);
+  await logs.getByRole("button", { name: "Show all levels" }).click();
+  await expect(page.getByRole("region", { name: "Run log lines" }).getByRole("row")).toHaveCount(9);
 });
 
 test("an incident and a pipelines row link to their run", async ({ page }) => {

@@ -479,7 +479,8 @@ export type QualityCheck = {
  * download, null when the caller may not download it or the API holds no key to read it. */
 export type QualityReport = { id: string; engine: string; table: string | null; href: string | null };
 /** `checks: null` and `counts: null` are "no usable manifest" (`sources` says why), never no checks or passes.
- * `complete: false` is a manifest the run did not finish. `runbook` stays null until the signal catalog names one. */
+ * `complete: false` is a manifest the run did not finish. `runbook` is the runbook's web address the signal catalog
+ * names for the run's failure, or null when it names none. */
 export type RunQuality = {
   run_id: string;
   job: string;
