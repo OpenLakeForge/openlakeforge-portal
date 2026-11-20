@@ -280,3 +280,11 @@
 .mc-table td, .mc-table tbody th { height: auto; padding-block: 0.25rem; font-size: 0.75rem; }
 @media (forced-colors: active) { .mc-line { stroke: CanvasText; } .mc-swatch { background: CanvasText; } }
 @media (max-width: 40rem) { .mc-x span:nth-child(2), .mc-x span:nth-child(4) { display: none; } }
+
+/* Runs (portal#37): a stage's runs, filtered by pipeline, product, status and window. */
+.rl-context { row-gap: var(--olf-space-3); }
+.rl-notes { display: flex; flex-direction: column; gap: 0.25rem; padding: 0.625rem var(--olf-space-4); border-top: 1px solid var(--olf-border-subtle); }
+.rl-short { color: var(--olf-text-secondary); font-weight: 600; }
+.rl-table td, .rl-table tbody th { white-space: nowrap; }
+.rl-table td:nth-child(3) { min-width: 0; }
+.rl-list .empty { margin: var(--olf-space-4); }

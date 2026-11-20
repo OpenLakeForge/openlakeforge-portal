@@ -145,6 +145,7 @@ async function route(req: IncomingMessage, url: URL): Promise<{ status?: number;
   if (parts[2] === "buckets") return filesRoute(req, url, parts);
   if ((parts[2] === "health" || parts[2] === "alerts") && method === "GET") return monitoringRoute(scenarioOf(req), stage, parts.slice(2).join("/"));
   if (parts[2] === "metrics" && method === "GET") return metricsRoute(scenarioOf(req), stage, parts[3], url);
+  if (parts[2] === "runs" && !parts[3] && method === "GET") return listRunsRoute(scenarioOf(req), stage, url);
   if (parts[2] === "runs" && parts[3] && method === "GET") return runRoute(scenarioOf(req), stage, parts[3], parts.slice(4), url);
   if (parts[2] === "logs" && method === "GET") return logsRoute(scenarioOf(req), stage, url);
   if (parts[2] === "schemas" && method === "GET") {
@@ -640,7 +641,7 @@ const LEDGER_RUN = "e5d27b8c-0f41-4a9e-b6c3-1d8a2f7e9b05";
 function runsOnRecord() {
   const runs = (pipelinesHealth("prod").pipelines as { latest_run: Record<string, unknown> | null; last_success: Record<string, unknown> | null }[])
     .flatMap((p) => [p.latest_run, p.last_success]).filter((r): r is Record<string, unknown> => r !== null);
-  return new Map(runs.map((r) => [r.run_id as string, r]));
+  return new Map([...runHistory(), ...runs].map((r) => [r.run_id as string, r]));
 }
 type MockRun = { run_id: string; job_name: string; status: string; created_at: number; started_at: number | null; ended_at: number | null };
 
@@ -1055,4 +1056,64 @@ function pipelineSeries(scenario: Scenario, name: string, envelope: Record<strin
   }
   return { ...envelope, lines, complete: coveredFrom === null, covered_from: coveredFrom === null ? null : iso(coveredFrom),
     reason: coveredFrom === null ? "read from Dagster" : `read from Dagster; the newest 500 runs cover the range from ${iso(coveredFrom)} only` };
+}
+
+// ── A stage's runs (portal#37): Runs, newest first, `job` and `limit` (1..100) as platform-api reads.list_runs ──────
+// prod holds the runs on record above plus a history: web_events hourly for 80 h (two failed, one canceled), the
+// daily jobs for 9 days (one more sales_orders failure), a sales_orders re-run in progress and a queued crm_accounts
+// run. That is more than 100, so an unfiltered 7d read stops short of the window and the page says so. dev's Dagster
+// cannot be read (502), `empty` has no run at all, and the roles that may not read runs are refused with 403.
+
+/** A stable uuid-shaped id per seed (64-bit FNV-1a, twice), so a listed run opens on its run screen. */
+function mockRunId(seed: string): string {
+  const fnv = (text: string) => {
+    let h = 0xcbf29ce484222325n;
+    for (const c of text) h = ((h ^ BigInt(c.codePointAt(0)!)) * 0x100000001b3n) & 0xffffffffffffffffn;
+    return h.toString(16).padStart(16, "0");
+  };
+  const hex = fnv(seed) + fnv(`${seed}#`);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+function runHistory(): MockRun[] {
+  const H = 3600, D = 86400;
+  const now = Math.round(Date.now() / 1000);
+  const hour = Math.floor(now / H) * H;
+  const day = Math.floor(now / D) * D;
+  const run = (job: string, created: number, status: string, took: number | null, startedAfter: number | null = 5): MockRun => ({
+    run_id: mockRunId(`${job}:${created}`), job_name: job, status, created_at: created,
+    started_at: startedAfter === null ? null : created + startedAfter, ended_at: took === null || startedAfter === null ? null : created + startedAfter + took,
+  });
+  const runs: MockRun[] = [];
+  for (let k = 1; k <= 80; k++) {
+    const status = k % 23 === 7 ? "FAILURE" : k === 31 ? "CANCELED" : "SUCCESS";
+    runs.push(run("web_events", hour - k * H + 300, status, 60 + (k % 5) * 12));
+  }
+  for (let k = 2; k <= 9; k++) {
+    runs.push(run("sales_orders", day - k * D + 2 * H, k === 4 ? "FAILURE" : "SUCCESS", k === 4 ? 95 : 240));
+    runs.push(run("crm_accounts", day - k * D + 2 * H + 1800, "SUCCESS", 210));
+  }
+  for (let k = 3; k <= 9; k++) runs.push(run("finance_ledger", day - k * D + 3 * H, "SUCCESS", 51 * 60));
+  // In progress: ids are stable within the hour, so the run screen finds them between reads.
+  runs.push({ ...run("sales_orders", now - 4 * 60, "STARTED", null), run_id: mockRunId(`sales_orders:live:${hour}`) });
+  runs.push({ ...run("crm_accounts", now - 60, "QUEUED", null, null), run_id: mockRunId(`crm_accounts:queued:${hour}`) });
+  return runs.map((r) => ({ ...r, tags: {} }) as MockRun);
+}
+
+function listRunsRoute(scenario: Scenario, stage: string, url: URL): { json: unknown } {
+  if (scenario === "unauthorized" || scenario === "limited" || scenario === "no-access") throw new HttpError(403, `role analyst may not call list_runs on stage '${stage}'`);
+  const limit = Number(url.searchParams.get("limit") ?? 20);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new HttpError(422, [{ type: "less_than_equal", loc: ["query", "limit"], msg: "Input should be less than or equal to 100" }]);
+  }
+  if (stage !== "prod") throw new HttpError(502, `Dagster for stage '${stage}' is unreachable`);
+  if (scenario === "empty") return { json: { runs: [] } };
+  const job = url.searchParams.get("job") ?? "";
+  const runs = [...runsOnRecord().values()] as MockRun[];
+  return {
+    json: {
+      runs: runs.filter((r) => !job || r.job_name === job).sort((a, b) => b.created_at - a.created_at).slice(0, limit)
+        .map((r) => ({ tags: {}, ...r })),
+    },
+  };
 }

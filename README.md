@@ -57,7 +57,7 @@ never contain it. These words in the SQL pick a behaviour:
 
 Export (CSV, JSON), cancel and the schema and table search all work. The
 browser tests in `e2e/` (Playwright) run against this mock: `npm run test:ui`.
-They save full-page screenshots of `/services`, `/queries`, `/files`, `/monitoring`, `/monitoring/metrics` and a failed run (dark, light and
+They save full-page screenshots of `/services`, `/queries`, `/files`, `/monitoring`, `/monitoring/metrics`, `/monitoring/prod/runs` and a failed run (dark, light and
 390 px wide) in `test-results/screenshots/` for review; CI uploads them as the
 `ui-review` artifact. In a sandbox whose Chromium is not the revision Playwright
 expects, set `PW_CHROMIUM` to its path. Locally run `npx playwright install chromium` once.
@@ -145,6 +145,16 @@ the deployment does not keep reads "Not kept" and is not asked for; a range with
 keeps 3 days of resource history (7d is not kept, the pipeline series' 7d read reaches its run cap), DEV's Dagster
 cannot be read, `mock=slim` turns metrics off, `mock=unavailable` takes the backend down, `mock=empty` has no pipeline
 line, and `unauthorized`, `limited` and `no-access` refuse or skip the reads as on the overview.
+
+The **Runs** view (`/monitoring/<stage>/runs?job=<job>&product=<product>&status=failed|succeeded|in_progress&window=1h|6h|24h|7d`,
+next to Metrics; 24h by default) lists the stage's runs, newest first: pipeline, domain · product, status, start, duration and
+a link to each run's screen. It reads `GET /api/v1/stages/{stage}/runs?limit=100` (with `job=` when a pipeline is picked) and,
+for the domain and product, the pipelines route. That route filters by job only and answers at most the newest 100 runs, so
+status, product and window are filtered in the browser among the runs read, and the page says how far back the read reached:
+a window older than the read says its earlier runs were not read, never that there were none. The capabilities do not list
+`list_runs`; the page asks it when the role has `get_run` (the same permission row). In the mock, PROD holds more than 100
+runs (an unfiltered 7d read stops short), a run in progress and a queued one; DEV's Dagster cannot be read, `mock=empty` has
+no run, and `unauthorized`, `limited` and `no-access` refuse or skip the read.
 
 ## Routes are a deploy-time parameter
 
