@@ -52,6 +52,8 @@ test("browse: a deep link to a day, hour and product lists its lines; a pod narr
   await page.getByLabel("Container", { exact: true }).fill("trino");
   await page.getByLabel("Container", { exact: true }).press("Enter");
   await expect(page).toHaveURL(/container=trino/);
+  // Only Trino's lines once the new read lands; the old read's other lines are gone first.
+  await expect(rows(page).filter({ hasNotText: "trino" })).toHaveCount(0);
   await expect(rows(page)).not.toHaveCount(0);
   for (const row of await rows(page).all()) await expect(row).toContainText("trino");
 });
@@ -72,7 +74,9 @@ test("the level filter asks the API with severity and is labelled as on the fail
   await expect(level.getByRole("option")).toHaveText(["All levels", "Info and above", "Warning and above", "Error and above", "Critical only"]);
   await level.selectOption("warning");
   await expect(page).toHaveURL(new RegExp(`date=${day}&hour=14&level=warning$`));
-  // Hour 14 holds Trino's memory warning, and some days the catalog's error; nothing below warning.
+  // Hour 14 holds Trino's memory warning, and some days the catalog's error; nothing below warning. The lines below
+  // warning must be gone first, so the rows checked are the new read's, not the old one's.
+  await expect(rows(page).filter({ hasText: /INFO|DEBUG/ })).toHaveCount(0);
   await expect(rows(page).filter({ hasText: "Memory pool general reserved above 80%" })).toHaveCount(1);
   for (const row of await rows(page).all()) await expect(row).toContainText(/WARNING|ERROR|CRITICAL/);
   expect(asked.at(-1)).toBe(`/api/v1/stages/dev/logs?date=${day}&hour=14&severity=warning&limit=500`);
