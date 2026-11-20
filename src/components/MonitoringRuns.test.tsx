@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation, useParams } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { isRuns, listRuns, runsGate, RUNS_LIMIT, type MonitoringCapabilities, type MonitoringStage, type PipelinesHealth, type Run } from "../lib/health-api";
+import { formatTime, seconds, setZoneChoice } from "../lib/time";
 import { coverage, matchesStatus, MonitoringRuns, runsHref } from "./MonitoringRuns";
 
 const OPS = ["get_stage_health", "list_pipeline_health", "get_run", "get_run_failure"];
@@ -316,6 +317,26 @@ describe("MonitoringRuns", () => {
     await rows();
     await user.selectOptions(screen.getByRole("combobox", { name: "Stage" }), "dev");
     expect(where()).toBe("/monitoring/dev/runs?status=failed&window=6h");
+  });
+
+  it("writes each start in the page's one zone: the column names it, the cell holds the time on a 24-hour clock", async () => {
+    const runs = RUNS();
+    api({ runsReply: () => ({ body: { runs } }) });
+    open();
+    const r = await rows();
+    expect(screen.getByRole("columnheader", { name: "Started (UTC)" })).toBeInTheDocument();
+    const failed = runs[2];
+    const time = within(r[2]).getByText(formatTime(seconds(failed.started_at!), "UTC", Date.now()));
+    expect(time.tagName).toBe("TIME");
+    expect(time).toHaveAttribute("dateTime", new Date(failed.started_at! * 1000).toISOString());
+    expect(time.getAttribute("title")).toMatch(/ UTC$/);
+    expect(r[2]).not.toHaveTextContent(/AM|PM/);
+    // The switch is on this page too, and the choice changes the column and every cell at once.
+    await userEvent.click(screen.getByRole("radio", { name: /^Local \(/ }));
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    expect(screen.getByRole("columnheader", { name: `Started (${zone === "Etc/UTC" ? "UTC" : zone})` })).toBeInTheDocument();
+    expect(r[2]).toHaveTextContent(formatTime(seconds(failed.started_at!), zone, Date.now()));
+    setZoneChoice("utc");
   });
 
   it("an unknown status or window in the address falls back to All and 24 hours", async () => {

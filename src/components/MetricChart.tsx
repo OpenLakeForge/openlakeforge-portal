@@ -5,6 +5,8 @@
 
 import { useId, useState, type KeyboardEvent, type PointerEvent } from "react";
 import type { MetricLine, MetricRange } from "../lib/health-api";
+import { formatClock, formatDate, formatTime, UTC, useTimeZone } from "../lib/time";
+import { Zoned } from "./Time";
 
 /** A line as the chart draws it: a name and one value per step (null: no sample). */
 export type Shown = { key: string; name: string; values: (number | null)[] };
@@ -107,11 +109,10 @@ export function ticks(max: number, unit: string, count = 4): number[] {
   return out;
 }
 
-const clockOf = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-const dayOf = (t: number) => new Date(t).toLocaleDateString([], { weekday: "short", day: "numeric" });
-/** A step's time as the range reads it: the clock within a day, the day and clock over a week. */
-export const stepTime = (t: number, range: MetricRange) => (range === "7d" ? `${dayOf(t)} ${clockOf(t)}` : clockOf(t));
-const axisTime = (t: number, range: MetricRange) => (range === "7d" ? dayOf(t) : clockOf(t));
+/** A step's time in the reader's zone, as every Monitoring time reads (src/lib/time.ts): "17:00", "Nov 19 17:00". */
+export const stepTime = (t: number, zone: string = UTC, now: number = Date.now()) => formatTime(t, zone, now);
+/** An axis tick: the clock within a day, the date over a week. The axis caption names the zone. */
+const axisTime = (t: number, range: MetricRange, zone: string, now: number) => (range === "7d" ? formatDate(t, zone, now) : formatClock(t, zone));
 
 /** The SVG paths of one line in a 100×100 box: `line` joins neighbouring samples and a gap breaks it; `dots` holds each
  * lone sample (gaps on both sides) as a zero-length round cap, drawn wider so it stays visible. */
@@ -139,13 +140,13 @@ function latest(l: Shown, times: number[]): { v: number; t: number } | undefined
 }
 
 /** One line per series' line: "now" (the latest sample) and the peak, in words. The text alternative of the plot. */
-export function summary(s: Shape, unit: string, range: MetricRange): string[] {
+export function summary(s: Shape, unit: string, range: MetricRange, zone: string = UTC, today: number = Date.now()): string[] {
   const last = s.times.at(-1);
   return s.lines.map((l) => {
     const now = latest(l, s.times);
     if (!now) return `${l.name}: no sample in the last ${range}`;
     const p = peak(l);
-    const at = now.t === last ? "now" : `last sample ${stepTime(now.t, range)}`;
+    const at = now.t === last ? "now" : `last sample ${stepTime(now.t, zone, today)}`;
     return `${l.name}: ${formatValue(now.v, unit)} ${at}, peak ${formatValue(p, unit)}`;
   });
 }
@@ -153,6 +154,8 @@ export function summary(s: Shape, unit: string, range: MetricRange): string[] {
 /** The plot, its axes, a keyboard and pointer readout, a legend with each line's summary, and a table of the values. */
 export function MetricPlot({ title, unit, range, data, perStep }: { title: string; unit: string; range: MetricRange; data: Shape; perStep?: string }) {
   const id = useId();
+  const tz = useTimeZone();
+  const today = Date.now();
   const [at, setAt] = useState<number | null>(null);
   const [table, setTable] = useState(false);
   const n = data.times.length;
@@ -160,7 +163,7 @@ export function MetricPlot({ title, unit, range, data, perStep }: { title: strin
   const ys = ticks(max, unit);
   const top = ys.at(-1)!;
   const xs = n > 1 ? [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(f * (n - 1))) : [0];
-  const lines = summary(data, unit, range);
+  const lines = summary(data, unit, range, tz.zone, today);
   const many = data.lines.length > 1;
 
   const move = (e: PointerEvent<HTMLDivElement>) => {
@@ -178,7 +181,7 @@ export function MetricPlot({ title, unit, range, data, perStep }: { title: strin
   };
   const readout = at === null
     ? "Point at the chart, or focus it and use the arrow keys, to read each step."
-    : `${stepTime(data.times[at], range)}: ${data.lines.map((l) => `${many ? `${l.name} ` : ""}${l.values[at] === null ? "no sample" : formatValue(l.values[at]!, unit, max)}`).join(" · ")}`;
+    : `${stepTime(data.times[at], tz.zone, today)}: ${data.lines.map((l) => `${many ? `${l.name} ` : ""}${l.values[at] === null ? "no sample" : formatValue(l.values[at]!, unit, max)}`).join(" · ")}`;
 
   return (
     <figure className="mc-figure">
@@ -215,10 +218,11 @@ export function MetricPlot({ title, unit, range, data, perStep }: { title: strin
         <div className="mc-x f-mono" aria-hidden="true">
           {xs.map((i, k) => (
             <span key={k} style={{ left: `${n > 1 ? (i / (n - 1)) * 100 : 50}%` }} data-edge={k === 0 ? "start" : k === xs.length - 1 ? "end" : undefined}>
-              {axisTime(data.times[i], range)}
+              {axisTime(data.times[i], range, tz.zone, today)}
             </span>
           ))}
         </div>
+        <p className="mc-x-caption label">Time ({tz.label})</p>
       </div>
       <figcaption id={`${id}-sum`}>
         <ul className="mc-legend">
@@ -237,11 +241,11 @@ export function MetricPlot({ title, unit, range, data, perStep }: { title: strin
       {table && (
         <div className="f-scroll mc-table" id={`${id}-table`} role="region" aria-label={`${title} values`} tabIndex={0}>
           <table className="f-table mon-table">
-            <thead><tr><th scope="col">Time</th>{data.lines.map((l) => <th key={l.key} scope="col">{l.name}</th>)}</tr></thead>
+            <thead><tr><th scope="col"><Zoned>Time</Zoned></th>{data.lines.map((l) => <th key={l.key} scope="col">{l.name}</th>)}</tr></thead>
             <tbody>
               {data.times.map((t, i) => ({ t, i })).reverse().map(({ t, i }) => (
                 <tr key={t}>
-                  <th scope="row" className="f-mono">{stepTime(t, range)}</th>
+                  <th scope="row" className="f-mono">{stepTime(t, tz.zone, today)}</th>
                   {data.lines.map((l) => <td key={l.key} className="f-mono">{l.values[i] === null ? <><span aria-hidden="true">—</span><span className="sr-only">no sample</span></> : formatValue(l.values[i]!, unit, max)}</td>)}
                 </tr>
               ))}

@@ -81,6 +81,8 @@
 .mon-pipes td, .mon-pipes tbody th { height: auto; padding-block: 0.5rem; white-space: normal; overflow-wrap: break-word; }
 .mon-pipes td:nth-child(3) { min-width: 0; }
 .mon-pipes .mon-failed { min-width: 8rem; }
+/* A time column names its zone ("Last success (UTC)", "Latest run (Europe/Paris)"): its header may wrap rather than widen the table. */
+.mon-table thead th { white-space: normal; overflow-wrap: anywhere; }
 @media (max-width: 48rem) { .mon-pipes tbody th { min-width: 9rem; } .mon-pipes td:nth-child(3) { min-width: 8.5rem; } } /* it scrolls there anyway */
 .mon-job-link { font-weight: 600; }
 .mon-list + .mon-list { margin-top: var(--olf-space-5); }
@@ -103,6 +105,11 @@
 .mon-stage.mc-range legend { float: left; width: auto; margin: 0 var(--olf-space-3) 0 0; line-height: 2.1875rem; }
 .mon-stage.mc-range .mc-segments { clear: none; }
 .mon-stage .mc-segments span { min-width: 3.25rem; }
+/* The one time zone switch (portal#40), at the end of each Monitoring page's head, before its read time or action. */
+.mon-head-end { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--olf-space-3); min-width: 0; }
+.mon-zone { margin: 0; }
+.mon-zone .mc-segments span { white-space: nowrap; }
+@media (max-width: 40rem) { .mon-head-end { justify-content: flex-start; } .mon-zone .mc-segments span { white-space: normal; } }
 
 /* Data quality and alert incidents. A delivery's colour only echoes its word; the word carries the meaning. */
 .mon-quality td:nth-child(3), .mon-incidents tbody th { white-space: normal; min-width: 16rem; }
@@ -123,6 +130,8 @@
 
 /* Failed run: breadcrumb, heading with "Open in Dagster", chips, then evidence (wide) beside context (narrow). */
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* A visually hidden text inside a table that scrolls in its own region stays in that region, never widening the page. */
+.mon-list .f-scroll { position: relative; }
 .run-crumbs { margin-bottom: var(--olf-space-3); font-size: 0.6875rem; }
 .run-crumbs li { overflow-wrap: anywhere; }
 .run-head h1 { overflow-wrap: anywhere; }
@@ -286,6 +295,7 @@
 .mc-x span { position: absolute; top: 0.25rem; transform: translateX(-50%); white-space: nowrap; }
 .mc-x span[data-edge="start"] { transform: none; }
 .mc-x span[data-edge="end"] { transform: translateX(-100%); }
+.mc-x-caption { grid-column: 2; margin: 0.125rem 0 0; color: var(--olf-text-muted); font-size: 0.5625rem; text-align: center; }
 .mc-figure figcaption { display: flex; flex-direction: column; gap: var(--olf-space-1); }
 .mc-legend { display: flex; flex-direction: column; gap: 0.25rem; margin: 0; padding: 0; list-style: none; color: var(--olf-text-secondary); font-size: 0.75rem; }
 .mc-legend li { display: flex; align-items: baseline; gap: var(--olf-space-2); overflow-wrap: anywhere; }

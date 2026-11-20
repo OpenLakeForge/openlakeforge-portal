@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   isMetricSeriesData, type MetricCatalog, type MetricLine, type MetricSeriesData, type MetricSeriesInfo, type MonitoringCapabilities, type MonitoringStage,
 } from "../lib/health-api";
+import { formatTime } from "../lib/time";
 import { formatValue, linePath, MAX_LINES, shape, summary, ticks } from "./MetricChart";
 import { MonitoringMetrics } from "./MonitoringMetrics";
 
@@ -144,6 +145,12 @@ describe("Monitoring · Metrics", () => {
     const table = within(cpu).getByRole("region", { name: "CPU values" });
     expect(within(table).getAllByRole("row")).toHaveLength(5);
     expect(within(table).getAllByText("no sample")).toHaveLength(1); // the gap, never 0
+    // Axis ticks, the readout and the table are in the page's one zone, which the axis caption and the column name.
+    expect(within(cpu).getByText("Time (UTC)", { selector: ".mc-x-caption" })).toBeTruthy();
+    expect(within(table).getByRole("columnheader", { name: "Time (UTC)" })).toBeTruthy();
+    const first = Date.parse(times()[0]);
+    expect(within(table).getAllByRole("rowheader").at(-1)).toHaveTextContent(formatTime(first, "UTC", Date.now()));
+    expect(cpu.querySelector(".mc-x span")).toHaveTextContent(/^09:00$/);
     expect(document.querySelector('.mon-badge[data-state="healthy"]')).toBeNull();
   });
 
@@ -265,6 +272,8 @@ describe("Monitoring · Metrics", () => {
       : series(name) }) });
     open();
     expect(await within(await card("Pipeline runs")).findByText(/the read reached its run cap, so earlier steps are gaps, not zeros/)).toBeTruthy();
+    const from = Date.UTC(2026, 10, 20, 9, 1);
+    expect(await within(await card("Pipeline runs")).findByText(`${formatTime(from, "UTC", Date.now())} UTC`)).toHaveAttribute("dateTime", new Date(from).toISOString());
   });
 
   it("a malformed catalog reads Unknown with Retry", async () => {
