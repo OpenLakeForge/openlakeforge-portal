@@ -1023,23 +1023,27 @@ describe("alert incidents", () => {
 
 describe("one list to act on", () => {
   const RUN = "c94cbcb0-5d1e-4a8e";
+  const OBSERVED = new Date().toISOString();
   const failing = () => pipes({
     pipelines: [
       pipeline("sales_orders", {
         state: "critical", latest_run: run("sales_orders", "FAILURE", RUN), failed_runs: 2,
+        // One observed_at for all three: rows of a severity sort newest first, and per-call clocks can differ by 1 ms.
         signals: [
-          sig("execution", "critical", { reason: "latest run failed", run: RUN }),
-          sig("freshness", "critical", { reason: "data is stale" }),
-          sig("quality", "critical", { reason: "a blocking quality check failed", run: RUN }),
+          sig("execution", "critical", { reason: "latest run failed", run: RUN, observed_at: OBSERVED }),
+          sig("freshness", "critical", { reason: "data is stale", observed_at: OBSERVED }),
+          sig("quality", "critical", { reason: "a blocking quality check failed", run: RUN, observed_at: OBSERVED }),
         ],
       }),
       pipeline("web_events", { failed_runs: 0 }),
     ],
   });
   const delivered = { status: "delivered", event: "opened", attempts: 1, receivers: 2, delivered: 2 } as const;
+  // One instant for every incident: per-call clocks differ by a millisecond on a slow runner, and the list sorts newest first.
+  const seen = Date.now();
   const inc = (id: string, condition: string, over: Partial<AlertIncident> = {}): AlertIncident => ({
     id, condition, severity: "critical", job: "sales_orders", domain: "sales", product: "orders", table: null, component: null,
-    opened_at: new Date(Date.now() - 600_000).toISOString(), last_seen_at: new Date().toISOString(), summary: `summary of ${id}`,
+    opened_at: new Date(seen - 600_000).toISOString(), last_seen_at: new Date(seen).toISOString(), summary: `summary of ${id}`,
     run_ids: [RUN], delivery: delivered, ...over,
   });
   const list = () => screen.getByRole("region", { name: "What needs attention" });
