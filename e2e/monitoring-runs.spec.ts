@@ -17,7 +17,7 @@ test("Runs is reached from the overview with the keyboard, keeps the stage, and 
   await expect(page).toHaveURL(/\/monitoring\/prod\/runs$/);
   await expect(tab).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Monitoring" })).toHaveAttribute("aria-current", "page");
-  await expect(rows(page).first()).toContainText(["Pipeline", "Domain · product", "Status", "Started", "Duration", "Run"].join(""));
+  await expect(rows(page).first()).toContainText(["Pipeline", "Domain · product", "Status", "Started (UTC)", "Duration", "Run"].join(""));
   // Newest first: the queued crm_accounts run, then the sales_orders re-run in progress.
   await expect(rows(page).nth(1)).toContainText("crm · accounts");
   await expect(rows(page).nth(1)).toContainText("Not started");

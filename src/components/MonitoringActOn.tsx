@@ -4,10 +4,10 @@
 // whether a notification went out and how it was delivered, in the API's words. Read-only (ADR 0023, decision 3).
 
 import { worst, type AlertIncident, type HealthSignal } from "../lib/health-api";
-import { ago } from "./Monitoring";
 import { DELIVERY, deliveryLine, denied, type Alerts } from "./MonitoringAlerts";
-import { attention, Breakable, JobLink, RANK, RunLink, when, type Pipes, type Row } from "./MonitoringPipelines";
+import { attention, Breakable, JobLink, RANK, RunLink, type Pipes, type Row } from "./MonitoringPipelines";
 import { StatusBadge } from "./StatusBadge";
+import { Ago, Time, Zoned } from "./Time";
 
 /** The pipeline signal each alert condition is about (`AlertKind` in openlakeforge_core.alerts, with the older names
  * the mock and early evaluators used). A condition not listed here is about no signal, so its incident stands alone. */
@@ -109,7 +109,7 @@ export function ActOn({ p, a, now, stage, retryPipes, retryAlerts }: {
       <div className="f-scroll" role="region" aria-label="What needs attention" tabIndex={0}>
         <table className="f-table mon-table mon-attention">
           <thead>
-            <tr><th scope="col">State</th><th scope="col">What happened</th><th scope="col">Scope</th><th scope="col">When</th><th scope="col">Notification</th></tr>
+            <tr><th scope="col">State</th><th scope="col">What happened</th><th scope="col">Scope</th><th scope="col"><Zoned>When</Zoned></th><th scope="col">Notification</th></tr>
           </thead>
           <tbody>
             {rows.map((r) => (
@@ -120,7 +120,7 @@ export function ActOn({ p, a, now, stage, retryPipes, retryAlerts }: {
                   <span className="mon-why f-mono">{r.detail}</span>
                   {r.gap === "pipelines" && retryPipes && (
                     <span className="mon-why">
-                      {retryPipes.lastGood ? `Last good snapshot ${when(retryPipes.lastGood / 1000, now)}. ` : ""}
+                      {retryPipes.lastGood ? <>Last good snapshot <Time at={retryPipes.lastGood} now={now} />. </> : ""}
                       <button type="button" className="f-btn f-outline" onClick={retryPipes.onRetry}><span aria-hidden="true">↻</span> Retry</button>
                     </span>
                   )}
@@ -133,14 +133,14 @@ export function ActOn({ p, a, now, stage, retryPipes, retryAlerts }: {
                   {r.job && r.scope && <span className="mon-why">{r.scope}</span>}
                 </td>
                 <td className="f-mono mon-when">
-                  {r.due ? `due ${when(r.due, now)}` : r.at ? when(r.at, now) : "—"}
+                  {r.due ? <>due <Time at={r.due} now={now} bare /></> : r.at ? <Time at={r.at} now={now} bare /> : "—"}
                   {r.runs.length > 0 && (
                     <span className="mon-why run-ids">
                       {r.runs.map((id, n) => <span key={id}>{n ? " · " : ""}<RunLink stage={stage} run={id} /></span>)}
                       {r.incident && r.incident.run_ids.length > 3 ? ` · +${r.incident.run_ids.length - 3} earlier` : ""}
                     </span>
                   )}
-                  {r.key.startsWith("incident/") && r.lastSeen && <span className="mon-why">last seen {ago(r.lastSeen, now)}</span>}
+                  {r.key.startsWith("incident/") && r.lastSeen && <span className="mon-why">last seen <Ago at={r.lastSeen} now={now} /></span>}
                 </td>
                 <td className="mon-notify"><Notification r={r} a={a} /></td>
               </tr>

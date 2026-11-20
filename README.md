@@ -136,6 +136,14 @@ and a blocking check; `finance_ledger`'s run `e5d27b8c…` crossed midnight UTC,
 and manifest unreadable, `mock=unauthorized` refuses it with 403, and a data-engineer (the default) sees the checks but
 is told PROD's archive and report downloads are not theirs (`mock=admin` has both).
 
+Every Monitoring page writes its times one way ([`src/lib/time.ts`](src/lib/time.ts)): in one time zone, UTC by
+default (the archive, the API and the logs are UTC) or the browser's own, picked once with the "UTC | Local (<zone>)"
+switch in the page head and kept in this browser (`localStorage`; UTC when storage is blocked). A 24-hour clock, with
+the date when the time is not today in that zone and the year when it is not this year: "17:28", "Nov 19 17:28",
+"Nov 19, 2025 17:28". A column of times names the zone in its header ("Started (UTC)"), a chart in its axis caption,
+and any other time carries it ("started 17:28 UTC"). Relative times stay ("5 s ago"), each a `<time>` with its absolute
+time on hover and for screen readers. The server always renders UTC; the page switches after hydration.
+
 The **Metrics** view (`/monitoring/metrics?stage=<stage>&range=1h|6h|24h|7d`, next to Overview) draws a small curated
 set of history charts: CPU and memory per component, the stage's stored bytes, Trino's running and failed queries,
 pipeline runs by outcome and the longest run per pipeline, and the cluster's node CPU and memory. It reads

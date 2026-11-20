@@ -7,7 +7,8 @@ import {
   getPipelinesHealth, getRunQuality, listRunLogs, type AlertIncident, type LogLine, type MonitoringStage, type PipelineHealth, type PipelinesHealth,
   type QualityCheck, type RunFailure, type RunLogs, type RunQuality, type StageAlertIncidents,
 } from "../lib/health-api";
-import { duration, lineTime, MonitoringRun, runState } from "./MonitoringRun";
+import { formatClock, formatDate, formatTime, setZoneChoice } from "../lib/time";
+import { duration, MonitoringRun, runState } from "./MonitoringRun";
 
 const RUN = "c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21";
 const DAGSTER = "http://dagster-prod.olf.localhost";
@@ -475,9 +476,33 @@ describe("run logs (list_run_logs)", () => {
     }) }) });
     open();
     const lines = await screen.findByRole("region", { name: "Run log lines" });
-    expect(within(lines).getAllByRole("rowheader").map((h) => h.textContent)).toEqual(["2026-11-16 (UTC)", "2026-11-17 (UTC)"]);
+    const now = Date.now();
+    expect(within(lines).getAllByRole("rowheader").map((h) => h.textContent)).toEqual([formatDate(at(0), "UTC", now), formatDate(at(10 * 60_000), "UTC", now)]);
+    expect(within(lines).getByRole("columnheader", { name: "Time (UTC)" })).toBeInTheDocument();
     expect(within(lines).getByText("WARNING")).toHaveAttribute("data-level", "warning");
-    expect(card("Logs")).toHaveTextContent("16 Nov 23:58 → 17 Nov 00:08 (UTC) · crosses midnight");
+    expect(card("Logs")).toHaveTextContent(`${formatTime(at(0), "UTC", now)} → ${formatTime(at(10 * 60_000), "UTC", now)} UTC · crosses midnight`);
+  });
+
+  it("reads days and midnight in the zone the reader picked: the same window does not cross midnight in New York", async () => {
+    setZoneChoice("local");
+    vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions").mockReturnValue({ timeZone: "America/New_York" } as Intl.ResolvedDateTimeFormatOptions);
+    try {
+      const at = (ms: number) => new Date(Date.UTC(2026, 10, 16, 23, 58) + ms).toISOString();
+      api({ logs: () => ({ body: logsOf(0, {
+        since: at(0), until: at(10 * 60_000),
+        lines: [lineOf(0, { timestamp: at(0) }), lineOf(1, { timestamp: at(150_000), level: "warning" })],
+      }) }) });
+      open();
+      const lines = await screen.findByRole("region", { name: "Run log lines" });
+      expect(within(lines).queryAllByRole("rowheader")).toHaveLength(0);
+      expect(within(lines).getByRole("columnheader", { name: "Time (America/New_York)" })).toBeInTheDocument();
+      expect(within(lines).getAllByRole("row")[1]).toHaveTextContent("18:58:00.000");
+      expect(card("Logs")).not.toHaveTextContent("crosses midnight");
+      expect(card("Logs")).toHaveTextContent(/18:58 → .*19:08 America\/New_York/);
+    } finally {
+      setZoneChoice("utc");
+      vi.restoreAllMocks();
+    }
   });
 
   it("reads on with Load more, passing `next` back as `after` with the same filters, and appends", async () => {
@@ -872,13 +897,13 @@ describe("helpers and the client", () => {
   it.each([["FAILURE", "critical"], ["CANCELED", "warning"], ["SUCCESS", "healthy"], ["STARTED", "unknown"], ["WHATEVER", "unknown"]] as const)(
     "reads Dagster's %s as %s", (status, state) => expect(runState(status)).toBe(state));
 
-  it("formats durations and a line's UTC time, and keeps a time it cannot parse as sent", () => {
+  it("formats durations and a line's time, and keeps a time it cannot parse as sent", () => {
     expect(duration(114)).toBe("1 min 54 s");
     expect(duration(7500)).toBe("2 h 5 min");
     expect(duration(30)).toBe("30 s");
-    expect(lineTime("2026-11-16T23:59:58.120+00:00")).toBe("23:59:58.120");
-    expect(lineTime("2026-11-17T01:00:00+01:00")).toBe("00:00:00.000");
-    expect(lineTime("not a time")).toBe("not a time");
+    expect(formatClock("2026-11-16T23:59:58.120+00:00", "UTC", "millisecond")).toBe("23:59:58.120");
+    expect(formatClock("2026-11-17T01:00:00+01:00", "UTC", "millisecond")).toBe("00:00:00.000");
+    expect(formatClock("not a time", "UTC", "millisecond")).toBe("not a time");
   });
 
   it("accepts a pipelines answer from before `due`, `domain` and `product`, as null", async () => {

@@ -4,9 +4,9 @@
 // stale evaluator's list is shown as stale, never as current.
 
 import { ApiError, worst, type AlertDelivery, type HealthState, type StageAlertIncidents } from "../lib/health-api";
-import { ago } from "./Monitoring";
 import { type Part } from "./MonitoringPipelines";
 import { StatusBadge } from "./StatusBadge";
+import { Ago } from "./Time";
 
 export type Alerts =
   | { ok: true; data: StageAlertIncidents & { incidents: NonNullable<StageAlertIncidents["incidents"]> }; state: HealthState; stale: boolean }
@@ -49,7 +49,7 @@ export function AlertsCard({ a, now }: { a: Alerts; now: number }) {
       <div className="mon-card-top"><h2 className="label">Alerts</h2><StatusBadge state={a.state} /></div>
       {a.ok ? <p className="mon-value"><strong>{n}</strong> open incident{n === 1 ? "" : "s"}</p> : <p className="mon-value"><strong>—</strong></p>}
       <p className="mon-note">
-        {!a.ok ? a.reason : a.stale ? `Stale: ${a.data.state.reason}` : `Evaluated ${ago(a.data.state.evaluated_at, now)}`}
+        {!a.ok ? a.reason : a.stale ? `Stale: ${a.data.state.reason}` : <>Evaluated <Ago at={a.data.state.evaluated_at} now={now} /></>}
       </p>
     </section>
   );

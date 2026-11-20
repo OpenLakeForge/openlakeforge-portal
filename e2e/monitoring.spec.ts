@@ -49,7 +49,8 @@ test("DEV reads unknown when Dagster cannot be read; PROD names what needs atten
   await expect(page.getByText("1 pipeline failed · 1 missed run · 1 quality failure · 1 quality warning · 5 of 6 services ready")).toBeVisible();
   await expect(row(page, "Log archive")).toContainText("Warning");
   await expect(row(page, "Log archive")).toContainText("Log spool age · Warning");
-  await expect(page.getByText(/^5 of 6 healthy · log archive last durable write 12 min ago · quality sync last publication 4 min ago$/)).toBeVisible();
+  // Each "ago" also says its absolute time to a screen reader, in the page's one zone.
+  await expect(page.locator(".mon-svc-line")).toHaveText(/^5 of 6 healthy · log archive last durable write 12 min ago \(at [^)]+ UTC\) · quality sync last publication 4 min ago \(at [^)]+ UTC\)$/);
   // Metrics answer on this deployment, so no row stands in for them.
   await expect(row(page, "Resource metrics")).toHaveCount(0);
   await expect(page.getByRole("status").filter({ hasText: "Checked" })).toContainText("Auto-refresh · 30 s");
@@ -146,7 +147,7 @@ test("a role with no monitoring access sees a clear state and no health is read"
   await page.goto("/monitoring?mock=no-access");
   await expect(page.getByText("No monitoring access")).toBeVisible();
   await expect(page.getByRole("combobox", { name: "Stage" })).toHaveCount(0);
-  await expect(page.getByRole("radio")).toHaveCount(0);
+  await expect(page.getByRole("group", { name: "Stage" })).toHaveCount(0);
   expect(reads).toEqual([]);
 });
 
@@ -198,7 +199,7 @@ for (const colorScheme of ["dark", "light"] as const) {
 
 test("Services fold to one line when every service is healthy, and the toggle lists them from the keyboard", async ({ page }) => {
   await page.goto("/monitoring?stage=prod&mock=healthy");
-  await expect(page.getByText(/^6 of 6 healthy · log archive last durable write 12 min ago · quality sync last publication 4 min ago$/)).toBeVisible();
+  await expect(page.locator(".mon-svc-line")).toHaveText(/^6 of 6 healthy · log archive last durable write 12 min ago \(at [^)]+ UTC\) · quality sync last publication 4 min ago \(at [^)]+ UTC\)$/);
   await expect(services(page)).toHaveCount(0);
   const toggle = page.getByRole("button", { name: "Show all 6 services" });
   await expect(toggle).toHaveAttribute("aria-expanded", "false");

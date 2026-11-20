@@ -12,11 +12,13 @@ import {
   ApiError, gate, getMonitoringCapabilities, getPipelinesHealth, listRuns, runsGate, RUNS_LIMIT,
   type Gate, type HealthRange, type HealthState, type MonitoringCapabilities, type PipelinesHealth, type Run, type Runs,
 } from "../lib/health-api";
-import { ago, DEADLINE_MS } from "./Monitoring";
-import { pipes, RunLink, when, type Part } from "./MonitoringPipelines";
+import { seconds } from "../lib/time";
+import { DEADLINE_MS } from "./Monitoring";
+import { pipes, RunLink, type Part } from "./MonitoringPipelines";
 import { duration, runState } from "./MonitoringRun";
 import { MonitoringViews } from "./MonitoringViews";
 import { StatusBadge } from "./StatusBadge";
+import { Ago, Time, Zoned, ZoneSwitch } from "./Time";
 
 export const RUN_WINDOWS: readonly HealthRange[] = ["1h", "6h", "24h", "7d"];
 /** The window a page opens with: the health routes' default. */
@@ -281,15 +283,18 @@ export function MonitoringRuns({ stage, stages }: { stage: string; stages: strin
           <h1>Monitoring</h1>
           <p className="f-sub">Every run of the stage's pipelines, newest first, each linked to what happened in it.</p>
         </div>
-        {snap?.runs.status === "ok" && (
-          <div className="mc-actions">
-            <div className="q-engine" role="status">
-              <span className="icon"><img src="/icons/clock.svg" alt="" width="20" height="20" loading="lazy" /></span>
-              <span><strong>Read {ago(new Date(snap.at).toISOString(), now)}</strong><span className="label">Last {WINDOW_WORDS[win]}</span></span>
+        <div className="mon-head-end">
+          <ZoneSwitch />
+          {snap?.runs.status === "ok" && (
+            <div className="mc-actions">
+              <div className="q-engine" role="status">
+                <span className="icon"><img src="/icons/clock.svg" alt="" width="20" height="20" loading="lazy" /></span>
+                <span><strong>Read <Ago at={snap.at} now={now} /></strong><span className="label">Last {WINDOW_WORDS[win]}</span></span>
+              </div>
+              <button type="button" className="f-btn f-outline" onClick={refresh}><span aria-hidden="true">↻</span> Refresh</button>
             </div>
-            <button type="button" className="f-btn f-outline" onClick={refresh}><span aria-hidden="true">↻</span> Refresh</button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
       <MonitoringViews stage={stage} />
       {body}
@@ -318,8 +323,8 @@ function RunsTable({ stage, runs, at, now, filters, scopeOf, pipesWhy, productKn
   const read = cover.complete
     ? <>Read all {runs.length} {runs.length === 1 ? "run" : "runs"} Dagster holds{of}, so none of this window is missing.</>
     : cover.coveredFrom === null
-      ? <>Read the newest {runs.length} runs{of}, the most the API answers at once; they reach back to {when(cover.oldest, now)}, before this window starts.</>
-      : <>Read the newest {runs.length} runs{of}, the most the API answers at once; they reach back to {when(cover.oldest, now)} only.{" "}
+      ? <>Read the newest {runs.length} runs{of}, the most the API answers at once; they reach back to <Time at={cover.oldest === null ? null : seconds(cover.oldest)} now={now} />, before this window starts.</>
+      : <>Read the newest {runs.length} runs{of}, the most the API answers at once; they reach back to <Time at={cover.oldest === null ? null : seconds(cover.oldest)} now={now} /> only.{" "}
         <strong className="rl-short">Runs of this window created before then were not read, so they are not listed{job ? "" : "; pick a pipeline to reach further back"}.</strong></>;
   const clear = runsHref(stage, { window: win });
 
@@ -344,7 +349,7 @@ function RunsTable({ stage, runs, at, now, filters, scopeOf, pipesWhy, productKn
       <div className="f-scroll" role="region" aria-label={`${stage.toUpperCase()} runs`} tabIndex={0}>
         <table className="f-table mon-table rl-table">
           <thead>
-            <tr><th scope="col">Pipeline</th><th scope="col">Domain · product</th><th scope="col">Status</th><th scope="col">Started</th><th scope="col">Duration</th><th scope="col">Run</th></tr>
+            <tr><th scope="col">Pipeline</th><th scope="col">Domain · product</th><th scope="col">Status</th><th scope="col"><Zoned>Started</Zoned></th><th scope="col">Duration</th><th scope="col">Run</th></tr>
           </thead>
           <tbody>
             {shown.map((r) => {
@@ -358,7 +363,7 @@ function RunsTable({ stage, runs, at, now, filters, scopeOf, pipesWhy, productKn
                   <td>{scopeText ?? <span className="mon-why">{scope ? "No data product" : "Not known"}</span>}</td>
                   <td><RunStatus status={r.status} /></td>
                   <td>{r.started_at !== null
-                    ? <time dateTime={new Date(r.started_at * 1000).toISOString()}>{when(r.started_at, now)}</time>
+                    ? <Time at={seconds(r.started_at)} now={now} bare />
                     : <span className="mon-why">{NOT_STARTED.has(r.status) ? "Not started" : "No start recorded"}</span>}</td>
                   <td className="f-mono">{ended ? duration(r.ended_at! - r.started_at!)
                     : r.started_at !== null && IN_PROGRESS.has(r.status) ? <>{duration(now / 1000 - r.started_at)}<span className="mon-why">so far</span></>
