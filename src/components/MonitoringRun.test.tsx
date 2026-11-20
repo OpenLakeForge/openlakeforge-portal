@@ -4,10 +4,10 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  getPipelinesHealth, type AlertIncident, type MonitoringStage, type PipelineHealth, type PipelinesHealth, type RunFailure,
-  type StageAlertIncidents, type StageQualityHealth,
+  getPipelinesHealth, getRunQuality, listRunLogs, type AlertIncident, type LogLine, type MonitoringStage, type PipelineHealth, type PipelinesHealth,
+  type QualityCheck, type RunFailure, type RunLogs, type RunQuality, type StageAlertIncidents,
 } from "../lib/health-api";
-import { duration, MonitoringRun, runDay, runState } from "./MonitoringRun";
+import { duration, lineTime, MonitoringRun, runState } from "./MonitoringRun";
 
 const RUN = "c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21";
 const DAGSTER = "http://dagster-prod.olf.localhost";
@@ -15,7 +15,7 @@ const soon = () => new Date(Date.now() + 60_000).toISOString();
 const started = Math.round(Date.now() / 1000) - 600;
 const runBody = { run_id: RUN, job_name: "sales_orders", status: "FAILURE", created_at: started - 5, started_at: started, ended_at: started + 114, tags: {} };
 const failureOf = (over: Partial<RunFailure> = {}): RunFailure => ({
-  run_id: RUN, job: "sales_orders", status: "FAILURE",
+  run_id: RUN, job: "sales_orders", domain: "sales", product: "orders", status: "FAILURE",
   steps: [{ step: "floe_silver_orders", error_class: "SchemaMismatchError", message: "orders.amount: expected decimal(18,2), found string", message_truncated: true }],
   run_message: null, steps_truncated: false, rows: { rejected: 412, accepted: 19000, complete: true },
   sources: [{ name: "dagster", status: "available", reason: "read from the run's event log" }, { name: "quality", status: "available", reason: "read from the run's quality manifest" }],
@@ -33,13 +33,27 @@ const pipesOf = (p: PipelineHealth[] = [pipelineOf()]): PipelinesHealth => ({
   thresholds: { run_max_age_seconds: 1, schedule_max_age_seconds: 1, schedule_grace_seconds: 1, run_window: 25 },
   integrations: [{ name: "dagster", status: "available", reason: "read" }], pipelines: p,
 });
-const qualityOf = (run_id: string | null = RUN): StageQualityHealth => ({
-  stage: "prod", evaluated_at: new Date().toISOString(),
-  integrations: [{ name: "dagster", status: "available", reason: "read" }, { name: "quality", status: "available", reason: "read" }],
-  totals: null,
-  pipelines: [{ job: "sales_orders", domain: "sales", product: "orders", run_id, observed_at: new Date().toISOString(), complete: true, state: "critical",
-    counts: { passed: 14, warn: 1, error: 2, not_run: 0, unknown: 0, blocking: 1 }, reason: "a blocking quality check failed" }],
+const check = (over: Partial<QualityCheck> = {}): QualityCheck => ({
+  engine: "floe", check_id: "not_null.order_id", table: "sales_silver.orders", column: "order_id", engine_severity: "reject", outcome: "passed",
+  pipeline_outcome: "continued", observed_at: new Date().toISOString(), rows: 19402, accepted_rows: null, rejected_rows: null, violations: 0, failures: null,
+  report_id: "r-floe", ...over,
 });
+const HREF = `/api/v1/stages/prod/runs/${RUN}/quality/reports/r-floe`;
+const qualityOf = (over: Partial<RunQuality> = {}): RunQuality => ({
+  run_id: RUN, job: "sales_orders", status: "FAILURE", complete: true,
+  counts: { passed: 1, warn: 1, error: 1, not_run: 0, unknown: 0, blocking: 1 },
+  checks: [
+    check(),
+    check({ check_id: "schema.amount_type", column: "amount", engine_severity: "abort", outcome: "error", pipeline_outcome: "blocked", rejected_rows: 19402, accepted_rows: 0, violations: null }),
+    check({ engine: "dbt", check_id: "accepted_values_stg_orders_status", table: "sales_staging.stg_orders", column: "status", engine_severity: "warn", outcome: "warn", violations: null, failures: 3, rows: null, report_id: "r-dbt" }),
+  ],
+  reports: [{ id: "r-dbt", engine: "dbt", table: null, href: `/api/v1/stages/prod/runs/${RUN}/quality/reports/r-dbt` }, { id: "r-floe", engine: "floe", table: "sales_silver.orders", href: HREF }],
+  runbook: null,
+  sources: [{ name: "quality", status: "available", reason: "read from the run's quality manifest" }],
+  ...over,
+});
+const noManifest = (status: "not_provided" | "unavailable", reason: string): RunQuality =>
+  qualityOf({ complete: null, counts: null, checks: null, reports: [], sources: [{ name: "quality", status, reason }] });
 const incident = (over: Partial<AlertIncident> = {}): AlertIncident => ({
   id: "i1", condition: "failed_run", severity: "critical", job: "sales_orders", domain: "sales", product: "orders", table: null, component: null,
   opened_at: new Date().toISOString(), last_seen_at: new Date().toISOString(), summary: "latest run failed", run_ids: [RUN],
@@ -48,19 +62,24 @@ const incident = (over: Partial<AlertIncident> = {}): AlertIncident => ({
 const incidentsOf = (incidents: AlertIncident[] | null = [incident(), incident({ id: "other", summary: "another job's incident", job: "crm", run_ids: [] })]): StageAlertIncidents => ({
   stage: "prod", state: { status: "available", reason: "read", evaluated_at: new Date().toISOString(), stale: false }, incidents,
 });
-const OPS = ["get_stage_health", "list_pipeline_health", "get_stage_quality_health", "list_logs", "list_alert_incidents"];
+const OPS = ["get_stage_health", "list_pipeline_health", "get_run", "get_run_failure", "get_stage_quality_health", "get_run_quality", "list_logs", "list_alert_incidents"];
 const access = (over: Partial<MonitoringStage> = {}): MonitoringStage => ({
-  stage: "prod", operations: OPS,
+  stage: "prod", operations: OPS, log_retention_days: 30,
   capabilities: ["dagster", "services", "quality", "logs", "alerts"].map((name) => ({ name: name as "dagster", status: "available", reason: `${name} is configured` })),
   ...over,
 });
-const logsOf = (n = 3) => ({
-  lines: Array.from({ length: n }, (_, i) => ({ archived_at: new Date().toISOString(), namespace: "olf-prod", pod: "run-pod", container: "floe", line: `line ${i}`, error: null })),
-  truncated: false,
+const T0 = Date.UTC(2026, 10, 16, 21, 58);
+const lineOf = (i: number, over: Partial<LogLine> = {}): LogLine => ({
+  archived_at: new Date().toISOString(), namespace: "olf-prod", pod: "run-pod", container: "floe", line: `line ${i}`, error: null,
+  timestamp: new Date(T0 + i * 1000).toISOString(), level: "info", ...over,
+});
+const logsOf = (n = 3, over: Partial<RunLogs> = {}): RunLogs => ({
+  lines: Array.from({ length: n }, (_, i) => lineOf(i)), truncated: false,
+  since: new Date(T0).toISOString(), until: new Date(T0 + 10 * 60_000).toISOString(), next: null, ...over,
 });
 
 type Reply = { status?: number; body?: unknown } | "down";
-type Routes = Partial<Record<"caps" | "failure" | "run" | "pipes" | "quality" | "alerts" | "logs", (url: URL) => Reply>>;
+type Routes = Partial<Record<"caps" | "failure" | "run" | "pipes" | "quality" | "alerts" | "logs" | "dayLogs" | "other", (url: URL) => Reply>>;
 /** Every route answers as for a platform admin on PROD's failed run, unless `routes` says otherwise. */
 function api(routes: Routes = {}) {
   const defaults: Required<Routes> = {
@@ -71,13 +90,17 @@ function api(routes: Routes = {}) {
     quality: () => ({ body: qualityOf() }),
     alerts: () => ({ body: incidentsOf() }),
     logs: () => ({ body: logsOf() }),
+    // The stage's day read (list_logs), the only log route of an API from before #1326.
+    dayLogs: () => ({ body: { lines: [lineOf(0), lineOf(1)].map(({ timestamp: _t, level: _l, ...l }) => l), truncated: false } }),
+    other: () => ({ status: 404 }),
   };
   const all = { ...defaults, ...routes };
   const fetch = vi.fn(async (input: string) => {
     const url = new URL(input, "http://portal.test");
     const p = url.pathname;
     const key: keyof Routes = p === "/api/v1/monitoring-capabilities" ? "caps" : p.endsWith("/failure") ? "failure" : /\/runs\/[^/]+$/.test(p) ? "run"
-      : p.endsWith("/health/pipelines") ? "pipes" : p.endsWith("/health/quality") ? "quality" : p.endsWith("/alerts/incidents") ? "alerts" : "logs";
+      : p.endsWith("/health/pipelines") ? "pipes" : /\/runs\/[^/]+\/quality$/.test(p) ? "quality" : p.endsWith("/alerts/incidents") ? "alerts"
+      : /\/runs\/[^/]+\/logs$/.test(p) ? "logs" : p === "/api/v1/stages/prod/logs" ? "dayLogs" : "other";
     const r = all[key](url);
     if (r === "down") throw new TypeError("Failed to fetch");
     return new Response(JSON.stringify(r.body ?? {}), { status: r.status ?? 200 });
@@ -91,6 +114,9 @@ const open = (dagster: string | null = DAGSTER, runId = RUN) =>
 const card = (name: string) => screen.getByRole("region", { name });
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+const logReads = (fetch: ReturnType<typeof vi.fn>) => urls(fetch).filter((u) => u.pathname === `/api/v1/stages/prod/runs/${RUN}/logs`);
+const qualityReads = (fetch: ReturnType<typeof vi.fn>) => urls(fetch).filter((u) => u.pathname.endsWith("/quality"));
 
 describe("failed run", () => {
   it("names the scope, the failing step, its redacted first line and the rows, and links to the run in Dagster", async () => {
@@ -110,7 +136,7 @@ describe("failed run", () => {
     expect(card("What failed")).toHaveTextContent("Step floe_silver_orders failed");
     expect(card("What failed")).toHaveTextContent("First line only");
     expect(card("Data quality")).toHaveTextContent("412 rows rejected · 19,000 accepted");
-    expect(card("Data quality")).toHaveTextContent("2 error · 1 warn · 14 passed · 1 blocking");
+    expect(card("Data quality")).toHaveTextContent("1 error · 1 warn · 1 passed · 1 blocking");
     for (const link of screen.getAllByRole("link", { name: /Open in Dagster/ })) {
       expect(link).toHaveAttribute("href", `${DAGSTER}/runs/${RUN}`);
       expect(link).toHaveAttribute("target", "_blank");
@@ -118,12 +144,13 @@ describe("failed run", () => {
     }
   });
 
-  it("offers no Re-run: run control stays in Dagster in v0.7", async () => {
+  it("offers no Re-run: run control stays in Dagster in v0.7, and no runbook while the API names none", async () => {
     api();
     open();
     await screen.findByText("SchemaMismatchError");
     expect(screen.queryByRole("button", { name: /re-?run|retry|launch/i })).toBeNull();
     expect(card("Next step")).toHaveTextContent("re-run sales_orders from Dagster");
+    expect(screen.queryByRole("link", { name: /Runbook/ })).toBeNull();
   });
 
   it("lists only the open incidents of this run or its pipeline, with their delivery", async () => {
@@ -134,44 +161,266 @@ describe("failed run", () => {
     expect(incidents).not.toHaveTextContent("another job's incident");
     expect(incidents).toHaveTextContent("Delivered opened notification · 2 of 2 receivers · 1 attempt");
   });
+});
 
-  it("reads the run's archived lines for its UTC day, and asks again when the level changes", async () => {
+describe("quality checks (get_run_quality)", () => {
+  it("lists every check, failures first, with engine, table, column, WARN apart from ERROR, and the recorded counts", async () => {
+    const fetch = api();
+    open();
+    const table = await screen.findByRole("region", { name: "Quality check results" });
+    const rows = within(table).getAllByRole("row").slice(1);
+    expect(rows.map((r) => r.querySelector(".run-outcome")!.textContent)).toEqual(["ERROR", "WARN", "PASS"]);
+    expect(rows[0]).toHaveTextContent("schema.amount_type");
+    expect(rows[0]).toHaveTextContent("sales_silver.orders · amount");
+    expect(rows[0]).toHaveTextContent("Floe · severity abort");
+    expect(rows[0]).toHaveTextContent("Blocked the run");
+    expect(rows[0]).toHaveTextContent("19,402 rejected · 0 accepted · of 19,402 rows");
+    expect(rows[1]).toHaveTextContent("dbt · severity warn");
+    expect(rows[1]).toHaveTextContent("3 failures");
+    expect(rows[1]).not.toHaveTextContent("rows");
+    expect(within(card("Quality checks")).getByText("3")).toBeInTheDocument();
+    expect(qualityReads(fetch).map((u) => u.pathname)).toEqual([`/api/v1/stages/prod/runs/${RUN}/quality`]);
+  });
+
+  it("says no counts were recorded rather than showing zeros", async () => {
+    api({ quality: () => ({ body: qualityOf({ checks: [check({ rows: null, violations: null })] }) }) });
+    open();
+    const table = await screen.findByRole("region", { name: "Quality check results" });
+    expect(within(table).getAllByRole("row")[1]).toHaveTextContent("No counts recorded");
+  });
+
+  it("says the run wrote no manifest, in the API's words, and never shows passes", async () => {
+    api({ quality: () => ({ body: noManifest("not_provided", "the run wrote no quality manifest") }), failure: () => ({ body: failureOf({ rows: null }) }) });
+    open();
+    await screen.findByText("SchemaMismatchError");
+    for (const name of ["Quality checks", "Data quality"]) {
+      expect(card(name)).toHaveTextContent("No quality manifest");
+      expect(card(name)).toHaveTextContent("the run wrote no quality manifest");
+      expect(card(name)).not.toHaveTextContent(/PASS|passed/);
+    }
+    expect(card("Quality checks").querySelector('.mon-badge[data-state="disabled"]')).not.toBeNull();
+    expect(screen.queryByRole("region", { name: "Quality check results" })).toBeNull();
+    expect(screen.queryByRole("list", { name: "Quality reports" })).toBeNull();
+  });
+
+  it("reads an unreadable manifest as unknown, not as no checks", async () => {
+    api({ quality: () => ({ body: noManifest("unavailable", "the run's quality manifest could not be read") }) });
+    open();
+    await screen.findByText("SchemaMismatchError");
+    expect(card("Quality checks")).toHaveTextContent("The quality manifest cannot be read");
+    expect(card("Quality checks").querySelector('.mon-badge[data-state="unknown"]')).not.toBeNull();
+    expect(card("Quality checks")).not.toHaveTextContent("lists no check");
+  });
+
+  it("flags an incomplete manifest, and its counts as partial", async () => {
+    api({ quality: () => ({ body: qualityOf({ complete: false }) }) });
+    open();
+    await screen.findByRole("region", { name: "Quality check results" });
+    expect(card("Quality checks")).toHaveTextContent("Manifest incomplete");
+    expect(card("Quality checks")).toHaveTextContent("checks may be missing from this list");
+    expect(card("Data quality")).toHaveTextContent("manifest incomplete, so these counts may be partial");
+  });
+
+  it("says a manifest with no check lists none, not that everything passed", async () => {
+    api({ quality: () => ({ body: qualityOf({ checks: [], counts: { passed: 0, warn: 0, error: 0, not_run: 0, unknown: 0, blocking: 0 } }) }) });
+    open();
+    expect(await within(await screen.findByRole("region", { name: "Quality checks" })).findByText("The run's quality manifest lists no check.")).toBeInTheDocument();
+  });
+
+  it("shows a refused read (403) as Disabled in the API's words, with no Retry", async () => {
+    api({ quality: () => ({ status: 403, body: { detail: "role analyst may not call get_run_quality on stage 'prod'" } }) });
+    open();
+    await screen.findByText("SchemaMismatchError");
+    expect(card("Quality checks")).toHaveTextContent("Quality checks are not available");
+    expect(card("Quality checks")).toHaveTextContent("role analyst may not call get_run_quality on stage 'prod'");
+    expect(within(card("Quality checks")).queryByRole("button", { name: /Retry/ })).toBeNull();
+  });
+
+  it("offers Retry when the read fails, and reads again", async () => {
+    let down = true;
+    api({ quality: () => (down ? { status: 503 } : { body: qualityOf() }) });
+    open();
+    await screen.findByText("SchemaMismatchError");
+    expect(card("Quality checks")).toHaveTextContent("Quality checks cannot be read");
+    down = false;
+    await userEvent.click(within(card("Quality checks")).getByRole("button", { name: /Retry/ }));
+    expect(await screen.findByRole("region", { name: "Quality check results" })).toBeInTheDocument();
+  });
+
+  it("does not take a report link to another origin as an answer", async () => {
+    api({ quality: () => ({ body: qualityOf({ reports: [{ id: "x", engine: "floe", table: null, href: "https://evil.example/report" }] }) }) });
+    await expect(getRunQuality("prod", RUN)).rejects.toMatchObject({ status: 200 });
+  });
+});
+
+describe("quality reports", () => {
+  it("links each report the API offers as a same-origin download", async () => {
+    api();
+    open();
+    const reports = await screen.findByRole("list", { name: "Quality reports" });
+    const floe = within(reports).getByRole("link", { name: /Floe report/ });
+    expect(floe).toHaveAttribute("href", HREF);
+    expect(floe).toHaveAttribute("download");
+    expect(floe).not.toHaveAttribute("target");
+    expect(floe).toHaveAccessibleName(/^Floe report\s+for sales_silver\.orders \(downloads a JSON file\)$/);
+    expect(within(reports).getByRole("link", { name: /dbt results/ })).toHaveAttribute("href", `/api/v1/stages/prod/runs/${RUN}/quality/reports/r-dbt`);
+  });
+
+  it("hides a report the API gives no link for, and says why", async () => {
+    const q = qualityOf();
+    api({ quality: () => ({ body: { ...q, reports: q.reports.map((r) => ({ ...r, href: null })) } }) });
+    open();
+    const reports = await screen.findByRole("list", { name: "Quality reports" });
+    expect(within(reports).queryByRole("link")).toBeNull();
+    expect(reports).toHaveTextContent("dbt results");
+    expect(reports).toHaveTextContent("Floe report");
+    expect(card("Data quality")).toHaveTextContent("These reports are not downloadable here. The API gives no link to your role on this stage");
+  });
+
+  it("names only the reports that cannot be downloaded when some can", async () => {
+    const q = qualityOf();
+    api({ quality: () => ({ body: { ...q, reports: [{ ...q.reports[0], href: null }, q.reports[1]] } }) });
+    open();
+    const reports = await screen.findByRole("list", { name: "Quality reports" });
+    expect(within(reports).getAllByRole("link")).toHaveLength(1);
+    expect(card("Data quality")).toHaveTextContent("dbt results: not downloadable here");
+  });
+
+  it("says the run retained no report", async () => {
+    api({ quality: () => ({ body: qualityOf({ reports: [] }) }) });
+    open();
+    expect(await screen.findByText("The run retained no Floe or dbt report.")).toBeInTheDocument();
+  });
+
+  it("shows a runbook only when the API names one", async () => {
+    api({ quality: () => ({ body: qualityOf({ runbook: "https://docs.example/runbooks/quality" }) }) });
+    open();
+    expect(await screen.findByRole("link", { name: /Runbook/ })).toHaveAttribute("href", "https://docs.example/runbooks/quality");
+  });
+});
+
+describe("run logs (list_run_logs)", () => {
+  it("reads the run's window with each line's time and level, and asks again when the filters change", async () => {
     const fetch = api();
     open();
     const lines = await screen.findByRole("region", { name: "Run log lines" });
-    expect(within(lines).getAllByRole("row")).toHaveLength(4);
-    const read = urls(fetch).find((u) => u.pathname === "/api/v1/stages/prod/logs")!;
-    expect(read.searchParams.get("run_id")).toBe(RUN);
-    expect(read.searchParams.get("date")).toBe(new Date(started * 1000).toISOString().slice(0, 10));
+    const rows = within(lines).getAllByRole("row");
+    expect(rows).toHaveLength(4);
+    expect(rows[1]).toHaveTextContent("21:58:00.000");
+    expect(rows[1]).toHaveTextContent("INFO");
+    expect(within(rows[1]).getByText("21:58:00.000").closest("time")).toHaveAttribute("dateTime", new Date(T0).toISOString());
+    const read = logReads(fetch)[0];
     expect(read.searchParams.get("limit")).toBe("200");
     expect(read.searchParams.get("severity")).toBeNull();
+    expect(read.searchParams.get("match_run")).toBeNull();
+    expect(read.searchParams.get("date")).toBeNull();
     await userEvent.selectOptions(within(card("Logs")).getByRole("combobox", { name: "Level" }), "error");
-    await vi.waitFor(() => expect(urls(fetch).filter((u) => u.pathname.endsWith("/logs")).at(-1)!.searchParams.get("severity")).toBe("error"));
+    await vi.waitFor(() => expect(logReads(fetch).at(-1)!.searchParams.get("severity")).toBe("error"));
+    await userEvent.click(within(card("Logs")).getByRole("checkbox", { name: "Match this run only" }));
+    await vi.waitFor(() => expect(logReads(fetch).at(-1)!.searchParams.get("match_run")).toBe("true"));
+    expect(logReads(fetch).at(-1)!.searchParams.get("severity")).toBe("error");
   });
 
-  it("says the archive holds no line rather than showing an empty table", async () => {
+  it("shows nothing for a null time or level, never a guessed one", async () => {
+    api({ logs: () => ({ body: logsOf(0, { lines: [lineOf(0, { timestamp: null, level: null, line: "[v1] exit code 1" })] }) }) });
+    open();
+    const row = within(await screen.findByRole("region", { name: "Run log lines" })).getAllByRole("row")[1];
+    const cells = within(row).getAllByRole("cell");
+    expect(cells[0]).toBeEmptyDOMElement();
+    expect(cells[1]).toBeEmptyDOMElement();
+    expect(cells[3]).toHaveTextContent("[v1] exit code 1");
+  });
+
+  it("marks each UTC day of a window that crosses midnight", async () => {
+    const at = (ms: number) => new Date(Date.UTC(2026, 10, 16, 23, 58) + ms).toISOString();
+    api({ logs: () => ({ body: logsOf(0, {
+      since: at(0), until: at(10 * 60_000),
+      lines: [lineOf(0, { timestamp: at(0) }), lineOf(1, { timestamp: at(150_000) }), lineOf(2, { timestamp: at(200_000), level: "warning" })],
+    }) }) });
+    open();
+    const lines = await screen.findByRole("region", { name: "Run log lines" });
+    expect(within(lines).getAllByRole("rowheader").map((h) => h.textContent)).toEqual(["2026-11-16 (UTC)", "2026-11-17 (UTC)"]);
+    expect(within(lines).getByText("WARNING")).toHaveAttribute("data-level", "warning");
+    expect(card("Logs")).toHaveTextContent("16 Nov 23:58 → 17 Nov 00:08 (UTC) · crosses midnight");
+  });
+
+  it("reads on with Load more, passing `next` back as `after` with the same filters, and appends", async () => {
+    const fetch = api({
+      logs: (u) => (u.searchParams.get("after") === "c1"
+        ? { body: logsOf(0, { lines: [lineOf(9, { line: "the last line" })], truncated: false, next: null }) }
+        : { body: logsOf(2, { truncated: true, next: "c1" }) }),
+    });
+    open();
+    await screen.findByRole("region", { name: "Run log lines" });
+    expect(card("Logs")).toHaveTextContent("2+ lines");
+    expect(card("Logs")).toHaveTextContent("2 lines shown: the window has more.");
+    await userEvent.click(within(card("Logs")).getByRole("button", { name: "Load more" }));
+    expect(await within(card("Logs")).findByText("the last line")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Run log lines" })).getAllByRole("row")).toHaveLength(4);
+    expect(logReads(fetch).at(-1)!.searchParams.get("after")).toBe("c1");
+    expect(card("Logs")).toHaveTextContent("3 lines");
+    expect(within(card("Logs")).queryByRole("button", { name: "Load more" })).toBeNull();
+  });
+
+  it("says honestly when an answer is truncated with no way to read on", async () => {
+    api({ logs: () => ({ body: logsOf(2, { truncated: true, next: null }) }) });
+    open();
+    await screen.findByRole("region", { name: "Run log lines" });
+    expect(card("Logs")).toHaveTextContent("the API gave no way to read on");
+    expect(within(card("Logs")).queryByRole("button", { name: "Load more" })).toBeNull();
+  });
+
+  it("keeps the lines and offers Retry when Load more fails", async () => {
+    let down = true;
+    api({ logs: (u) => (u.searchParams.get("after") ? (down ? { status: 503 } : { body: logsOf(1, { next: null }) }) : { body: logsOf(2, { truncated: true, next: "c1" }) }) });
+    open();
+    await screen.findByRole("region", { name: "Run log lines" });
+    await userEvent.click(within(card("Logs")).getByRole("button", { name: "Load more" }));
+    expect(await within(card("Logs")).findByText("More lines cannot be read")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Run log lines" })).getAllByRole("row")).toHaveLength(3);
+    down = false;
+    await userEvent.click(within(card("Logs")).getByRole("button", { name: /Retry/ }));
+    await vi.waitFor(() => expect(within(screen.getByRole("region", { name: "Run log lines" })).getAllByRole("row")).toHaveLength(4));
+  });
+
+  it("says the window holds no line rather than showing an empty table", async () => {
     api({ logs: () => ({ body: logsOf(0) }) });
     open();
-    expect(await within(await screen.findByRole("region", { name: "Logs" })).findByText(/The archive holds no line of this run/)).toBeInTheDocument();
+    expect(await within(await screen.findByRole("region", { name: "Logs" })).findByText(/The archive holds no line in the run's window/)).toBeInTheDocument();
   });
 
-  it("makes no logs read when the role may not read the archive, and says why", async () => {
+  it("shows how long the archive keeps lines, and nothing when the API says none", async () => {
+    api();
+    open();
+    await screen.findByRole("region", { name: "Run log lines" });
+    expect(card("Logs")).toHaveTextContent("Kept 30 days");
+    cleanup();
+    api({ caps: () => ({ body: { stages: [access({ log_retention_days: null })] } }) });
+    open();
+    await screen.findByRole("region", { name: "Run log lines" });
+    expect(card("Logs")).not.toHaveTextContent(/Kept/);
+  });
+
+  it("makes no logs read when the role may not read the archive, says why, and still says how long it keeps lines", async () => {
     const fetch = api({ caps: () => ({ body: { stages: [access({ operations: OPS.filter((o) => o !== "list_logs") })] } }) });
     open();
     await screen.findByText("SchemaMismatchError");
     expect(card("Logs")).toHaveTextContent("Disabled");
     expect(card("Logs")).toHaveTextContent("Your role may not read logs on stage PROD.");
-    expect(urls(fetch).filter((u) => u.pathname.endsWith("/logs"))).toEqual([]);
+    expect(card("Logs")).toHaveTextContent("Kept 30 days");
+    expect(within(card("Logs")).queryByRole("combobox")).toBeNull();
+    expect(logReads(fetch)).toEqual([]);
   });
 
   it("shows a log archive that is configured but unreadable as unknown, in the API's words", async () => {
     const caps = access();
     caps.capabilities = caps.capabilities.map((c) => (c.name === "logs" ? { ...c, status: "unavailable", reason: "the platform API holds no object-store key for the log archive" } : c));
-    api({ caps: () => ({ body: { stages: [caps] } }) });
+    const fetch = api({ caps: () => ({ body: { stages: [caps] } }) });
     open();
     await screen.findByText("SchemaMismatchError");
     expect(card("Logs")).toHaveTextContent("Unknown");
     expect(card("Logs")).toHaveTextContent("the platform API holds no object-store key for the log archive");
+    expect(logReads(fetch)).toEqual([]);
   });
 
   it("offers Retry on a failed logs read", async () => {
@@ -183,6 +432,85 @@ describe("failed run", () => {
     down = false;
     await userEvent.click(retry);
     expect(within(await screen.findByRole("region", { name: "Run log lines" })).getAllByRole("row")).toHaveLength(3);
+  });
+
+  it("reads lines from an API without time or level as null", async () => {
+    const { timestamp: _t, level: _l, ...older } = lineOf(0);
+    const { next: _n, ...page } = logsOf(0, { lines: [older as LogLine] });
+    api({ logs: () => ({ body: page }) });
+    const read = await listRunLogs("prod", RUN);
+    expect(read.lines[0].timestamp).toBeNull();
+    expect(read.lines[0].level).toBeNull();
+    expect(read.next).toBeNull();
+  });
+});
+
+describe("capabilities gate each read", () => {
+  it("makes no quality read when the role lacks get_run_quality, and says why", async () => {
+    const fetch = api({ caps: () => ({ body: { stages: [access({ operations: OPS.filter((o) => o !== "get_run_quality") })] } }) });
+    open();
+    await screen.findByText("SchemaMismatchError");
+    expect(card("Quality checks")).toHaveTextContent("Your role may not read this run's quality checks on stage PROD.");
+    expect(card("Data quality")).toHaveTextContent("Quality counts are not available");
+    expect(qualityReads(fetch)).toEqual([]);
+  });
+
+  it("makes no quality read on a stage with no quality reader", async () => {
+    const caps = access();
+    caps.capabilities = caps.capabilities.map((c) => (c.name === "quality" ? { ...c, status: "not_provided", reason: "no quality manifest reader is configured for this stage" } : c));
+    const fetch = api({ caps: () => ({ body: { stages: [caps] } }) });
+    open();
+    await screen.findByText("SchemaMismatchError");
+    expect(card("Quality checks")).toHaveTextContent("no quality manifest reader is configured for this stage");
+    expect(qualityReads(fetch)).toEqual([]);
+  });
+
+  it("makes no run read when the role lacks get_run_failure and get_run, and says why", async () => {
+    const fetch = api({ caps: () => ({ body: { stages: [access({ operations: OPS.filter((o) => o !== "get_run_failure" && o !== "get_run") })] } }) });
+    open();
+    expect(await screen.findByRole("heading", { level: 2, name: "Disabled This run's failure is not available" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Your role may not read this run's failure on stage PROD.");
+    expect(screen.queryByRole("button", { name: /Retry/ })).toBeNull();
+    expect(urls(fetch).filter((u) => u.pathname.endsWith("/failure") || u.pathname.endsWith(`/runs/${RUN}`))).toEqual([]);
+  });
+
+  it("asks an API from before the run operations were listed, and shows no quality checks it cannot serve", async () => {
+    const { log_retention_days: _, ...older } = access({ operations: ["get_stage_health", "list_pipeline_health", "list_logs", "list_alert_incidents"] });
+    const fetch = api({ caps: () => ({ body: { stages: [older] } }), logs: () => ({ status: 404, body: { detail: "Not Found" } }) });
+    open();
+    expect(await screen.findByText("SchemaMismatchError")).toBeInTheDocument();
+    expect(card("Quality checks")).toHaveTextContent("This Platform API does not serve a run's quality checks yet.");
+    expect(qualityReads(fetch)).toEqual([]);
+    expect(card("Logs")).not.toHaveTextContent(/Kept/);
+  });
+
+  it("reads an older API's lines from list_logs for the run's UTC day, never from the run log route it lacks", async () => {
+    const { log_retention_days: _, ...older } = access({ operations: ["get_stage_health", "list_pipeline_health", "list_logs", "list_alert_incidents"] });
+    const fetch = api({ caps: () => ({ body: { stages: [older] } }), logs: () => ({ status: 404, body: { detail: "Not Found" } }) });
+    open();
+    const lines = await screen.findByRole("region", { name: "Run log lines" });
+    expect(within(lines).getAllByRole("row")).toHaveLength(3);
+    expect(within(lines).getByText("line 1")).toBeInTheDocument();
+    expect(logReads(fetch)).toEqual([]);
+    const day = new Date(started * 1000).toISOString().slice(0, 10);
+    const read = urls(fetch).find((u) => u.pathname === "/api/v1/stages/prod/logs")!;
+    expect(read.searchParams.get("run_id")).toBe(RUN);
+    expect(read.searchParams.get("date")).toBe(day);
+    expect(card("Logs")).toHaveTextContent(`Archived ${day} (UTC) · run c94cbcb0`);
+    expect(within(card("Logs")).queryByRole("checkbox")).toBeNull();
+    expect(within(card("Logs")).getAllByRole("option").map((o) => o.textContent)).toEqual(["All levels", "Warning and above", "Error and above"]);
+    await userEvent.selectOptions(within(card("Logs")).getByRole("combobox", { name: "Level" }), "error");
+    await vi.waitFor(() => expect(urls(fetch).filter((u) => u.pathname === "/api/v1/stages/prod/logs").at(-1)!.searchParams.get("severity")).toBe("error"));
+    expect(logReads(fetch)).toEqual([]);
+  });
+
+  it("does not guess an older API's log day when the run read fails", async () => {
+    const { log_retention_days: _, ...older } = access({ operations: ["get_stage_health", "list_pipeline_health", "list_logs", "list_alert_incidents"] });
+    const fetch = api({ caps: () => ({ body: { stages: [older] } }), run: () => ({ status: 503 }) });
+    open();
+    await screen.findByText("SchemaMismatchError");
+    expect(card("Logs")).toHaveTextContent("its day in the log archive is not known");
+    expect(urls(fetch).filter((u) => u.pathname.endsWith("/logs"))).toEqual([]);
   });
 });
 
@@ -226,38 +554,50 @@ describe("what failed, honestly", () => {
     expect(card("Data quality")).toHaveTextContent("Row counts are not available");
     expect(card("Data quality")).toHaveTextContent("only a product pipeline's run writes a quality manifest");
   });
-
-  it("does not show another run's quality counts as this run's", async () => {
-    api({ quality: () => ({ body: qualityOf("7a1f02de-0000") }) });
-    open();
-    await screen.findByText("SchemaMismatchError");
-    expect(card("Data quality")).toHaveTextContent("The stage's quality counts are for run 7a1f02de of this pipeline, not this one.");
-    expect(within(card("Data quality")).getByRole("link", { name: "7a1f02de" })).toHaveAttribute("href", "/monitoring/prod/runs/7a1f02de-0000");
-    expect(card("Data quality")).not.toHaveTextContent("14 passed");
-  });
 });
 
-describe("missing fields", () => {
+describe("domain and product", () => {
+  it("takes them from the failure answer before the pipelines answer", async () => {
+    api({ failure: () => ({ body: failureOf({ domain: "commerce", product: "checkout" }) }) });
+    open();
+    expect(await screen.findByRole("heading", { level: 1, name: "commerce · checkout" })).toBeInTheDocument();
+  });
+
+  it("falls back to the pipelines answer only where the failure answer has none", async () => {
+    api({ failure: () => ({ body: failureOf({ domain: null, product: null }) }) });
+    open();
+    expect(await screen.findByRole("heading", { level: 1, name: "sales · orders" })).toBeInTheDocument();
+  });
+
   it("falls back to the job and says why the domain and product are not known", async () => {
-    api({ pipes: () => ({ body: pipesOf([pipelineOf({ domain: null, product: null })]) }), alerts: () => ({ body: incidentsOf([]) }) });
+    api({ failure: () => ({ body: failureOf({ domain: null, product: null }) }), pipes: () => ({ body: pipesOf([pipelineOf({ domain: null, product: null })]) }), alerts: () => ({ body: incidentsOf([]) }) });
     open();
     expect(await screen.findByRole("heading", { level: 1, name: "sales_orders" })).toBeInTheDocument();
     expect(screen.getByText(/Not known: the job declares no data product/)).toBeInTheDocument();
   });
 
-  it("takes the scope from an incident of the job when the pipelines read is refused", async () => {
-    api({ pipes: () => ({ status: 403, body: { detail: "role may not call list_pipeline_health" } }) });
+  it("takes the scope from an incident of the job when the failure names none and the pipelines read is refused", async () => {
+    api({ failure: () => ({ body: failureOf({ domain: null, product: null }) }), pipes: () => ({ status: 403, body: { detail: "role may not call list_pipeline_health" } }) });
     open();
     expect(await screen.findByRole("heading", { level: 1, name: "sales · orders" })).toBeInTheDocument();
   });
 
-  it("says the times are not known when the run read fails, and does not guess the log day", async () => {
+  it("accepts a failure answer from before `domain` and `product`, as null", async () => {
+    const { domain: _d, product: _p, ...older } = failureOf();
+    api({ failure: () => ({ body: older }) });
+    open();
+    expect(await screen.findByRole("heading", { level: 1, name: "sales · orders" })).toBeInTheDocument();
+  });
+});
+
+describe("missing fields", () => {
+  it("says the times are not known when the run read fails, and still reads the run's log window", async () => {
     const fetch = api({ run: () => ({ status: 503 }) });
     open();
     await screen.findByText("SchemaMismatchError");
     expect(screen.getByText(/Not known: The monitoring API failed \(503\)/)).toBeInTheDocument();
-    expect(card("Logs")).toHaveTextContent("its day in the log archive is not known");
-    expect(urls(fetch).filter((u) => u.pathname.endsWith("/logs"))).toEqual([]);
+    expect(await screen.findByRole("region", { name: "Run log lines" })).toBeInTheDocument();
+    expect(logReads(fetch)).toHaveLength(1);
   });
 
   it("says when no Dagster address is published for the stage, instead of a dead link", async () => {
@@ -298,8 +638,6 @@ describe("review fixes", () => {
     await screen.findByText("SchemaMismatchError");
     expect(fact("Started")).toHaveTextContent("Start unknown: Dagster recorded no start time for this run");
     expect(document.querySelector(".f-sub")).toHaveTextContent(/^Pipeline sales_orders · failed$/);
-    // The creation time still picks the log archive's day.
-    expect(await screen.findByRole("region", { name: "Run log lines" })).toBeInTheDocument();
   });
 
   it("turns Pipeline now Unknown once its healthy signal expires while the page is open", async () => {
@@ -312,19 +650,6 @@ describe("review fixes", () => {
     await act(() => vi.advanceTimersByTimeAsync(6_000));
     expect(fact("Pipeline now")).toHaveTextContent("Unknown");
     expect(fact("Pipeline now")).not.toHaveTextContent("Healthy");
-  });
-
-  it.each([
-    ["unavailable", "unknown", "the stage's quality manifests could not be read"],
-    ["not_provided", "disabled", "no quality manifest reader is configured for this stage"],
-  ] as const)("shows a %s quality reader in the API's words, not as no evidence", async (status, state, reason) => {
-    const body = { ...qualityOf(), pipelines: [], integrations: [{ name: "dagster", status: "available", reason: "read" }, { name: "quality", status, reason }] };
-    api({ quality: () => ({ body }) });
-    open();
-    await screen.findByText("SchemaMismatchError");
-    expect(card("Data quality")).toHaveTextContent(reason);
-    expect(card("Data quality").querySelector(`.mon-badge[data-state="${state}"]`)).not.toBeNull();
-    expect(card("Data quality")).not.toHaveTextContent("no quality evidence");
   });
 });
 
@@ -383,18 +708,23 @@ describe("refused, missing and unreachable", () => {
     open();
     await screen.findByText("SchemaMismatchError");
     expect(card("Open incidents")).toHaveTextContent("Alert incidents cannot be read");
+    expect(card("Quality checks")).toHaveTextContent("Quality checks cannot be read");
     expect(card("Data quality")).toHaveTextContent("Quality counts cannot be read");
   });
 
   it("reaches every link and control with the keyboard", async () => {
-    api();
+    api({ logs: () => ({ body: logsOf(2, { truncated: true, next: "c1" }) }) });
     open();
     await screen.findByRole("region", { name: "Run log lines" });
     const reached = new Set<Element>();
-    for (let i = 0; i < 20; i++) { await userEvent.tab(); if (document.activeElement) reached.add(document.activeElement); }
+    for (let i = 0; i < 30; i++) { await userEvent.tab(); if (document.activeElement) reached.add(document.activeElement); }
     expect(reached).toContain(screen.getAllByRole("link", { name: /Open in Dagster/ })[0]);
+    expect(reached).toContain(screen.getByRole("region", { name: "Quality check results" }));
     expect(reached).toContain(within(card("Logs")).getByRole("combobox", { name: "Level" }));
+    expect(reached).toContain(within(card("Logs")).getByRole("checkbox", { name: "Match this run only" }));
     expect(reached).toContain(screen.getByRole("region", { name: "Run log lines" }));
+    expect(reached).toContain(within(card("Logs")).getByRole("button", { name: "Load more" }));
+    expect(reached).toContain(screen.getByRole("link", { name: /Floe report/ }));
   });
 });
 
@@ -402,12 +732,13 @@ describe("helpers and the client", () => {
   it.each([["FAILURE", "critical"], ["CANCELED", "warning"], ["SUCCESS", "healthy"], ["STARTED", "unknown"], ["WHATEVER", "unknown"]] as const)(
     "reads Dagster's %s as %s", (status, state) => expect(runState(status)).toBe(state));
 
-  it("formats durations and the run's UTC day", () => {
+  it("formats durations and a line's UTC time, and keeps a time it cannot parse as sent", () => {
     expect(duration(114)).toBe("1 min 54 s");
     expect(duration(7500)).toBe("2 h 5 min");
     expect(duration(30)).toBe("30 s");
-    expect(runDay({ ...runBody, started_at: Date.UTC(2026, 10, 16, 23, 59) / 1000 })).toBe("2026-11-16");
-    expect(runDay({ ...runBody, started_at: null, created_at: Date.UTC(2026, 10, 17, 0, 1) / 1000 })).toBe("2026-11-17");
+    expect(lineTime("2026-11-16T23:59:58.120+00:00")).toBe("23:59:58.120");
+    expect(lineTime("2026-11-17T01:00:00+01:00")).toBe("00:00:00.000");
+    expect(lineTime("not a time")).toBe("not a time");
   });
 
   it("accepts a pipelines answer from before `due`, `domain` and `product`, as null", async () => {
