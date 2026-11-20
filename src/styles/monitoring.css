@@ -123,7 +123,7 @@
 .run-filter { display: flex; align-items: center; gap: var(--olf-space-2); }
 .run-filter.f-check { cursor: pointer; }
 .run-filter input:focus-visible { outline: 2px solid var(--olf-highlight); outline-offset: 2px; }
-.run-log { max-height: 26rem; margin: calc(-1 * var(--olf-space-4)) calc(-1 * var(--olf-space-4)) 0; }
+.run-log { max-height: 32rem; margin: calc(-1 * var(--olf-space-4)) calc(-1 * var(--olf-space-4)) 0; }
 .run-log td, .run-log tbody th { height: auto; padding-block: 0.25rem; font-size: 0.75rem; }
 .run-log td.run-line { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 18rem; }
 .run-foot { margin: 0; }
@@ -166,6 +166,25 @@
 .run-link:hover { text-decoration: underline; }
 .run-link:focus-visible, .run-crumbs a:focus-visible, .run-dagster:focus-visible { outline: 2px solid var(--olf-highlight); outline-offset: 2px; }
 .run-body .run-dagster { align-self: flex-start; }
+/* Failed run (#38): the summary's facts and actions, the level note, the first error line and the collapsed passes. */
+.run-summary-facts { display: flex; flex-wrap: wrap; gap: var(--olf-space-3) var(--olf-space-5); margin: 0; }
+.run-summary-facts dd { margin: 0.25rem 0 0; color: var(--olf-text-primary); font-size: 0.8125rem; overflow-wrap: anywhere; }
+.run-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--olf-space-2) var(--olf-space-3); }
+.run-actions .run-dagster { align-self: auto; }
+.run-all { font-size: 0.8125rem; font-weight: 600; overflow-wrap: anywhere; }
+.run-filter-help { margin: 0; }
+.run-level-note { margin: 0; }
+.run-level-note .f-link, .run-body .f-link { font-size: inherit; }
+.run-log tr.run-first-error { outline: none; }
+.run-log tr.run-first-error td { background: var(--olf-tint-danger); }
+.run-log tr.run-first-error:focus-visible td { box-shadow: inset 0 2px 0 var(--olf-highlight), inset 0 -2px 0 var(--olf-highlight); }
+.run-passed { margin: 0; }
+.run-passed > summary { display: flex; align-items: center; gap: 0.25rem; width: fit-content; padding: var(--olf-space-1) 0; cursor: pointer; font-size: 0.8125rem; }
+.run-passed > summary:focus-visible { outline: 2px solid var(--olf-highlight); outline-offset: 2px; border-radius: var(--olf-radius-sm); }
+.run-passed[open] > summary { margin-bottom: var(--olf-space-2); }
+.run-passed[open] .run-show, .run-passed:not([open]) .run-hide { display: none; }
+.run-passed > .run-checks { margin-top: 0; }
+
 
 /* Overview / Metrics: two views of a stage, as tabs under the page title. */
 .mon-views { display: flex; gap: var(--olf-space-5); margin: var(--olf-space-4) 0 0; border-bottom: 1px solid var(--olf-hairline); }
