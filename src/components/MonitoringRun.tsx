@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import {
-  ApiError, gate, getAlertIncidents, getMonitoringCapabilities, getPipelinesHealth, getRun, getRunFailure, getRunQuality, listRunLogs, runGate,
+  ApiError, gate, getAlertIncidents, getMonitoringCapabilities, getPipelinesHealth, getRun, getRunFailure, getRunLogs, getRunQuality, listRunLogs, runGate,
   type AlertIncident, type Gate, type HealthState, type Integration, type LogLine, type LogSeverity, type MonitoringCapabilities,
   type MonitoringStage, type PipelineOutcome, type PipelinesHealth, type QualityCheck, type QualityOutcome, type QualityReport, type Run,
   type RunFailure, type RunQuality, type StageAlertIncidents,
@@ -145,13 +145,23 @@ const windowEnd = (ts: string) => {
 };
 const kept = (days: number) => `Kept ${days} day${days === 1 ? "" : "s"}`;
 
-type Page = { lines: LogLine[]; next: string | null; truncated: boolean; since: string; until: string };
+/** `day` is set only for a page read the older way (one UTC day of `list_logs`), which has no window and no `next`. */
+type Page = { lines: LogLine[]; next: string | null; truncated: boolean; since: string; until: string; day?: string };
+
+/** The run's UTC day, as an older API's log archive is read (`list_logs`, one day): its start, else its creation. */
+const runDay = (r: Run) => new Date((r.started_at ?? r.created_at) * 1000).toISOString().slice(0, 10);
+/** The level floors an API from before #1326 accepts on `list_logs`. */
+const OLDER_FLOORS: Floor[] = ["", "warning", "error"];
 type More = { status: "idle" } | { status: "loading" } | { status: "error"; error: ApiError };
 
 /** The run's archived lines, from its start to its end across UTC days (#1326), with each line's own time and level. */
-function RunLogs({ access, stage, runId }: { access: MonitoringStage; stage: string; runId: string }) {
+function RunLogs({ access, stage, runId, run }: { access: MonitoringStage; stage: string; runId: string; run: Part<Run> }) {
   // list_run_logs has list_logs's permission row (#1326) and is not listed on its own: list_logs gates it.
   const g = gate(access, "logs", "list_logs", "logs");
+  // An API from before #1324/#1326 (no `log_retention_days`) has no run log route: its lines are read, as before this
+  // screen moved to list_run_logs, from list_logs for the run's UTC day, with no window, no time or level, no paging.
+  const older = access.log_retention_days === undefined;
+  const day = older && run.status === "ok" ? runDay(run.data) : undefined;
   const retention = access.log_retention_days ?? null;
   const [severity, setSeverity] = useState<Floor>("");
   const [matchRun, setMatchRun] = useState(false);
@@ -162,18 +172,24 @@ function RunLogs({ access, stage, runId }: { access: MonitoringStage; stage: str
   const filters = { severity: severity || undefined, matchRun };
 
   useEffect(() => {
-    if (!g.open) return;
+    if (!g.open || (older && !day)) return;
     const ctl = new AbortController();
     const deadline = setTimeout(() => { ctl.abort(); setLoad({ status: "error", error: timedOut(RUN_DEADLINE_MS) }); }, RUN_DEADLINE_MS);
     moreCtl.current?.abort();
     setMore({ status: "idle" });
     setLoad({ status: "loading" });
-    listRunLogs(stage, runId, { severity: severity || undefined, matchRun }, ctl.signal).then(
+    const read: Promise<Page> = older && day
+      ? getRunLogs(stage, runId, day, { severity: severity === "warning" || severity === "error" ? severity : undefined }, ctl.signal).then((d) => ({
+          lines: d.lines.map((l) => ({ ...l, timestamp: l.timestamp ?? null, level: l.level ?? null })), truncated: d.truncated, next: null,
+          since: `${day}T00:00:00Z`, until: new Date(Date.parse(`${day}T00:00:00Z`) + 86_400_000).toISOString(), day,
+        }))
+      : listRunLogs(stage, runId, { severity: severity || undefined, matchRun }, ctl.signal);
+    read.then(
       (data) => setLoad({ status: "ok", data }),
       (e) => { if (!ctl.signal.aborted) setLoad({ status: "error", error: failure(e) }); },
     ).finally(() => clearTimeout(deadline));
     return () => { clearTimeout(deadline); ctl.abort(); moreCtl.current?.abort(); };
-  }, [g.open, stage, runId, severity, matchRun, attempt]);
+  }, [g.open, older, day, stage, runId, severity, matchRun, attempt]);
 
   /** The next page, with the same filters, after the last line shown; its lines are appended, never re-read. */
   const loadMore = () => {
@@ -200,13 +216,20 @@ function RunLogs({ access, stage, runId }: { access: MonitoringStage; stage: str
       <Gap what="Archived logs" part={{ status: "off", state: g.state, reason: g.reason }} />
       {keptNote && <p className="mon-why run-foot"><span className="label">Archive</span> {keptNote}</p>}
     </>;
+  } else if (older && !day) {
+    body = <Gap what="Archived logs" part={{ status: "off", state: "unknown", reason: "The run's start time could not be read, so its day in the log archive is not known." }} />;
   } else if (load.status === "loading") body = <p className="mon-loading" role="status">Reading the run's archived lines…</p>;
   else if (load.status !== "ok") body = <Gap what="Archived logs" part={load} retry={() => setAttempt((n) => n + 1)} />;
   else {
     const d = load.data;
     const first = utcDay(d.since);
     const crosses = !!first && first !== utcDay(new Date(Date.parse(d.until) - 1).toISOString());
-    const window = (
+    const window = d.day ? (
+      <p className="mon-why run-foot">
+        <span className="label">Archived</span> {d.day} (UTC) · run {short(runId)}
+        {d.truncated ? ` · the first ${d.lines.length} lines only: the rest are in Dagster` : ""}
+      </p>
+    ) : (
       <p className="mon-why run-foot">
         <span className="label">Window</span> {windowEnd(d.since)} → {windowEnd(d.until)} (UTC){crosses ? " · crosses midnight" : ""}
         {keptNote && <> · {keptNote}</>}
@@ -216,20 +239,20 @@ function RunLogs({ access, stage, runId }: { access: MonitoringStage; stage: str
       body = (
         <>
           <p className="run-step">
-            The archive holds no {severity ? `${SEVERITY_LABEL[severity].toLowerCase()} ` : ""}line {matchRun ? "tagged with this run " : ""}in the run's window.
+            The archive holds no {severity ? `${SEVERITY_LABEL[severity].toLowerCase()} ` : ""}line {matchRun ? "tagged with this run " : ""}{d.day ? `of this run for ${d.day} (UTC)` : "in the run's window"}.
             Lines still in the collector's spool are not archived yet.
           </p>
           {window}
         </>
       );
     } else {
-      let day = crosses ? undefined : first;
+      let shownDay = crosses ? undefined : first;
       const rows: React.ReactNode[] = [];
       d.lines.forEach((l, i) => {
         const ts = l.timestamp ?? null;
         const lineDay = ts ? utcDay(ts) : undefined;
-        if (lineDay && lineDay !== day) {
-          day = lineDay;
+        if (lineDay && lineDay !== shownDay) {
+          shownDay = lineDay;
           rows.push(<tr key={`day-${i}`} className="run-day"><th scope="rowgroup" colSpan={4}>{lineDay} (UTC)</th></tr>);
         }
         const level = l.level ?? null;
@@ -250,7 +273,7 @@ function RunLogs({ access, stage, runId }: { access: MonitoringStage; stage: str
               <tbody>{rows}</tbody>
             </table>
           </div>
-          {d.truncated && (
+          {d.truncated && !d.day && (
             <div className="run-more">
               <p className="mon-why">
                 {d.lines.length.toLocaleString("en-US")} lines shown: the window has more{d.next ? "." : ", but the API gave no way to read on: the rest are in Dagster."}
@@ -275,19 +298,21 @@ function RunLogs({ access, stage, runId }: { access: MonitoringStage; stage: str
       title="Logs"
       aside={<>
         {count && <span className="f-count" id="run-logs-count">{count}</span>}
-        {g.open && (
+        {g.open && (!older || day) && (
           <div className="run-filters">
             <label className="run-filter">
               <span className="q-label">Level</span>
               <select className="q-select" value={severity} onChange={(e) => setSeverity(e.target.value as Floor)}>
-                {(Object.keys(SEVERITY_LABEL) as Floor[]).map((k) => <option key={k} value={k}>{SEVERITY_LABEL[k]}</option>)}
+                {(older ? OLDER_FLOORS : (Object.keys(SEVERITY_LABEL) as Floor[])).map((k) => <option key={k} value={k}>{SEVERITY_LABEL[k]}</option>)}
               </select>
             </label>
+            {!older && <>
             <label className="run-filter f-check">
               <input type="checkbox" checked={matchRun} onChange={(e) => setMatchRun(e.target.checked)} aria-describedby="run-match-why" />
               <span className="q-label">Match this run only</span>
             </label>
             <span className="sr-only" id="run-match-why">Keeps only the lines the collector tagged with this run, which leaves older untagged records out.</span>
+            </>}
           </div>
         )}
       </>}
@@ -635,7 +660,7 @@ export function MonitoringRun({ stage, runId, dagster }: { stage: string; runId:
         <div className="run-col">
           <WhatFailed f={fd} />
           <QualityChecks quality={snap.quality} retry={retry} />
-          <RunLogs access={access} stage={stage} runId={runId} />
+          <RunLogs access={access} stage={stage} runId={runId} run={snap.run} />
         </div>
         <div className="run-col">
           <Quality f={fd} quality={snap.quality} retry={retry} />

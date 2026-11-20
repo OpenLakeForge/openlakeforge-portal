@@ -729,9 +729,11 @@ function runQuality(scenario: Scenario, stage: string, run: MockRun) {
     const f = (id: string, column: string | null, sev: string, outcome: string, pipeline: string, c: C = {}) => check("floe", id, "sales_silver.orders", column, sev, outcome, pipeline, c, floe);
     const d = (id: string, column: string, severity = "error") => check("dbt", id, "sales_staging.stg_orders", column, severity, "passed", "continued", { failures: 0 }, dbt);
     checks = [
-      f("schema.amount_type", "amount", "abort", "error", "blocked", { rows: 19_402, rejected: 19_402, accepted: 0 }),
+      // Floe's rows agree with the failure answer's `rows` (412 rejected, 0 accepted): the 412 rows cast.ordered_at
+      // quarantined are the only rejected ones, and the policy abort on amount committed none, so 0 were accepted.
+      f("schema.amount_type", "amount", "abort", "error", "blocked", { rows: 19_402, accepted: 0, violations: 19_402 }),
       f("range.amount_non_negative", "amount", "reject", "error", "quarantined", { rows: 19_402, violations: 3 }),
-      f("cast.ordered_at", "ordered_at", "warn", "warn", "quarantined", { rows: 19_402, rejected: 412, accepted: 18_990 }),
+      f("cast.ordered_at", "ordered_at", "warn", "warn", "quarantined", { rows: 19_402, rejected: 412 }),
       f("not_null.order_id", "order_id", "reject", "passed", "continued", { rows: 19_402, violations: 0 }),
       f("unique.order_id", "order_id", "reject", "passed", "continued", { rows: 19_402, violations: 0 }),
       f("not_null.customer_id", "customer_id", "reject", "passed", "continued", { rows: 19_402, violations: 0 }),

@@ -79,7 +79,7 @@ const logsOf = (n = 3, over: Partial<RunLogs> = {}): RunLogs => ({
 });
 
 type Reply = { status?: number; body?: unknown } | "down";
-type Routes = Partial<Record<"caps" | "failure" | "run" | "pipes" | "quality" | "alerts" | "logs" | "other", (url: URL) => Reply>>;
+type Routes = Partial<Record<"caps" | "failure" | "run" | "pipes" | "quality" | "alerts" | "logs" | "dayLogs" | "other", (url: URL) => Reply>>;
 /** Every route answers as for a platform admin on PROD's failed run, unless `routes` says otherwise. */
 function api(routes: Routes = {}) {
   const defaults: Required<Routes> = {
@@ -90,6 +90,8 @@ function api(routes: Routes = {}) {
     quality: () => ({ body: qualityOf() }),
     alerts: () => ({ body: incidentsOf() }),
     logs: () => ({ body: logsOf() }),
+    // The stage's day read (list_logs), the only log route of an API from before #1326.
+    dayLogs: () => ({ body: { lines: [lineOf(0), lineOf(1)].map(({ timestamp: _t, level: _l, ...l }) => l), truncated: false } }),
     other: () => ({ status: 404 }),
   };
   const all = { ...defaults, ...routes };
@@ -98,7 +100,7 @@ function api(routes: Routes = {}) {
     const p = url.pathname;
     const key: keyof Routes = p === "/api/v1/monitoring-capabilities" ? "caps" : p.endsWith("/failure") ? "failure" : /\/runs\/[^/]+$/.test(p) ? "run"
       : p.endsWith("/health/pipelines") ? "pipes" : /\/runs\/[^/]+\/quality$/.test(p) ? "quality" : p.endsWith("/alerts/incidents") ? "alerts"
-      : /\/runs\/[^/]+\/logs$/.test(p) ? "logs" : "other";
+      : /\/runs\/[^/]+\/logs$/.test(p) ? "logs" : p === "/api/v1/stages/prod/logs" ? "dayLogs" : "other";
     const r = all[key](url);
     if (r === "down") throw new TypeError("Failed to fetch");
     return new Response(JSON.stringify(r.body ?? {}), { status: r.status ?? 200 });
@@ -474,12 +476,41 @@ describe("capabilities gate each read", () => {
 
   it("asks an API from before the run operations were listed, and shows no quality checks it cannot serve", async () => {
     const { log_retention_days: _, ...older } = access({ operations: ["get_stage_health", "list_pipeline_health", "list_logs", "list_alert_incidents"] });
-    const fetch = api({ caps: () => ({ body: { stages: [older] } }) });
+    const fetch = api({ caps: () => ({ body: { stages: [older] } }), logs: () => ({ status: 404, body: { detail: "Not Found" } }) });
     open();
     expect(await screen.findByText("SchemaMismatchError")).toBeInTheDocument();
     expect(card("Quality checks")).toHaveTextContent("This Platform API does not serve a run's quality checks yet.");
     expect(qualityReads(fetch)).toEqual([]);
     expect(card("Logs")).not.toHaveTextContent(/Kept/);
+  });
+
+  it("reads an older API's lines from list_logs for the run's UTC day, never from the run log route it lacks", async () => {
+    const { log_retention_days: _, ...older } = access({ operations: ["get_stage_health", "list_pipeline_health", "list_logs", "list_alert_incidents"] });
+    const fetch = api({ caps: () => ({ body: { stages: [older] } }), logs: () => ({ status: 404, body: { detail: "Not Found" } }) });
+    open();
+    const lines = await screen.findByRole("region", { name: "Run log lines" });
+    expect(within(lines).getAllByRole("row")).toHaveLength(3);
+    expect(within(lines).getByText("line 1")).toBeInTheDocument();
+    expect(logReads(fetch)).toEqual([]);
+    const day = new Date(started * 1000).toISOString().slice(0, 10);
+    const read = urls(fetch).find((u) => u.pathname === "/api/v1/stages/prod/logs")!;
+    expect(read.searchParams.get("run_id")).toBe(RUN);
+    expect(read.searchParams.get("date")).toBe(day);
+    expect(card("Logs")).toHaveTextContent(`Archived ${day} (UTC) · run c94cbcb0`);
+    expect(within(card("Logs")).queryByRole("checkbox")).toBeNull();
+    expect(within(card("Logs")).getAllByRole("option").map((o) => o.textContent)).toEqual(["All levels", "Warning and above", "Error and above"]);
+    await userEvent.selectOptions(within(card("Logs")).getByRole("combobox", { name: "Level" }), "error");
+    await vi.waitFor(() => expect(urls(fetch).filter((u) => u.pathname === "/api/v1/stages/prod/logs").at(-1)!.searchParams.get("severity")).toBe("error"));
+    expect(logReads(fetch)).toEqual([]);
+  });
+
+  it("does not guess an older API's log day when the run read fails", async () => {
+    const { log_retention_days: _, ...older } = access({ operations: ["get_stage_health", "list_pipeline_health", "list_logs", "list_alert_incidents"] });
+    const fetch = api({ caps: () => ({ body: { stages: [older] } }), run: () => ({ status: 503 }) });
+    open();
+    await screen.findByText("SchemaMismatchError");
+    expect(card("Logs")).toHaveTextContent("its day in the log archive is not known");
+    expect(urls(fetch).filter((u) => u.pathname.endsWith("/logs"))).toEqual([]);
   });
 });
 
