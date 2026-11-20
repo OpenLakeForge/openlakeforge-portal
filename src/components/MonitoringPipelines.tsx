@@ -7,7 +7,9 @@ import {
   type HealthSignal, type HealthState, type HealthWindow, type Integration, type PipelineHealth, type PipelinesHealth,
 } from "../lib/health-api";
 import { Link } from "react-router";
+import { formatTime, seconds, useTimeZone, type TimeZoneState } from "../lib/time";
 import { StatusBadge } from "./StatusBadge";
+import { Time, Zoned } from "./Time";
 
 /** One read of a snapshot: its answer, why it failed, or why it was not made (`off`: no source, or not the role's). */
 export type Part<T> = { status: "ok"; data: T } | { status: "error"; error: ApiError } | { status: "off"; state: HealthState; reason: string };
@@ -61,13 +63,6 @@ export function pipesLine(p: Pipes): string {
   return parts.join(" · ");
 }
 
-/** "14:05" today, "16 Nov 14:05" another day. */
-export function when(t: number | string | null | undefined, now: number): string {
-  if (t === null || t === undefined) return "—";
-  const d = new Date(typeof t === "number" ? t * 1000 : Date.parse(t));
-  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  return d.toDateString() === new Date(now).toDateString() ? time : `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${time}`;
-}
 const short = (run: string) => run.slice(0, 8);
 /** The Failed-run screen of one run. */
 export const runHref = (stage: string, run: string) => `/monitoring/${encodeURIComponent(stage)}/runs/${encodeURIComponent(run)}`;
@@ -150,14 +145,14 @@ export function attention(p: Pipes, stage: string): Row[] {
 
 /** A pipeline's failed-run count in the API's window, as words. Null is unknown, never 0. A count whose read stopped
  * short of the window's start says where it starts (the pipeline's `covered_from`). An older API without `window` counts the last `run_window` runs. */
-export function failedRuns(x: Pick<PipelineHealth, "failed_runs" | "covered_from">, p: Pick<Extract<Pipes, { ok: true }>, "window" | "runWindow">, now: number):
-  { text: string; why?: string; failedIn?: string } {
+export function failedRuns(x: Pick<PipelineHealth, "failed_runs" | "covered_from">, p: Pick<Extract<Pipes, { ok: true }>, "window" | "runWindow">, now: number,
+  tz: Pick<TimeZoneState, "zone" | "label">): { text: string; why?: string; failedIn?: string } {
   if (x.failed_runs === null) return { text: "Unknown", why: "the count of failed runs could not be read" };
   if (!p.window) return { text: `${x.failed_runs} of last ${p.runWindow} runs` };
   // The pipeline's own `covered_from`: the window's is about the stage's sum, and a job with none counts the whole window.
   const from = x.covered_from;
   const failedIn = x.failed_runs > 0 ? p.window.range : undefined;
-  if (from) return { text: `${x.failed_runs} failed since ${when(from, now)}`, why: `the run read stopped short of the last ${p.window.range}`, failedIn };
+  if (from) return { text: `${x.failed_runs} failed since ${formatTime(from, tz.zone, now)} ${tz.label}`, why: `the run read stopped short of the last ${p.window.range}`, failedIn };
   return { text: `${x.failed_runs} failed in last ${p.window.range}`, failedIn };
 }
 
@@ -165,6 +160,7 @@ const SCHEDULE: Record<PipelineHealth["schedule"]["status"], string> = { running
 const RUN_WORD: Record<string, string> = { SUCCESS: "Succeeded", FAILURE: "Failed", CANCELED: "Canceled", CANCELING: "Canceling", STARTED: "Running", QUEUED: "Queued", STARTING: "Starting", NOT_STARTED: "Not started" };
 
 export function PipelinesTable({ p, now, stage }: { p: Extract<Pipes, { ok: true }>; now: number; stage: string }) {
+  const tz = useTimeZone();
   if (!p.pipelines.length) return null;
   return (
     <section className="q-card mon-list" aria-labelledby="mon-pipelines-h">
@@ -175,7 +171,7 @@ export function PipelinesTable({ p, now, stage }: { p: Extract<Pipes, { ok: true
       <div className="f-scroll" role="region" aria-label="Pipeline health" tabIndex={0}>
         <table className="f-table mon-table mon-pipes">
           <thead>
-            <tr><th scope="col">Pipeline</th><th scope="col">State</th><th scope="col">Latest run</th><th scope="col">Last success</th><th scope="col">Schedule</th><th scope="col">Failed runs</th></tr>
+            <tr><th scope="col">Pipeline</th><th scope="col">State</th><th scope="col"><Zoned>Latest run</Zoned></th><th scope="col"><Zoned>Last success</Zoned></th><th scope="col">Schedule</th><th scope="col">Failed runs</th></tr>
           </thead>
           <tbody>
             {p.pipelines.map((x) => {
@@ -184,11 +180,11 @@ export function PipelinesTable({ p, now, stage }: { p: Extract<Pipes, { ok: true
                 <tr key={x.job}>
                   <th scope="row"><JobLink stage={stage} job={x.job} /></th>
                   <td><StatusBadge state={x.shown} /></td>
-                  <td>{run ? <>{RUN_WORD[run.status] ?? run.status} · {when(run.ended_at ?? run.started_at ?? run.created_at, now)}<span className="mon-why"><RunLink stage={stage} run={run.run_id} label={short(run.run_id)} /></span></> : "No run in the window"}</td>
-                  <td>{x.freshness.last_success_at ? when(x.freshness.last_success_at, now) : "None on record"}</td>
+                  <td>{run ? <>{RUN_WORD[run.status] ?? run.status} · <Time at={seconds(run.ended_at ?? run.started_at ?? run.created_at)} now={now} bare /><span className="mon-why"><RunLink stage={stage} run={run.run_id} label={short(run.run_id)} /></span></> : "No run in the window"}</td>
+                  <td>{x.freshness.last_success_at ? <Time at={x.freshness.last_success_at} now={now} bare /> : "None on record"}</td>
                   <td>{x.schedule.status === "absent" ? SCHEDULE.absent : <>{SCHEDULE[x.schedule.status]}<span className="mon-why f-mono">{x.schedule.name && <Breakable text={x.schedule.name} />}</span></>}</td>
                   <td className="f-mono mon-failed">{(() => {
-                    const f = failedRuns(x, p, now);
+                    const f = failedRuns(x, p, now, tz);
                     const text = f.failedIn
                       ? <Link className="run-link" to={runsHref(stage, x.job, f.failedIn)} aria-label={`${f.text}: open the failed runs of ${x.job}`}>{f.text}</Link>
                       : f.text;

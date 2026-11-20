@@ -2,8 +2,9 @@
 // GET /api/v1/stages/{stage}/health/quality. Counts are the API's; `counts: null` is unknown and never shown as zeros.
 
 import { ApiError, worst, type HealthState, type QualityCounts, type StageQualityHealth } from "../lib/health-api";
-import { absent, RunLink, when, type Part } from "./MonitoringPipelines";
+import { absent, RunLink, type Part } from "./MonitoringPipelines";
 import { StatusBadge } from "./StatusBadge";
+import { Time, Zoned } from "./Time";
 
 /** What the page knows about quality: the answer and its state, or a gap with its reason. */
 export type Quality = { ok: true; data: StageQualityHealth; state: HealthState; counted: number } | { ok: false; state: HealthState; reason: string; error?: ApiError };
@@ -69,7 +70,7 @@ export function QualityTable({ q, now, stage }: { q: Extract<Quality, { ok: true
       </div>
       <div className="f-scroll" role="region" aria-label="Quality by pipeline" tabIndex={0}>
         <table className="f-table mon-table mon-quality">
-          <thead><tr><th scope="col">Product</th><th scope="col">State</th><th scope="col">Checks</th><th scope="col">Run</th></tr></thead>
+          <thead><tr><th scope="col">Product</th><th scope="col">State</th><th scope="col">Checks</th><th scope="col"><Zoned>Run</Zoned></th></tr></thead>
           <tbody>
             {rows.map((x) => (
               <tr key={x.job}>
@@ -82,7 +83,7 @@ export function QualityTable({ q, now, stage }: { q: Extract<Quality, { ok: true
                   </span>
                   <span className="mon-why f-mono">{x.complete === false ? `not every result is in yet · ${x.reason}` : x.reason}</span>
                 </td>
-                <td className="f-mono">{x.run_id ? <>{when(x.observed_at, now)} · <RunLink stage={stage} run={x.run_id} /></> : "No run"}</td>
+                <td className="f-mono">{x.run_id ? <><Time at={x.observed_at} now={now} bare /> · <RunLink stage={stage} run={x.run_id} /></> : "No run"}</td>
               </tr>
             ))}
           </tbody>

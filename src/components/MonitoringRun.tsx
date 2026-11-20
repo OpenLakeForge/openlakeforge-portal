@@ -12,10 +12,12 @@ import {
   type MonitoringStage, type PipelineOutcome, type PipelinesHealth, type QualityCheck, type QualityOutcome, type QualityReport, type Run,
   type RunFailure, type RunQuality, type StageAlertIncidents,
 } from "../lib/health-api";
-import { ago, DEADLINE_MS } from "./Monitoring";
+import { dayKey, formatClock, formatDate, seconds, toMs, useTimeZone } from "../lib/time";
+import { DEADLINE_MS } from "./Monitoring";
 import { alerts, DELIVERY, deliveryLine } from "./MonitoringAlerts";
-import { absent, pipes, runHref, when, type Part } from "./MonitoringPipelines";
+import { absent, pipes, runHref, type Part } from "./MonitoringPipelines";
 import { StatusBadge } from "./StatusBadge";
+import { Ago, Time, Zoned, ZoneSwitch } from "./Time";
 
 /** The failure read is held to 20 s by the API itself (#1271); the page waits a little longer before calling it unreachable. */
 export const RUN_DEADLINE_MS = 25_000;
@@ -83,14 +85,14 @@ function Gap({ what, part, retry }: { what: string; part: Exclude<Part<unknown>,
   );
 }
 
-/** "Ended 09:32 AM, after 1 min 55 s", or why the time is not known: the run's own end, never its creation. */
+/** "Ended 09:32 UTC, after 1 min 55 s", or why the time is not known: the run's own end, never its creation. */
 function Ended({ run, now }: { run: Part<Run>; now: number }) {
   if (run.status !== "ok") {
     return <span className="mon-why">Not known: {run.status === "off" ? run.reason : run.error.message}</span>;
   }
   const r = run.data;
   if (r.ended_at == null) return <span className="mon-why">Not ended, or no end time recorded</span>;
-  return <>Ended {when(r.ended_at, now)}{r.started_at != null && `, after ${duration(r.ended_at - r.started_at)}`}</>;
+  return <>Ended <Time at={seconds(r.ended_at)} now={now} />{r.started_at != null && `, after ${duration(r.ended_at - r.started_at)}`}</>;
 }
 
 /** The failure summary: what failed and why, when, and where to look next (logs, reports, runbook, Dagster, the job's
@@ -169,19 +171,6 @@ type Floor = keyof typeof SEVERITY_LABEL;
 const DEFAULT_FLOOR: Floor = "warning";
 const FLOOR_WORDS: Record<Exclude<Floor, "">, string> = { info: "info lines and above", warning: "warnings and above", error: "errors and above", critical: "critical lines" };
 
-/** "23:41:07.204" from the line's own ISO time, in UTC; a time the API sent that does not parse is shown as sent. */
-export function lineTime(ts: string): string {
-  const t = Date.parse(ts);
-  return Number.isNaN(t) ? ts : new Date(t).toISOString().slice(11, 23);
-}
-const utcDay = (ts: string) => { const t = Date.parse(ts); return Number.isNaN(t) ? undefined : new Date(t).toISOString().slice(0, 10); };
-/** "16 Nov 23:41" (UTC), for the window's ends. */
-const windowEnd = (ts: string) => {
-  const t = Date.parse(ts);
-  if (Number.isNaN(t)) return ts;
-  const d = new Date(t);
-  return `${d.getUTCDate()} ${d.toLocaleString("en-GB", { month: "short", timeZone: "UTC" })} ${d.toISOString().slice(11, 16)}`;
-};
 const kept = (days: number) => `Kept ${days} day${days === 1 ? "" : "s"}`;
 
 /** `day` is set only for a page read the older way (one UTC day of `list_logs`), which has no window and no `next`. */
@@ -194,7 +183,8 @@ const OLDER_FLOORS: Floor[] = ["", "warning", "error"];
 type More = { status: "idle" } | { status: "loading" } | { status: "error"; error: ApiError };
 
 /** The run's archived lines, from its start to its end across UTC days (#1326), with each line's own time and level. */
-function RunLogs({ access, stage, runId, run }: { access: MonitoringStage; stage: string; runId: string; run: Part<Run> }) {
+function RunLogs({ access, stage, runId, run, now }: { access: MonitoringStage; stage: string; runId: string; run: Part<Run>; now: number }) {
+  const tz = useTimeZone();
   // list_run_logs has list_logs's permission row (#1326) and is not listed on its own: list_logs gates it.
   const g = gate(access, "logs", "list_logs", "logs");
   // An API from before #1324/#1326 (no `log_retention_days`) has no run log route: its lines are read, as before this
@@ -283,8 +273,10 @@ function RunLogs({ access, stage, runId, run }: { access: MonitoringStage; stage
   else if (load.status !== "ok") body = <Gap what="Archived logs" part={load} retry={() => setAttempt((n) => n + 1)} />;
   else {
     const d = load.data;
-    const first = utcDay(d.since);
-    const crosses = !!first && first !== utcDay(new Date(Date.parse(d.until) - 1).toISOString());
+    // Days, and midnight, are the reader's zone's: a window crosses midnight where its first and last instants fall on two days.
+    const first = dayKey(d.since, tz.zone);
+    const last = dayKey(toMs(d.until) - 1, tz.zone);
+    const crosses = !!first && !!last && first !== last;
     const window = d.day ? (
       <p className="mon-why run-foot">
         <span className="label">Archived</span> {d.day} (UTC) · run {short(runId)}
@@ -292,7 +284,7 @@ function RunLogs({ access, stage, runId, run }: { access: MonitoringStage; stage
       </p>
     ) : (
       <p className="mon-why run-foot">
-        <span className="label">Window</span> {windowEnd(d.since)} → {windowEnd(d.until)} (UTC){crosses ? " · crosses midnight" : ""}
+        <span className="label">Window</span> <Time at={d.since} now={now} bare /> → <Time at={d.until} now={now} />{crosses ? " · crosses midnight" : ""}
         {keptNote && <> · {keptNote}</>}
       </p>
     );
@@ -308,20 +300,21 @@ function RunLogs({ access, stage, runId, run }: { access: MonitoringStage; stage
         </>
       );
     } else {
+      // A window within one day names it in the footer; one that crosses midnight names each day above its lines.
       let shownDay = crosses ? undefined : first;
       const rows: React.ReactNode[] = [];
       const errorAt = d.lines.findIndex((l) => l.level === "error" || l.level === "critical");
       d.lines.forEach((l, i) => {
         const ts = l.timestamp ?? null;
-        const lineDay = ts ? utcDay(ts) : undefined;
-        if (lineDay && lineDay !== shownDay) {
+        const lineDay = ts ? dayKey(ts, tz.zone) : undefined;
+        if (ts && lineDay && lineDay !== shownDay) {
           shownDay = lineDay;
-          rows.push(<tr key={`day-${i}`} className="run-day"><th scope="rowgroup" colSpan={4}>{lineDay} (UTC)</th></tr>);
+          rows.push(<tr key={`day-${i}`} className="run-day"><th scope="rowgroup" colSpan={4}><time dateTime={lineDay}>{formatDate(ts, tz.zone, now)}</time></th></tr>);
         }
         const level = l.level ?? null;
         rows.push(
           <tr key={i} {...(i === errorAt ? { ref: firstError, tabIndex: -1, className: "run-first-error" } : {})}>
-            <td className="f-mono run-time">{ts && <time dateTime={ts} title={ts}>{lineTime(ts)}</time>}</td>
+            <td className="f-mono run-time">{ts && (lineDay ? <Time at={ts} now={now} precision="millisecond" bare clock /> : ts)}</td>
             <td>{level && <span className="run-level" data-level={level}>{level.toUpperCase()}</span>}</td>
             <td className="f-mono">{l.container}</td>
             <td className="f-mono run-line">{l.line ?? <span className="mon-why">Unreadable record: {l.error ?? "no reason given"}</span>}</td>
@@ -333,7 +326,7 @@ function RunLogs({ access, stage, runId, run }: { access: MonitoringStage; stage
           <LevelNote severity={severity} fellBack={fellBack} onAll={() => pick("")} onJump={errorAt >= 0 ? jump : undefined} />
           <div className="f-scroll run-log" role="region" aria-label="Run log lines" tabIndex={0}>
             <table className="f-table mon-table">
-              <thead><tr><th scope="col">Time (UTC)</th><th scope="col">Level</th><th scope="col">Container</th><th scope="col">Line</th></tr></thead>
+              <thead><tr><th scope="col"><Zoned>Time</Zoned></th><th scope="col">Level</th><th scope="col">Container</th><th scope="col">Line</th></tr></thead>
               <tbody>{rows}</tbody>
             </table>
           </div>
@@ -606,7 +599,7 @@ function Incidents({ a, runId, job, now, retry }: { a: Part<StageAlertIncidents>
                   <StatusBadge state={i.severity} />
                   <span>
                     <span className="mon-what">{i.summary}</span>
-                    <span className="mon-why f-mono">{i.condition}{i.table ? ` · ${i.table}` : ""} · opened {when(i.opened_at, now)} · last seen {ago(i.last_seen_at, now)}</span>
+                    <span className="mon-why f-mono">{i.condition}{i.table ? ` · ${i.table}` : ""} · opened <Time at={i.opened_at} now={now} /> · last seen <Ago at={i.last_seen_at} now={now} /></span>
                     <span className="mon-why"><span className="mon-delivery" data-status={i.delivery.status}>{DELIVERY[i.delivery.status]}</span> {deliveryLine(i.delivery)}</span>
                   </span>
                 </li>
@@ -744,7 +737,7 @@ export function MonitoringRun({ stage, runId, dagster }: { stage: string; runId:
       // The failure summary first, then the logs at full width, then the checks beside the counts and incidents (#38).
       <div className="run-col">
         <WhatFailed f={fd} run={snap.run} quality={snap.quality} stage={stage} runId={runId} dagster={dagster} now={now} />
-        <RunLogs access={access} stage={stage} runId={runId} run={snap.run} />
+        <RunLogs access={access} stage={stage} runId={runId} run={snap.run} now={now} />
         <div className="run-cols">
           <div className="run-col">
             <QualityChecks quality={snap.quality} retry={retry} />
@@ -779,13 +772,16 @@ export function MonitoringRun({ stage, runId, dagster }: { stage: string; runId:
           <h1>{scope ?? job ?? `Run ${short(runId)}`}</h1>
           <p className="f-sub">
             {job ? <>Pipeline <span className="f-mono">{job}</span></> : <>Run <span className="f-mono">{runId}</span></>}
-            {started !== undefined && ` · started ${when(started, now)}`}
+            {started !== undefined && <> · started <Time at={seconds(started)} now={now} /></>}
             {status && ` · ${RUN_WORD[status] ?? status.toLowerCase()}`}
             {run?.ended_at != null && started !== undefined && ` after ${duration(run.ended_at - started)}`}
           </p>
         </div>
         {/* With a failure to summarize, its card carries the link; otherwise the run is still one click from Dagster. */}
-        {snap?.failure.status !== "ok" && <OpenInDagster url={dagster} runId={runId} />}
+        <div className="mon-head-end">
+          <ZoneSwitch />
+          {snap?.failure.status !== "ok" && <OpenInDagster url={dagster} runId={runId} />}
+        </div>
       </div>
       <ul className="run-chips" aria-label="Run">
         <li><StatusBadge state={state} /></li>
@@ -796,10 +792,10 @@ export function MonitoringRun({ stage, runId, dagster }: { stage: string; runId:
       {snap && (
         <dl className="run-facts">
           <Fact term="Domain · product">{scope ?? <span className="mon-why">Not known: {scopeWhy}</span>}</Fact>
-          <Fact term="Started">{started !== undefined ? when(started, now)
+          <Fact term="Started">{started !== undefined ? <Time at={seconds(started)} now={now} />
             : notYet ? <span className="mon-why">Not started</span>
             : <span className="mon-why">{run ? "Start unknown: Dagster recorded no start time for this run" : `Not known: ${snap.run.status === "error" ? snap.run.error.message : "no start time"}`}</span>}</Fact>
-          <Fact term="Ended">{run?.ended_at != null ? when(run.ended_at, now) : <span className="mon-why">{run ? "Not ended, or no end time recorded" : "Not known"}</span>}</Fact>
+          <Fact term="Ended">{run?.ended_at != null ? <Time at={seconds(run.ended_at)} now={now} /> : <span className="mon-why">{run ? "Not ended, or no end time recorded" : "Not known"}</span>}</Fact>
           <Fact term="Pipeline now">{shown ? <StatusBadge state={shown} /> : <span className="mon-why">Not known</span>}</Fact>
         </dl>
       )}

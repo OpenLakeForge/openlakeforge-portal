@@ -11,6 +11,7 @@ import { absent, pipes, PipelinesCard, PipelinesTable, pipesLine, stateCounts, t
 import { quality, QualityCard, QualityTable } from "./MonitoringQuality";
 import { MonitoringViews } from "./MonitoringViews";
 import { LABEL, StatusBadge } from "./StatusBadge";
+import { Ago, Time, ZoneSwitch } from "./Time";
 
 const REFRESH_MS = 30_000;
 /** How long one snapshot (the stage, pipelines, quality and incidents reads, together) may take before the page calls the API unreachable. */
@@ -19,14 +20,6 @@ const timedOut = () =>
   new ApiError(0, `The monitoring API did not answer within ${DEADLINE_MS / 1000} s, so nothing on this page can be shown as healthy.`);
 const failure = (e: unknown) => (e instanceof ApiError ? e : new ApiError(0, String(e)));
 
-export function ago(iso: string | null, now: number): string {
-  if (!iso) return "—";
-  const s = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
-  if (s < 60) return `${s} s ago`;
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  return `${Math.floor(s / 3600)} h ago`;
-}
-const clock = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 const TITLE: Record<HealthState, string> = {
   healthy: "is healthy", warning: "needs attention", critical: "needs attention", unknown: "status unknown", disabled: "monitoring is off",
@@ -71,7 +64,7 @@ type Snapshot = Extract<Load, { status: "ok" }>;
 /** The Services panel: one line when every service is healthy; the services that are not, listed, otherwise. "Show all"
  * lists every service. A gap (no probe answer, metrics not readable) is never folded away. */
 function ServicesPanel({ groups, line, gap, metricsGap, metricsReason, now }: {
-  groups: ServiceGroup[]; line: string; gap?: { state: HealthState; reason?: string }; metricsGap?: HealthState; metricsReason?: string; now: number;
+  groups: ServiceGroup[]; line: React.ReactNode; gap?: { state: HealthState; reason?: string }; metricsGap?: HealthState; metricsReason?: string; now: number;
 }) {
   const [all, setAll] = useState(false);
   const id = useId();
@@ -106,11 +99,11 @@ function ServicesPanel({ groups, line, gap, metricsGap, metricsReason, now }: {
                   {g.rows.map((s) => (
                     <span key={s.component} className="mon-part">
                       <span className="mon-what">{s.display_name} · {LABEL[s.shown]}</span>
-                      <span className="mon-why">{s.shown !== s.state ? `Stale: no fresh answer since ${ago(s.observed_at, now)}. ${s.reason}` : s.reason}</span>
+                      <span className="mon-why">{s.shown !== s.state ? <>Stale: no fresh answer since <Ago at={s.observed_at} now={now} />. {s.reason}</> : s.reason}</span>
                     </span>
                   ))}
                 </td>
-                <td className="f-mono">{ago(oldest(g.rows), now)}</td>
+                <td className="f-mono"><Ago at={oldest(g.rows)} now={now} /></td>
               </tr>
             ))}
             {gapRow && (
@@ -206,12 +199,12 @@ function Overview({ access, snap, now, retry }: { access: MonitoringStage; snap:
   // A null last_success_at is no evidence of a write: it reads unknown, never as a time.
   const evidence = EVIDENCE.flatMap(([component, label]) => {
     const row = services.find((s) => s.component === component);
-    return row ? [`${label} ${row.last_success_at ? ago(row.last_success_at, now) : "unknown"}`] : [];
+    return row ? [<>{label} {row.last_success_at ? <Ago at={row.last_success_at} now={now} /> : "unknown"}</>] : [];
   });
   const svcLine = [
     servicesGap ? `Service probes ${LABEL[servicesGap].toLowerCase()}: ${servicesReason ?? "no answer"}` : `${ready} of ${groups.length} healthy`,
     expiredLine, ...evidence, metricsGap ? `resource metrics ${LABEL[metricsGap].toLowerCase()}` : "",
-  ].filter(Boolean).join(" · ");
+  ].filter(Boolean).map((part, i) => <span key={i}>{i ? " · " : ""}{part}</span>);
 
   return (
     <>
@@ -248,7 +241,9 @@ function Overview({ access, snap, now, retry }: { access: MonitoringStage; snap:
   );
 }
 
-function Unavailable({ name, what = "health", error, lastGood, onRetry }: { name: string; what?: string; error: ApiError; lastGood?: number; onRetry?(): void }) {
+function Unavailable({ name, what = "health", error, lastGood, now = Date.now(), onRetry }: {
+  name: string; what?: string; error: ApiError; lastGood?: number; now?: number; onRetry?(): void;
+}) {
   const denied = !retryable(error);
   return (
     <section className="mon-banner mon-state" data-state={denied ? "disabled" : "unknown"} aria-labelledby="mon-banner-h">
@@ -256,7 +251,7 @@ function Unavailable({ name, what = "health", error, lastGood, onRetry }: { name
         <h2 id="mon-banner-h">
           <StatusBadge state={denied ? "disabled" : "unknown"} /> {name} {denied ? `${what} is not available` : "status unknown"}
         </h2>
-        <p role="alert">{error.message}{!denied && lastGood ? ` Last good snapshot ${clock(lastGood)}.` : ""}</p>
+        <p role="alert">{error.message}{!denied && lastGood ? <> Last good snapshot <Time at={lastGood} now={now} />.</> : ""}</p>
         {!denied && onRetry && <button type="button" className="f-btn f-outline" onClick={onRetry}><span aria-hidden="true">↻</span> Retry</button>}
       </div>
     </section>
@@ -401,7 +396,7 @@ export function Monitoring({ stages }: { stages: string[] }) {
         {refused || !access
           ? <Unavailable name={stage.toUpperCase()} error={new ApiError(403, `Your role has no monitoring access on stage ${stage.toUpperCase()}.`)} />
           : load.status === "error"
-            ? <Unavailable name={stage.toUpperCase()} error={load.error} lastGood={lastGood} onRetry={retry} />
+            ? <Unavailable name={stage.toUpperCase()} error={load.error} lastGood={lastGood} now={now} onRetry={retry} />
             : ready
               ? <Overview key={access.stage} access={access} snap={ready} now={now} retry={{ onRetry: retry, lastGood: lastGoodPipes }} />
               : <p className="mon-loading" role="status">Reading {stage.toUpperCase()} health…</p>}
@@ -416,12 +411,15 @@ export function Monitoring({ stages }: { stages: string[] }) {
           <h1>Monitoring</h1>
           <p className="f-sub">Health of the platform, its pipelines and their data, per stage.</p>
         </div>
-        {ready && (
-          <div className="q-engine" role="status">
-            <span className="icon"><img src="/icons/clock.svg" alt="" width="20" height="20" loading="lazy" /></span>
-            <span><strong>Checked {ago(ready.data?.evaluated_at ?? new Date(ready.at).toISOString(), now)}</strong><span className="label">Auto-refresh · 30 s</span></span>
-          </div>
-        )}
+        <div className="mon-head-end">
+          <ZoneSwitch />
+          {ready && (
+            <div className="q-engine" role="status">
+              <span className="icon"><img src="/icons/clock.svg" alt="" width="20" height="20" loading="lazy" /></span>
+              <span><strong>Checked <Ago at={ready.data?.evaluated_at ?? ready.at} now={now} /></strong><span className="label">Auto-refresh · 30 s</span></span>
+            </div>
+          )}
+        </div>
       </div>
       <div className="mon-bar">
         <MonitoringViews stage={stage ?? asked ?? undefined} />

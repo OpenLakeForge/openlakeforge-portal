@@ -11,10 +11,11 @@ import {
   type HealthState, type MetricCatalog, type MetricRange, type MetricSeriesData, type MetricSeriesInfo, type MonitoringCapabilities,
   type MonitoringStage,
 } from "../lib/health-api";
-import { hasSamples, MetricPlot, shape, stepTime, type LineRule } from "./MetricChart";
-import { ago, DEADLINE_MS } from "./Monitoring";
+import { hasSamples, MetricPlot, shape, type LineRule } from "./MetricChart";
+import { DEADLINE_MS } from "./Monitoring";
 import { MonitoringViews } from "./MonitoringViews";
 import { StatusBadge } from "./StatusBadge";
+import { Ago, Time, ZoneSwitch } from "./Time";
 
 /** The range a page opens with: the health routes' default window. */
 export const DEFAULT_RANGE: MetricRange = "24h";
@@ -142,7 +143,7 @@ function MetricCard({ def, range, closed, read, attempt }: {
             <MetricPlot title={def.title} unit={d.unit} range={range} data={data} perStep={def.perStep ? `Each point counts one ${step} step.` : undefined} />
             {!d.complete && d.covered_from && (
               <p className="mon-why">
-                Covers from {stepTime(Date.parse(d.covered_from), range)} only: the read reached its run cap, so earlier steps are gaps, not zeros.
+                Covers from <Time at={d.covered_from} now={Date.now()} /> only: the read reached its run cap, so earlier steps are gaps, not zeros.
               </p>
             )}
           </>
@@ -330,15 +331,18 @@ export function MonitoringMetrics({ stages }: { stages: string[] }) {
           <h1>Monitoring</h1>
           <p className="f-sub">History of the platform's resources, its query engine and its pipelines, per stage.</p>
         </div>
-        {catalog.status === "ok" && access && (
-          <div className="mc-actions">
-            <div className="q-engine" role="status">
-              <span className="icon"><img src="/icons/clock.svg" alt="" width="20" height="20" loading="lazy" /></span>
-              <span><strong>Read {ago(catalog.data.observed_at, now)}</strong><span className="label">Last {RANGE_WORDS[range]}</span></span>
+        <div className="mon-head-end">
+          <ZoneSwitch />
+          {catalog.status === "ok" && access && (
+            <div className="mc-actions">
+              <div className="q-engine" role="status">
+                <span className="icon"><img src="/icons/clock.svg" alt="" width="20" height="20" loading="lazy" /></span>
+                <span><strong>Read <Ago at={catalog.data.observed_at} now={now} /></strong><span className="label">Last {RANGE_WORDS[range]}</span></span>
+              </div>
+              <button type="button" className="f-btn f-outline" onClick={refresh}><span aria-hidden="true">↻</span> Refresh</button>
             </div>
-            <button type="button" className="f-btn f-outline" onClick={refresh}><span aria-hidden="true">↻</span> Refresh</button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
       <MonitoringViews stage={stage ?? asked ?? undefined} />
       {body}

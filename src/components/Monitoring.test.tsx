@@ -7,10 +7,12 @@ import {
   getStageHealth, type AlertIncident, type HealthSignal, type HealthWindow, type HealthState, type MonitoringCapabilities, type MonitoringStage, type PipelineHealth,
   type PipelineQuality, type PipelinesHealth, type QualityCounts, type StageAlertIncidents, type StageHealth, type StageQualityHealth,
 } from "../lib/health-api";
+import { formatTime } from "../lib/time";
 import { DEADLINE_MS, Monitoring } from "./Monitoring";
 import { StatusBadge } from "./StatusBadge";
 
 const soon = () => new Date(Date.now() + 40_000).toISOString();
+const svcLine = () => document.querySelector(".mon-svc-line") as HTMLElement;
 const SERVICE_NAMES: Record<string, string> = { trino: "Trino", polaris: "Polaris", dagster: "Dagster", "log-archive": "Log archive", "quality-sync": "Quality sync" };
 const svc = (component: string, state: HealthState, over = {}) => {
   const service = component.split(".")[0];
@@ -137,7 +139,7 @@ describe("overview", () => {
     expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
     expect(screen.getByText("0 pipelines failed · 2 of 2 services ready")).toBeInTheDocument();
     // Every service is healthy: Services is one line, with a toggle, and its table is folded away.
-    expect(screen.getByText("2 of 2 healthy · resource metrics disabled")).toBeInTheDocument();
+    expect(svcLine()).toHaveTextContent(/^2 of 2 healthy · resource metrics disabled$/);
     expect(screen.queryByRole("region", { name: "Service health" })).toBeNull();
     const toggle = screen.getByRole("button", { name: "Show all 2 services" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
@@ -274,8 +276,10 @@ describe("pipelines and needs attention", () => {
     api(() => ({ body: health({ state: "critical" }) }), () => ({ body: missed }));
     open();
     await screen.findByRole("region", { name: "Pipeline health" });
-    const hhmm = due.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    expect(attentionRow("Expected run did not start")).toHaveTextContent(`due ${hhmm}`);
+    // The column header names the zone; the cell holds the time on a 24-hour clock, in UTC by default.
+    expect(screen.getByRole("columnheader", { name: "When (UTC)" })).toBeInTheDocument();
+    expect(attentionRow("Expected run did not start")).toHaveTextContent(`due ${formatTime(due, "UTC", Date.now())}`);
+    expect(within(attentionRow("Expected run did not start")).getByText(formatTime(due, "UTC", Date.now())).closest("time")).toHaveAttribute("dateTime", due.toISOString());
   });
 
   it("falls back to the schedule's last tick, without the word due, when the API sends no `due`", async () => {
@@ -313,8 +317,7 @@ describe("pipelines and needs attention", () => {
     }));
     open();
     await screen.findByRole("region", { name: "Pipeline health" });
-    const hhmm = from.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    expect(pipelineRow("sales_orders")).toHaveTextContent(`3 failed since ${hhmm}`);
+    expect(pipelineRow("sales_orders")).toHaveTextContent(`3 failed since ${formatTime(from, "UTC", Date.now())} UTC`);
     expect(pipelineRow("sales_orders")).toHaveTextContent("the run read stopped short of the last 24h");
     expect(pipelineRow("sales_orders")).not.toHaveTextContent("in last 24h");
   });
@@ -553,7 +556,7 @@ describe("unavailable and absent", () => {
     open(four, "/monitoring?stage=uat");
     expect(await screen.findByRole("heading", { name: "Healthy UAT is healthy" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Stage" })).toHaveValue("uat");
-    expect(screen.queryByRole("radio")).toBeNull();
+    expect(screen.queryByRole("group", { name: "Stage" })).toBeNull();
   });
 
   it("offers DEV | UAT | PROD as three segments", async () => {
@@ -561,7 +564,7 @@ describe("unavailable and absent", () => {
     api((stage) => ({ body: health({ stage }) }), undefined, () => ({ body: caps(...three.map((st) => access(st))) }));
     open(three, "/monitoring?stage=uat");
     expect(await screen.findByRole("heading", { name: "Healthy UAT is healthy" })).toBeInTheDocument();
-    expect(screen.getAllByRole("radio").map((r) => r.getAttribute("aria-label"))).toEqual(["DEV", "UAT", "PROD"]);
+    expect(within(screen.getByRole("group", { name: "Stage" })).getAllByRole("radio").map((r) => r.getAttribute("aria-label"))).toEqual(["DEV", "UAT", "PROD"]);
     expect(screen.getByRole("radio", { name: "UAT" })).toBeChecked();
   });
 
@@ -657,7 +660,7 @@ describe("monitoring capabilities", () => {
     expect(await screen.findByText(/Your role may not monitor any stage/)).toBeInTheDocument();
     expect(screen.getByText("No monitoring access")).toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "Stage" })).toBeNull();
-    expect(screen.queryByRole("radio")).toBeNull();
+    expect(screen.queryByRole("group", { name: "Stage" })).toBeNull();
     expect(urls(fetch)).toEqual([CAPS_URL]);
   });
 
@@ -767,13 +770,19 @@ describe("services by service", () => {
     const at = new Date(Date.now() - 180_000).toISOString();
     api(() => ({ body: health({ services: [svc("log-archive.newest-object", "healthy", { last_success_at: at }), svc("quality-sync.publication", "healthy", { last_success_at: at })] }) }));
     open();
-    expect(await screen.findByText("2 of 2 healthy · log archive last durable write 3 min ago · quality sync last publication 3 min ago · resource metrics disabled")).toBeInTheDocument();
+    await screen.findByRole("heading", { name: /PROD/ });
+    // Each "ago" keeps its absolute time on hover and for a screen reader.
+    expect(svcLine()).toHaveTextContent(
+      /^2 of 2 healthy · log archive last durable write 3 min ago \(at [^)]+ UTC\) · quality sync last publication 3 min ago \(at [^)]+ UTC\) · resource metrics disabled$/,
+    );
+    expect(svcLine().querySelector("time")).toHaveAttribute("dateTime", at);
   });
 
   it("reads a null last_success_at as unknown, never as a time", async () => {
     api(() => ({ body: health({ services: [svc("log-archive.newest-object", "unknown", { last_success_at: null }), svc("trino.readiness", "healthy")] }) }));
     open();
-    expect(await screen.findByText(/^1 of 2 healthy · log archive last durable write unknown/)).toBeInTheDocument();
+    await screen.findByRole("heading", { name: /PROD/ });
+    expect(svcLine()).toHaveTextContent(/^1 of 2 healthy · log archive last durable write unknown/);
     expect(screen.queryByText(/last durable write \d/)).toBeNull();
   });
 
