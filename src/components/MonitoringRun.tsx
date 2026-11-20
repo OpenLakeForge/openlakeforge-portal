@@ -164,10 +164,10 @@ function WhatFailed({ f, run, quality, stage, runId, dagster, now }: {
 }
 
 /** The level floors offered; `debug` adds nothing a reader of a failure needs. */
-const SEVERITY_LABEL: Record<"" | Exclude<LogSeverity, "debug">, string> = {
+export const SEVERITY_LABEL: Record<"" | Exclude<LogSeverity, "debug">, string> = {
   "": "All levels", info: "Info and above", warning: "Warning and above", error: "Error and above", critical: "Critical only",
 };
-type Floor = keyof typeof SEVERITY_LABEL;
+export type Floor = keyof typeof SEVERITY_LABEL;
 const DEFAULT_FLOOR: Floor = "warning";
 const FLOOR_WORDS: Record<Exclude<Floor, "">, string> = { info: "info lines and above", warning: "warnings and above", error: "errors and above", critical: "critical lines" };
 
@@ -179,7 +179,7 @@ type Page = { lines: LogLine[]; next: string | null; truncated: boolean; since: 
 /** The run's UTC day, as an older API's log archive is read (`list_logs`, one day): its start, else its creation. */
 const runDay = (r: Run) => new Date((r.started_at ?? r.created_at) * 1000).toISOString().slice(0, 10);
 /** The level floors an API from before #1326 accepts on `list_logs`. */
-const OLDER_FLOORS: Floor[] = ["", "warning", "error"];
+export const OLDER_FLOORS: Floor[] = ["", "warning", "error"];
 type More = { status: "idle" } | { status: "loading" } | { status: "error"; error: ApiError };
 
 /** The run's archived lines, from its start to its end across UTC days (#1326), with each line's own time and level. */
@@ -370,6 +370,11 @@ function RunLogs({ access, stage, runId, run, now }: { access: MonitoringStage; 
               </label>
             )}
           </div>
+        )}
+        {g.open && (
+          <Link className="f-btn f-outline run-dagster" to={`/monitoring/${encodeURIComponent(stage)}/logs?run=${encodeURIComponent(runId)}`}>
+            Open in Logs <span aria-hidden="true">↗</span>
+          </Link>
         )}
       </>}
     >

@@ -1,6 +1,7 @@
 import { NavLink } from "react-router";
 
-/** Monitoring's views, Overview, Metrics and Runs, keeping the stage when switching. Runs is per stage: it shows once one is known. */
+/** Monitoring's views, Overview, Metrics, Runs and Logs, keeping the stage when switching. Runs and Logs are per stage:
+ * they show once one is known. */
 export function MonitoringViews({ stage }: { stage?: string }) {
   const search = stage ? `?stage=${encodeURIComponent(stage)}` : "";
   return (
@@ -8,6 +9,7 @@ export function MonitoringViews({ stage }: { stage?: string }) {
       <NavLink to={{ pathname: "/monitoring", search }} end>Overview</NavLink>
       <NavLink to={{ pathname: "/monitoring/metrics", search }}>Metrics</NavLink>
       {stage && <NavLink to={`/monitoring/${encodeURIComponent(stage)}/runs`} end>Runs</NavLink>}
+      {stage && <NavLink to={`/monitoring/${encodeURIComponent(stage)}/logs`} end>Logs</NavLink>}
     </nav>
   );
 }

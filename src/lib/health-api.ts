@@ -394,6 +394,8 @@ export type LogLine = {
   line: string | null;
   error: string | null;
   component?: string | null;
+  /** The data product a v2 record names (portal#39); null or absent on v1 and on a workload of no product. */
+  product?: string | null;
   run_id?: string | null;
   /** The line's own event time and level, as the collector parsed them (#1326); null when it recorded none, never guessed. */
   timestamp?: string | null;
@@ -495,7 +497,13 @@ export type RunQuality = {
 /** The archived lines of the run's window, `since` to `until`, oldest first. `truncated` with `next`: pass `next` back
  * as `after`, with the same filters, to read on. */
 export type RunLogs = { lines: LogLine[]; truncated: boolean; since: string; until: string; next: string | null };
-export type RunLogsQuery = { severity?: LogSeverity; matchRun?: boolean; after?: string; limit?: number };
+export type RunLogsQuery = {
+  severity?: LogSeverity; matchRun?: boolean; after?: string; limit?: number;
+  /** list_logs's filters, which the run window takes too (portal#39); `since`/`until` narrow the window, never widen it. */
+  pod?: string; container?: string; component?: string; since?: string; until?: string;
+  /** Case-insensitive text in the message (openlakeforge#1349); an older API ignores it. */
+  q?: string;
+};
 
 const OUTCOMES = new Set<unknown>(["passed", "warn", "error", "not_run", "unknown"]);
 const PIPELINE_OUTCOMES = new Set<unknown>(["continued", "quarantined", "blocked", "unknown"]);
@@ -535,6 +543,7 @@ export async function listRunLogs(stage: string, runId: string, opts: RunLogsQue
   if (opts.severity) q.set("severity", opts.severity);
   if (opts.matchRun) q.set("match_run", "true");
   if (opts.after) q.set("after", opts.after);
+  for (const k of ["pod", "container", "component", "since", "until", "q"] as const) if (opts[k]) q.set(k, opts[k]!);
   const body = await get(`${runPath(stage, runId)}/logs?${q}`, stage, signal, `Run ${runId} is not known on stage ${stage.toUpperCase()}.`);
   if (!isRunLogs(body)) throw new ApiError(200, explain(500, stage));
   return { ...body, next: body.next ?? null, lines: body.lines.map((l) => ({ ...l, timestamp: l.timestamp ?? null, level: l.level ?? null })) };
@@ -678,4 +687,35 @@ export function runsGate(access: MonitoringStage): Gate {
   const dagster = access.capabilities.find((c) => c.name === "dagster");
   if (!dagster || dagster.status === "available") return { open: true };
   return { open: false, state: dagster.status === "unavailable" ? "unknown" : "disabled", reason: dagster.reason };
+}
+
+// ── The log archive (portal#39): GET /api/v1/stages/{stage}/logs?date=&hour=&pod=&container=&component=&product=
+// &run_id=&severity=&q=&limit= (Logs). One UTC day, or one hour of it, oldest first; no cursor: a truncated answer is the
+// first `limit` lines. `q` (openlakeforge#1349) keeps the lines whose message contains it; an older API ignores it.
+
+/** The lines the Logs page asks for at once: the API's default. */
+export const LOGS_LIMIT = 500;
+export type LogsQuery = {
+  /** The UTC day, `YYYY-MM-DD`. */
+  date: string;
+  hour?: number;
+  pod?: string; container?: string; component?: string; product?: string; runId?: string;
+  severity?: LogSeverity;
+  /** Case-insensitive text in the message (openlakeforge#1349); an older API ignores it. */
+  q?: string;
+  limit?: number;
+};
+
+/** At most `limit` archived lines of the stage for a UTC day or one hour of it, oldest first, from `severity` up. */
+export async function listLogs(stage: string, opts: LogsQuery, signal?: AbortSignal): Promise<Logs> {
+  const q = new URLSearchParams({ date: opts.date });
+  if (opts.hour !== undefined) q.set("hour", String(opts.hour));
+  for (const k of ["pod", "container", "component", "product"] as const) if (opts[k]) q.set(k, opts[k]!);
+  if (opts.runId) q.set("run_id", opts.runId);
+  if (opts.severity) q.set("severity", opts.severity);
+  if (opts.q) q.set("q", opts.q);
+  q.set("limit", String(opts.limit ?? LOGS_LIMIT));
+  const body = await get(`/api/v1/stages/${encodeURIComponent(stage)}/logs?${q}`, stage, signal, `Stage ${stage.toUpperCase()} has no log archive.`);
+  if (!isLogs(body)) throw new ApiError(200, explain(500, stage));
+  return { ...body, lines: body.lines.map(withLevel) };
 }

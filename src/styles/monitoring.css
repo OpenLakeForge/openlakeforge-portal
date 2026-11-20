@@ -181,6 +181,8 @@
 .run-checks { margin: 0 calc(-1 * var(--olf-space-4)); max-height: 30rem; }
 .run-body > .run-checks:first-child { margin-top: calc(-1 * var(--olf-space-4)); }
 .run-checks td, .run-checks tbody th { height: auto; padding-block: 0.4375rem; vertical-align: top; }
+/* Single-word headers (Outcome, Pipeline, Counts) never break inside the word now that headers may wrap (#40). */
+.run-checks thead th:not(:nth-child(2)) { white-space: nowrap; }
 .run-checks tbody th { white-space: normal; min-width: 12rem; }
 .run-checks tbody th .mon-why { overflow-wrap: anywhere; }
 .run-checks td:nth-child(3) { min-width: 8rem; white-space: normal; }
@@ -317,3 +319,33 @@
 .rl-table td, .rl-table tbody th { white-space: nowrap; }
 .rl-table td:nth-child(3) { min-width: 0; }
 .rl-list .empty { margin: var(--olf-space-4); }
+
+/* Logs (portal#39): a stage's archive by day and hour, or a run's window; filters, the in-browser search, the lines. */
+.lg-context { margin-bottom: var(--olf-space-3); }
+.lg-run { display: flex; flex-direction: column; gap: 0.375rem; }
+.lg-run-chip { display: flex; flex-wrap: wrap; align-items: center; gap: var(--olf-space-2) var(--olf-space-3); min-height: 2.1875rem; font-size: 0.8125rem; }
+.lg-run-chip .f-mono { color: var(--olf-text-primary); }
+.lg-date { min-width: 10rem; }
+.lg-hour { min-width: 9rem; }
+.lg-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--olf-space-3) var(--olf-space-4); margin: 0 0 var(--olf-space-3); }
+.lg-filters label, .lg-search label { display: flex; flex-direction: column; gap: 0.375rem; min-width: 0; }
+.lg-field { min-width: 0; width: 11rem; max-width: 100%; }
+.lg-search { display: flex; flex-direction: column; gap: 0.375rem; margin: 0 0 var(--olf-space-4); }
+.lg-q { width: min(26rem, 100%); }
+.lg-filters .f-link, .lg-run-chip .f-link { font-size: 0.8125rem; }
+:is(.lg-field, .lg-q, .lg-date):focus-visible { outline: 2px solid var(--olf-highlight); outline-offset: 2px; }
+.lg-ignored { margin: 0 0 var(--olf-space-3); }
+.lg-step { display: flex; flex-wrap: wrap; gap: var(--olf-space-2); }
+.lg-notes { display: flex; flex-direction: column; gap: 0.25rem; }
+.lg-none { margin: 0; }
+.lg-empty { margin-top: 0; }
+.lg-card .run-body > .lg-log { margin: 0 calc(-1 * var(--olf-space-4)); max-height: 40rem; border-top: 1px solid var(--olf-border-subtle); }
+.lg-log td.lg-where { white-space: nowrap; }
+.lg-where .mon-why { margin-top: 0; }
+.lg-run-link { display: block; font-size: 0.6875rem; }
+.lg-log tr[data-line] { outline: none; }
+.lg-log tr[data-line]:focus-visible td { background: var(--olf-card-fill-hover); box-shadow: inset 0 2px 0 var(--olf-highlight), inset 0 -2px 0 var(--olf-highlight); }
+.lg-log mark { background: color-mix(in srgb, var(--olf-warning) 35%, transparent); color: inherit; border-radius: 2px; }
+@media (forced-colors: active) { .lg-log mark { background: Mark; color: MarkText; } }
+.lg-match { align-self: flex-start; margin-top: var(--olf-space-2); }
+.lg-search .lg-match label { flex-direction: row; align-items: center; gap: var(--olf-space-2); }
