@@ -16,7 +16,9 @@ import {
 } from "../lib/health-api";
 import { DEADLINE_MS } from "./Monitoring";
 import { runHref } from "./MonitoringPipelines";
-import { lineTime, OLDER_FLOORS, RUN_DEADLINE_MS, SEVERITY_LABEL, type Floor } from "./MonitoringRun";
+import { OLDER_FLOORS, RUN_DEADLINE_MS, SEVERITY_LABEL, type Floor } from "./MonitoringRun";
+import { dayKey, formatDate, useTimeZone } from "../lib/time";
+import { Time, Zoned, ZoneSwitch } from "./Time";
 import { MonitoringViews } from "./MonitoringViews";
 import { StatusBadge } from "./StatusBadge";
 
@@ -126,7 +128,7 @@ export function logStages(caps: MonitoringCapabilities): string[] {
 const failure = (e: unknown) => (e instanceof ApiError ? e : new ApiError(0, String(e)));
 const denied = (e: ApiError) => e.status === 401 || e.status === 403 || e.status === 404;
 const timedOut = (ms: number) => new ApiError(0, `The monitoring API did not answer within ${ms / 1000} s, so no line can be shown.`);
-const hhmm = (iso: string) => { const t = Date.parse(iso); return Number.isNaN(t) ? iso : new Date(t).toISOString().slice(11, 16); };
+/** The UTC day of an instant: the archive is partitioned by UTC day and hour, so its pickers stay in UTC. */
 const dayOf = (iso: string) => { const t = Date.parse(iso); return Number.isNaN(t) ? undefined : new Date(t).toISOString().slice(0, 10); };
 const fmt = (n: number) => n.toLocaleString("en-US");
 
@@ -445,6 +447,9 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
           <h1>Monitoring</h1>
           <p className="f-sub">The stage's archived pod logs, by UTC day and hour, or one run's window.</p>
         </div>
+        <div className="mon-head-end">
+          <ZoneSwitch />
+        </div>
       </div>
       <MonitoringViews stage={stage} />
       {body}
@@ -499,6 +504,7 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
   const { run, date, hour, level } = view;
   const q = view.q ?? "";
   const STAGE = stage.toUpperCase();
+  const tz = useTimeZone();
   const today = utcToday(now);
   const region = useRef<HTMLDivElement | null>(null);
   const filtered = !!(view.pod || view.container || view.component || (!run && view.product));
@@ -506,7 +512,7 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
   // Where the lines come from, in words: the day and hour, or the run's window.
   const day = data.day ?? date;
   const where = run && !data.day
-    ? <>run <span className="f-mono">{short(run)}</span>'s window{data.since && data.until ? <>, {dayOf(data.since)} {hhmm(data.since)} → {dayOf(data.until) !== dayOf(data.since) ? `${dayOf(data.until)} ` : ""}{hhmm(data.until)} (UTC)</> : ""}</>
+    ? <>run <span className="f-mono">{short(run)}</span>'s window{data.since && data.until ? <>, <Time at={data.since} now={now} /> → <Time at={data.until} now={now} /></> : ""}</>
     : <>{run ? <>run <span className="f-mono">{short(run)}</span> on </> : null}{day}{hour !== undefined ? `, ${pad(hour)}:00–${pad((hour + 1) % 24)}:00` : ", whole day"} (UTC)</>;
   const expired = retention !== null && day !== undefined && day < addDays(today, -retention);
   const step = (n: number) => hour !== undefined
@@ -572,20 +578,22 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
       </p>
     );
   } else {
-    const days = new Set(shown.map((l) => (l.timestamp ? dayOf(l.timestamp) : undefined)).filter(Boolean));
+    // Day rows follow the zone the times are shown in, so each clock time sits under its own date: on UTC an archive
+    // hour or day needs none, a run across midnight gets one per day; on a local zone they split where its days do.
+    const days = new Set(shown.map((l) => (l.timestamp ? dayKey(l.timestamp, tz.zone) : undefined)).filter(Boolean));
     let shownDay = days.size > 1 ? undefined : [...days][0];
     const rows: React.ReactNode[] = [];
     shown.forEach((l, i) => {
       const ts = l.timestamp ?? null;
-      const lineDay = ts ? dayOf(ts) : undefined;
-      if (lineDay && lineDay !== shownDay) {
+      const lineDay = ts ? dayKey(ts, tz.zone) : undefined;
+      if (ts && lineDay && lineDay !== shownDay) {
         shownDay = lineDay;
-        rows.push(<tr key={`day-${i}`} className="run-day"><th scope="rowgroup" colSpan={4}>{lineDay} (UTC)</th></tr>);
+        rows.push(<tr key={`day-${i}`} className="run-day"><th scope="rowgroup" colSpan={4}><time dateTime={lineDay}>{formatDate(ts, tz.zone, now)}</time> ({tz.label})</th></tr>);
       }
       const lv = l.level ?? null;
       rows.push(
         <tr key={i} data-line="" tabIndex={-1}>
-          <td className="f-mono run-time">{ts && <time dateTime={ts} title={ts}>{lineTime(ts)}</time>}</td>
+          <td className="f-mono run-time">{ts && <Time at={ts} now={now} bare clock precision="millisecond" />}</td>
           <td>{lv && <span className="run-level" data-level={lv}>{lv.toUpperCase()}</span>}</td>
           <td className="lg-where">
             <Link className="run-link f-mono" to={logsHref(stage, { run, date, hour, pod: l.pod, level })} aria-label={`Filter to ${l.pod}`}>{l.pod}</Link>
@@ -601,7 +609,7 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
     table = (
       <div className="f-scroll run-log lg-log" role="region" aria-label={`${STAGE} log lines`} aria-describedby="lg-keys" tabIndex={0} ref={region} onKeyDown={keys}>
         <table className="f-table mon-table">
-          <thead><tr><th scope="col">Time (UTC)</th><th scope="col">Level</th><th scope="col">Pod · container</th><th scope="col">Line</th></tr></thead>
+          <thead><tr><th scope="col"><Zoned>Time</Zoned></th><th scope="col">Level</th><th scope="col">Pod · container</th><th scope="col">Line</th></tr></thead>
           <tbody>{rows}</tbody>
         </table>
       </div>

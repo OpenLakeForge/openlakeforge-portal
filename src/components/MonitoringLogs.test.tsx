@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation, useParams } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { browserZone, dayKey, formatClock, setZoneChoice, zoneLabel } from "../lib/time";
 import { listLogs, listRunLogs, type LogLine, type MonitoringCapabilities, type MonitoringStage } from "../lib/health-api";
 import { CLOCK_MS, logsHref, logStages, MonitoringLogs, readLogsParams, search, searchedBy, sendable, span } from "./MonitoringLogs";
 
@@ -72,7 +73,7 @@ const text = (re: RegExp) => (_: string, el: Element | null) => !!el && re.test(
 const where = () => screen.getByTestId("where").textContent;
 const rows = async (stage = "DEV") => within(await screen.findByRole("region", { name: `${stage} log lines` })).getAllByRole("row").slice(1);
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); setZoneChoice("utc"); });
 
 describe("logs helpers", () => {
   it("builds the address, two-digit hour, empty filters left out", () => {
@@ -234,7 +235,7 @@ describe("MonitoringLogs", () => {
     });
     open(`/monitoring/prod/logs?run=${RUN}&level=error`);
     expect(await rows("PROD")).toHaveLength(2);
-    expect(screen.getByText(text(/run c94cbcb0's window, 2026-11-19 14:00 → 14:02 \(UTC\)/))).toBeInTheDocument();
+    expect(screen.getByText(text(/run c94cbcb0's window, Nov 19(, 2026)? 14:00 UTC → Nov 19(, 2026)? 14:02 UTC/))).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Run screen" })).toHaveAttribute("href", `/monitoring/prod/runs/${RUN}`);
     expect(screen.queryByLabelText("Product")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Load more" }));
@@ -309,6 +310,27 @@ describe("MonitoringLogs", () => {
     down = false;
     await user.click(screen.getByRole("button", { name: /Retry/ }));
     expect(await rows()).toHaveLength(5);
+  });
+
+  it("shows line times in the chosen zone, with day rows on that zone's days; the archive's pickers stay in UTC", async () => {
+    api({ logs: () => ({ body: { lines: [
+      line("late", { timestamp: "2026-11-19T23:30:00.125Z" }), line("early", { timestamp: "2026-11-20T00:30:00.250Z" }),
+    ], truncated: false } }) });
+    act(() => setZoneChoice("local"));
+    open("/monitoring/dev/logs?date=2026-11-19");
+    const zone = browserZone();
+    await rows();
+    const lines = () => document.querySelectorAll("tr[data-line]");
+    expect(screen.getByRole("columnheader", { name: `Time (${zoneLabel(zone)})` })).toBeInTheDocument();
+    expect(lines()[0]).toHaveTextContent(formatClock("2026-11-19T23:30:00.125Z", zone, "millisecond"));
+    const days = [...new Set(["2026-11-19T23:30:00.125Z", "2026-11-20T00:30:00.250Z"].map((t) => dayKey(t, zone)))];
+    expect(document.querySelectorAll("tr.run-day")).toHaveLength(days.length > 1 ? 2 : 0);
+    expect(screen.getByLabelText("Day (UTC)")).toHaveValue("2026-11-19");
+    expect(screen.getByLabelText("Hour (UTC)")).toBeInTheDocument();
+    act(() => setZoneChoice("utc"));
+    expect(screen.getByRole("columnheader", { name: "Time (UTC)" })).toBeInTheDocument();
+    expect(document.querySelectorAll("tr.run-day")).toHaveLength(2);
+    expect(lines()[0]).toHaveTextContent("23:30:00.125");
   });
 
   it("moves between lines with the arrow keys", async () => {

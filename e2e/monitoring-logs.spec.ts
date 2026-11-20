@@ -126,7 +126,7 @@ test("run mode: the failed-run page links here; the run's window pages with Load
   asked.length = 0;
   await page.goto(`/monitoring/prod/logs?run=${LEDGER}&mock=admin`);
   await expect(card(page)).toContainText("200+ lines");
-  await expect(card(page)).toContainText(/run e5d27b8c's window, \d{4}-\d\d-\d\d \d\d:\d\d → \d{4}-\d\d-\d\d \d\d:\d\d \(UTC\)/);
+  await expect(card(page)).toContainText(/run e5d27b8c's window, [A-Z][a-z]{2} \d{1,2}(, \d{4})? 23:41 UTC → [A-Z][a-z]{2} \d{1,2}(, \d{4})? 00:32 UTC/);
   await expect(lines(page, "PROD").locator("tr.run-day")).toHaveCount(2);
   await expect(page.getByRole("link", { name: "Run screen" })).toHaveAttribute("href", `/monitoring/prod/runs/${LEDGER}`);
   await page.getByRole("button", { name: "Load more" }).click();
@@ -157,7 +157,7 @@ test("run mode narrowed to one UTC day shows only that side of the run's midnigh
   const after = (whole.until as string).slice(0, 10);
   const asked = reads(page);
   await page.goto(`/monitoring/prod/logs?run=${LEDGER}&date=${after}&mock=admin`);
-  await expect(card(page)).toContainText(`run e5d27b8c's window, ${after} 00:00 → `);
+  await expect(card(page)).toContainText(/run e5d27b8c's window, [A-Z][a-z]{2} \d{1,2}(, \d{4})? 00:00 UTC → /);
   await expect(lines(page, "PROD").locator("tr.run-day")).toHaveCount(0);
   const times = await rows(page, "PROD").locator("time").evaluateAll((ts) => ts.map((t) => t.getAttribute("datetime")!));
   expect(times.length).toBeGreaterThan(0);
@@ -205,6 +205,26 @@ test("an API without the run window (no log_retention_days) reads the run's UTC 
   expect(asked).toEqual([`/api/v1/stages/prod/runs/${FAILED}`, expect.stringMatching(new RegExp(`^/api/v1/stages/prod/logs\\?date=\\d{4}-\\d\\d-\\d\\d&run_id=${FAILED}&limit=500$`))]);
   await page.goto(`/monitoring/prod/logs?run=${FAILED}&level=error&mock=admin`);
   await expect(rows(page, "PROD")).toHaveCount(2);
+});
+
+test.describe("in New York", () => {
+  test.use({ timezoneId: "America/New_York" });
+  test("in the Local zone, line times and their day rows follow it; the archive's pickers stay in UTC", async ({ page }) => {
+    await page.addInitScript(() => { try { window.localStorage.setItem("olf.monitoring.timeZone", "local"); } catch { /* none */ } });
+    await page.goto(`/monitoring/prod/logs?run=${LEDGER}&mock=admin`);
+    await expect(page.getByRole("radio", { name: /^Local/ })).toBeChecked();
+    await expect(page.getByLabel("Day (UTC)", { exact: true })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Hour (UTC)" })).toBeVisible();
+    const header = lines(page, "PROD").getByRole("columnheader").first();
+    await expect(header).toHaveText("Time (America/New_York)");
+    // 23:41 to 00:32 UTC is one evening in New York: no day rows, and the clock reads 18:41.
+    await expect(rows(page, "PROD").first()).toContainText("18:41:07.000");
+    await expect(lines(page, "PROD").locator("tr.run-day")).toHaveCount(0);
+    await page.getByRole("radio", { name: "UTC", exact: true }).check();
+    await expect(header).toHaveText("Time (UTC)");
+    await expect(rows(page, "PROD").first()).toContainText("23:41:07.000");
+    await expect(lines(page, "PROD").locator("tr.run-day")).toHaveCount(2);
+  });
 });
 
 test("the lines are reached with Tab and walked with the arrow keys", async ({ page }) => {
