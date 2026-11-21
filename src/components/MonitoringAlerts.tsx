@@ -3,7 +3,7 @@
 // Read-only: there is no acknowledgement (ADR 0023, decision 3). `incidents: null` is unknown, never "none open", and a
 // stale evaluator's list is shown as stale, never as current.
 
-import { ApiError, worst, type AlertDelivery, type HealthState, type StageAlertIncidents } from "../lib/health-api";
+import { ApiError, worst, type AlertDelivery, type AlertIncident, type HealthState, type StageAlertIncidents } from "../lib/health-api";
 import { type Part } from "./MonitoringPipelines";
 import { StatusBadge } from "./StatusBadge";
 import { Ago } from "./Time";
@@ -40,6 +40,25 @@ export function deliveryLine(d: AlertDelivery): string {
   const counts = d.receivers === null ? "" : ` · ${d.delivered ?? "?"} of ${plural(d.receivers, "receiver")}`;
   const attempts = d.attempts === null ? "" : ` · ${plural(d.attempts, "attempt")}`;
   return `${event}${counts}${attempts}`;
+}
+
+/** A runbook is linked only when the API names one as a web address: a run's quality answer (#1325) and each incident
+ * (#1344) carry one when the deployment sets a runbook page, null when it sets none, and an older API leaves it out. */
+export const runbookUrl = (r: string | null | undefined) => (r && /^https?:\/\//.test(r) ? r : undefined);
+
+/** The incident's runbook section, the link its notification carries, on a line of its own; nothing at all, not even a
+ * placeholder, when it has none. Its name says which condition's section it opens, as the page can list several. */
+export function IncidentRunbook({ incident }: { incident: AlertIncident }) {
+  const href = runbookUrl(incident.runbook);
+  if (!href) return null;
+  return (
+    <span className="mon-why">
+      <a className="run-link mon-runbook" href={href} target="_blank" rel="noopener noreferrer"
+        aria-label={`Runbook for ${incident.condition} (opens in a new tab)`}>
+        Runbook <span aria-hidden="true">↗</span>
+      </a>
+    </span>
+  );
 }
 
 export function AlertsCard({ a, now }: { a: Alerts; now: number }) {

@@ -1020,6 +1020,7 @@ describe("alert incidents", () => {
     ["a severity of info", (b: StageAlertIncidents) => { (b.incidents![0] as { severity: string }).severity = "info"; }],
     ["no state", (b: StageAlertIncidents) => { delete (b as Partial<StageAlertIncidents>).state; }],
     ["a text stale flag", (b: StageAlertIncidents) => { (b.state as { stale: unknown }).stale = "no"; }],
+    ["a runbook that is not text", (b: StageAlertIncidents) => { (b.incidents![0] as { runbook: unknown }).runbook = 42; }],
   ])("reads an incidents answer with %s as unknown", async (_, spoil) => {
     const body = incidentsOf({ incidents: [incident("i-1", { status: "delivered", event: "opened", attempts: 1, receivers: 1, delivered: 1 })] });
     spoil(body);
@@ -1085,6 +1086,45 @@ describe("one list to act on", () => {
     expect(spool).toHaveTextContent("Warning");
     expect(spool).toHaveTextContent(/last seen \d+ s ago/);
     expect(within(screen.getByRole("region", { name: "Needs attention" })).getByText("4")).toBeInTheDocument();
+  });
+
+  describe("each incident's runbook section (#1344)", () => {
+    const BOOK = "https://docs.example/runbooks/alerting";
+    const load = (incidents: AlertIncident[]) => {
+      api(() => ({ body: health({ state: "critical" }) }), () => ({ body: failing() }), undefined, { alerts: () => ({ body: incidentsOf({ incidents }) }) });
+      open();
+      return screen.findByRole("region", { name: "Pipeline health" });
+    };
+    const spool = (over: Partial<AlertIncident> = {}) =>
+      inc("spool", "service_degraded", { job: null, domain: null, product: null, component: "log-archive.spool-age", severity: "warning", summary: "the spool is not draining", run_ids: [], ...over });
+
+    it("links it on a row an incident joined and on a standalone one, in a new tab, saying which runbook", async () => {
+      await load([inc("failed", "run_failed", { runbook: `${BOOK}#run_failed` }), spool({ runbook: `${BOOK}#service_degraded` })]);
+      const joined = within(attentionRow("Run failed")).getByRole("link", { name: "Runbook for run_failed (opens in a new tab)" });
+      expect(joined).toHaveAttribute("href", `${BOOK}#run_failed`);
+      expect(joined).toHaveAttribute("target", "_blank");
+      expect(joined).toHaveAttribute("rel", "noopener noreferrer");
+      expect(joined).toHaveTextContent(/^Runbook ↗$/);
+      const alone = within(attentionRow("the spool is not draining")).getByRole("link", { name: "Runbook for service_degraded (opens in a new tab)" });
+      expect(alone).toHaveAttribute("href", `${BOOK}#service_degraded`);
+      expect(alone).toHaveAttribute("rel", "noopener noreferrer");
+      // A signal no incident is about has no notification, so no runbook.
+      expect(within(attentionRow("Data is late")).queryByRole("link", { name: /Runbook/ })).toBeNull();
+    });
+
+    it.each([
+      ["null (no runbook page)", null],
+      ["absent (an API before #1344)", undefined],
+      ["not a web address", "javascript:alert(1)"],
+      ["a relative path", "/runbooks/alerting#run_failed"],
+    ])("shows no link and no placeholder when it is %s", async (_, runbook) => {
+      const over = runbook === undefined ? {} : { runbook };
+      await load([inc("failed", "run_failed", over), spool(over)]);
+      expect(within(list()).queryByRole("link", { name: /Runbook/ })).toBeNull();
+      expect(list()).not.toHaveTextContent(/Runbook/);
+      expect(attentionRow("Run failed").querySelector(".mon-delivery")).toHaveTextContent(/^Delivered$/);
+      expect(attentionRow("the spool is not draining")).toHaveTextContent("opened notification · 2 of 2 receivers · 1 attempt");
+    });
   });
 
   it("says a notification is unknown, not none, when the incidents are stale or cannot be read", async () => {

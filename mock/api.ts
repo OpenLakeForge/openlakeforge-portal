@@ -585,7 +585,11 @@ function qualityHealth(stage: string, scenario: Scenario) {
 
 // ── Alert incidents (openlakeforge #1258): StageAlertIncidents. prod has one open incident per delivery status;
 // dev's evaluator stopped running (stale). `stale` makes prod stale too, `unknown` has a state with no evaluation
-// time (stale), `unavailable` cannot read the state (incidents null), `empty` has none open.
+// time (stale), `unavailable` cannot read the state (incidents null), `empty` has none open. Each incident names its
+// runbook section (#1344).
+
+/** The deployment's runbook page (`runbook_base_url`): incidents and failed runs link a section of it. */
+const RUNBOOK_PAGE = "http://docs.olf.localhost/runbooks/alerting";
 
 function alertIncidents(stage: string, scenario: Scenario) {
   const now = Date.now();
@@ -604,6 +608,8 @@ function alertIncidents(stage: string, scenario: Scenario) {
     id, condition, severity, job: scope[1], domain: scope[1] ? SCOPES[scope[1]]?.[0] ?? null : null, product: scope[1] ? SCOPES[scope[1]]?.[1] ?? null : null,
     table: scope[2], component: scope[3],
     opened_at: iso(-opened), last_seen_at: iso(-140), summary, run_ids: runs, delivery,
+    // The deployment's runbook page + "#" + the condition, as the notification's links.runbook (#1344).
+    runbook: `${RUNBOOK_PAGE}#${condition}`,
   });
   if (stage === "dev") {
     return { stage, state, incidents: [incident("dev-health", "health_unreadable", "warning", [null, null, null, "dagster.read-api"], 50 * 60,
@@ -712,7 +718,7 @@ function reportId(uri: string): string {
 function runQuality(scenario: Scenario, stage: string, run: MockRun) {
   const quality = manifestSource(scenario, run);
   // A failed run names the signal catalog's runbook for a failed run (runbook_base_url + "#failed_run"); others none.
-  const runbook = run.status === "FAILURE" ? "http://docs.olf.localhost/runbooks/alerting#failed_run" : null;
+  const runbook = run.status === "FAILURE" ? `${RUNBOOK_PAGE}#failed_run` : null;
   const base = { run_id: run.run_id, job: run.job_name, status: run.status, runbook, sources: [quality] };
   if (quality.status !== "available") return { ...base, complete: null, counts: null, checks: null, reports: [] };
   const at = new Date(((run.ended_at ?? run.started_at ?? run.created_at) as number) * 1000).toISOString();
