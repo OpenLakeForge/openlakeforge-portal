@@ -56,7 +56,7 @@ const qualityOf = (over: Partial<RunQuality> = {}): RunQuality => ({
 const noManifest = (status: "not_provided" | "unavailable", reason: string): RunQuality =>
   qualityOf({ complete: null, counts: null, checks: null, reports: [], sources: [{ name: "quality", status, reason }] });
 const incident = (over: Partial<AlertIncident> = {}): AlertIncident => ({
-  id: "i1", condition: "failed_run", severity: "critical", job: "sales_orders", domain: "sales", product: "orders", table: null, component: null,
+  id: "i1", condition: "run_failed", severity: "critical", job: "sales_orders", domain: "sales", product: "orders", table: null, component: null,
   opened_at: new Date().toISOString(), last_seen_at: new Date().toISOString(), summary: "latest run failed", run_ids: [RUN],
   delivery: { status: "delivered", event: "opened", attempts: 1, receivers: 2, delivered: 2 }, ...over,
 });
@@ -202,12 +202,12 @@ describe("failed run", () => {
   });
 
   it("links each open incident's runbook section (#1344) in a new tab, saying which runbook", async () => {
-    const book = "https://docs.example/runbooks/alerting#failed_run";
+    const book = "https://docs.example/runbooks/alerting#run_failed";
     api({ alerts: () => ({ body: incidentsOf([incident({ runbook: book })]) }) });
     open();
     const incidents = await screen.findByRole("region", { name: "Open incidents" });
 
-    const link = await within(incidents).findByRole("link", { name: "Runbook for failed_run (opens in a new tab)" });
+    const link = await within(incidents).findByRole("link", { name: /^Runbook ?for run_failed \(opens in a new tab\)$/ });
     expect(link).toHaveAttribute("href", book);
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");

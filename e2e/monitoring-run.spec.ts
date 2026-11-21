@@ -71,13 +71,13 @@ test("each open incident of the run links its runbook section in a new tab", asy
   await page.goto(`/monitoring/prod/runs/${FAILED}`);
   const incidents = card(page, "Open incidents");
   await expect(incidents).toContainText("latest run failed");
-  const failed = incidents.getByRole("link", { name: "Runbook for failed_run (opens in a new tab)" });
-  await expect(failed).toHaveText("Runbook ↗");
-  await expect(failed).toHaveAttribute("href", "http://docs.olf.localhost/runbooks/alerting#failed_run");
+  const failed = incidents.getByRole("link", { name: "Runbook for run_failed (opens in a new tab)" });
+  await expect(failed).toHaveText("Runbook ↗ for run_failed (opens in a new tab)");
+  await expect(failed).toHaveAttribute("href", "http://docs.olf.localhost/runbooks/alerting#run_failed");
   await expect(failed).toHaveAttribute("target", "_blank");
   await expect(failed).toHaveAttribute("rel", "noopener noreferrer");
-  await expect(incidents.getByRole("link", { name: "Runbook for quality_blocking (opens in a new tab)" }))
-    .toHaveAttribute("href", "http://docs.olf.localhost/runbooks/alerting#quality_blocking");
+  await expect(incidents.getByRole("link", { name: "Runbook for quality (opens in a new tab)" }))
+    .toHaveAttribute("href", "http://docs.olf.localhost/runbooks/alerting#quality");
   await expect(incidents.getByRole("link", { name: /Runbook/ })).toHaveCount(2);
 });
 

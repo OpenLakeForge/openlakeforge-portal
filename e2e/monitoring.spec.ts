@@ -125,9 +125,10 @@ const BOOK = "http://docs.olf.localhost/runbooks/alerting";
 
 test("each open incident links its runbook section in a new tab, on a joined row and on a standalone one", async ({ page }) => {
   await page.goto("/monitoring?stage=prod");
-  const joined = attention(page).getByRole("row", { name: /Run failed/ }).getByRole("link", { name: "Runbook for failed_run (opens in a new tab)" });
-  await expect(joined).toHaveText("Runbook ↗");
-  await expect(joined).toHaveAttribute("href", `${BOOK}#failed_run`);
+  const joined = attention(page).getByRole("row", { name: /Run failed/ }).getByRole("link", { name: "Runbook for run_failed (opens in a new tab)" });
+  await expect(joined).toHaveText("Runbook ↗ for run_failed (opens in a new tab)");
+  await expect(joined.locator("[aria-hidden=true]")).toHaveText("↗");
+  await expect(joined).toHaveAttribute("href", `${BOOK}#run_failed`);
   await expect(joined).toHaveAttribute("target", "_blank");
   await expect(joined).toHaveAttribute("rel", "noopener noreferrer");
   const alone = attention(page).getByRole("row", { name: /No durable write/ }).getByRole("link", { name: /^Runbook for service_degraded/ });

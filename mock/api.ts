@@ -634,9 +634,9 @@ function alertIncidents(stage: string, scenario: Scenario) {
   return {
     stage, state,
     incidents: [
-      incident("prod-sales-failed", "failed_run", "critical", ["sales", "sales_orders", null, null], 38 * 60, "latest run failed",
+      incident("prod-sales-failed", "run_failed", "critical", ["sales", "sales_orders", null, null], 38 * 60, "latest run failed",
         ["c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21"], { status: "delivered", event: "opened", attempts: 1, receivers: 2, delivered: 2 }),
-      incident("prod-sales-quality", "quality_blocking", "critical", ["sales", "sales_orders", "silver.orders", null], 38 * 60, "a blocking quality check failed",
+      incident("prod-sales-quality", "quality", "critical", ["sales", "sales_orders", "silver.orders", null], 38 * 60, "a blocking quality check failed",
         ["c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21"], { status: "pending", event: "escalated", attempts: 2, receivers: 2, delivered: 1 }),
       incident("prod-crm-missed", "missed_run", "critical", ["crm", "crm_accounts", null, null], 20 * 60, "an expected run did not start",
         [], { status: "undeliverable", event: "opened", attempts: 10, receivers: 1, delivered: 0 }),

@@ -43,8 +43,9 @@ export function deliveryLine(d: AlertDelivery): string {
 }
 
 /** A runbook is linked only when the API names one as a web address: a run's quality answer (#1325) and each incident
- * (#1344) carry one when the deployment sets a runbook page, null when it sets none, and an older API leaves it out. */
-export const runbookUrl = (r: string | null | undefined) => (r && /^https?:\/\//.test(r) ? r : undefined);
+ * (#1344) carry one when the deployment sets a runbook page, null when it sets none, and an older API leaves it out.
+ * A bare scheme with no host is not one, and the scheme is matched as the API writes it, lower case. */
+export const runbookUrl = (r: string | null | undefined) => (r && /^https?:\/\/[^\s/]/.test(r) ? r : undefined);
 
 /** The incident's runbook section, the link its notification carries, on a line of its own; nothing at all, not even a
  * placeholder, when it has none. Its name says which condition's section it opens, as the page can list several. */
@@ -53,9 +54,8 @@ export function IncidentRunbook({ incident }: { incident: AlertIncident }) {
   if (!href) return null;
   return (
     <span className="mon-why">
-      <a className="run-link mon-runbook" href={href} target="_blank" rel="noopener noreferrer"
-        aria-label={`Runbook for ${incident.condition} (opens in a new tab)`}>
-        Runbook <span aria-hidden="true">↗</span>
+      <a className="run-link" href={href} target="_blank" rel="noopener noreferrer">
+        Runbook <span aria-hidden="true">↗</span><span className="sr-only">{` for ${incident.condition} (opens in a new tab)`}</span>
       </a>
     </span>
   );
