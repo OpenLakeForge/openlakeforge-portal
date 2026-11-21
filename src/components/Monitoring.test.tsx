@@ -9,6 +9,7 @@ import {
 } from "../lib/health-api";
 import { formatTime } from "../lib/time";
 import { DEADLINE_MS, Monitoring } from "./Monitoring";
+import { countsFrom, qualityWhy } from "./MonitoringQuality";
 import { StatusBadge } from "./StatusBadge";
 
 const soon = () => new Date(Date.now() + 40_000).toISOString();
@@ -844,8 +845,68 @@ describe("data quality", () => {
     open();
     expect(await screen.findByText("Incomplete")).toBeInTheDocument();
     expect(qualityRow("sales_orders")).toHaveTextContent("3 passed");
-    expect(qualityRow("sales_orders")).toHaveTextContent("not every result is in yet · dbt results are not in yet");
+    expect(qualityRow("sales_orders")).toHaveTextContent("dbt results are not in yet");
+    expect(qualityRow("sales_orders")).not.toHaveTextContent("not every result is in yet");
     expect(qualityRow("sales_orders")).toHaveTextContent("Unknown");
+  });
+
+  it("shows a run that failed before its quality checks finished by its reason alone, never as still going", async () => {
+    const body = qualityOf({ pipelines: [pq("sales_orders", { state: "unknown", complete: false, run_id: "c94cbcb0-failed", counts: counts({ passed: 2 }),
+      reason: "the run failed before its quality checks finished" })] });
+    api(() => ({ body: health() }), undefined, undefined, { quality: () => ({ body }) });
+    open();
+    expect(await screen.findByText("Incomplete")).toBeInTheDocument();
+    expect(qualityRow("sales_orders")).toHaveTextContent("the run failed before its quality checks finished");
+    expect(qualityRow("sales_orders")).not.toHaveTextContent("not every result is in yet");
+    expect(qualityRow("sales_orders")).toHaveTextContent("Unknown");
+    expect(card()).toHaveTextContent(/counts from 1 pipeline · 1 incomplete$/);
+  });
+
+  it("keeps 'not every result is in yet' for an incomplete row with no reason of its own", async () => {
+    const body = qualityOf({ pipelines: [pq("sales_orders", { state: "unknown", complete: false, counts: counts({ passed: 3 }), reason: "" })] });
+    api(() => ({ body: health() }), undefined, undefined, { quality: () => ({ body }) });
+    open();
+    expect(await screen.findByText("Incomplete")).toBeInTheDocument();
+    expect(qualityRow("sales_orders").querySelector(".mon-why")).toHaveTextContent(/^not every result is in yet$/);
+  });
+
+  it("calls only counted rows incomplete: a failed run with no counts is left out of the sum, not called partial", async () => {
+    const body = qualityOf({ pipelines: [
+      pq("sales_orders", { state: "unknown", complete: false, counts: null, reason: "the run failed before its quality checks finished" }),
+      pq("crm_accounts"), pq("web_events"),
+    ] });
+    api(() => ({ body: health() }), undefined, undefined, { quality: () => ({ body }) });
+    open();
+    await screen.findByRole("region", { name: "Quality by pipeline" });
+    expect(card().querySelector(".mon-note")).toHaveTextContent(/^counts from 2 of 3 pipelines$/);
+    expect(qualityRow("sales_orders")).toHaveTextContent("Incomplete");
+  });
+
+  it("words the reason and the card sentence the same outside the page", () => {
+    expect(qualityWhy({ complete: false, reason: "the run was canceled before its quality checks finished" })).toBe("the run was canceled before its quality checks finished");
+    expect(qualityWhy({ complete: false, reason: " " })).toBe("not every result is in yet");
+    expect(qualityWhy({ complete: true, reason: "quality checks passed" })).toBe("quality checks passed");
+    expect(qualityWhy({ complete: null, reason: "no finished run of the pipeline has quality evidence yet" })).toBe("no finished run of the pipeline has quality evidence yet");
+    expect(countsFrom(3, 4, 0)).toBe("counts from 3 of 4 pipelines");
+    expect(countsFrom(3, 4, 1)).toBe("counts from 3 of 4 pipelines · 1 incomplete");
+    expect(countsFrom(3, 3, 2)).toBe("counts from all 3 pipelines · 2 incomplete");
+    expect(countsFrom(1, 1, 0)).toBe("counts from 1 pipeline");
+    expect(countsFrom(1, 1, 1)).toBe("counts from 1 pipeline · 1 incomplete");
+    expect(countsFrom(0, 1, 0)).toBe("counts from 0 of 1 pipeline");
+  });
+
+  it.each([
+    [0, "counts from all 3 pipelines"],
+    [1, "counts from all 3 pipelines · 1 incomplete"],
+    [2, "counts from all 3 pipelines · 2 incomplete"],
+  ])("says how many of the counted pipelines are incomplete (%i)", async (k, sentence) => {
+    const jobs = ["sales_orders", "crm_accounts", "web_events"];
+    const body = qualityOf({ pipelines: jobs.map((job, i) => pq(job, i < k
+      ? { state: "unknown", complete: false, reason: "the run failed before its quality checks finished" } : {})) });
+    api(() => ({ body: health() }), undefined, undefined, { quality: () => ({ body }) });
+    open();
+    await screen.findByRole("region", { name: "Quality by pipeline" });
+    expect(card().querySelector(".mon-note")).toHaveTextContent(new RegExp(`^${sentence}$`));
   });
 
   it.each([

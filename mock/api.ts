@@ -338,8 +338,9 @@ async function filesRoute(req: IncomingMessage, url: URL, parts: string[]): Prom
  * offered them), `not-provided` (no quality reader, no alert evaluator), and for quality and incidents `unknown`,
  * `unavailable`, `stale` and `empty` (see qualityHealth and alertIncidents). `admin` is a platform admin: the log
  * archive is read on prod too, so a failed run there shows its archived lines. `slim` turns metrics off (the Slim profile),
- * and `unavailable` also makes the metrics backend unreachable. `healthy`: every PROD service probe answers healthy. */
-const MONITORING_SCENARIOS = ["no-access", "limited", "unauthorized", "not-provided", "unknown", "unavailable", "stale", "empty", "admin", "slim", "healthy"] as const;
+ * and `unavailable` also makes the metrics backend unreachable. `healthy`: every PROD service probe answers healthy.
+ * `unfinished`: PROD's web_events' latest run failed before its quality checks finished (see qualityHealth). */
+const MONITORING_SCENARIOS = ["no-access", "limited", "unauthorized", "not-provided", "unknown", "unavailable", "stale", "empty", "admin", "slim", "healthy", "unfinished"] as const;
 type Scenario = (typeof MONITORING_SCENARIOS)[number] | undefined;
 function scenarioOf(req: IncomingMessage): Scenario {
   let asked: string | null = null;
@@ -424,7 +425,7 @@ function stageHealth(stage: string, scenario?: Scenario) {
   const prod = stage === "prod";
   return {
     stage, state: prod ? "critical" : "unknown", evaluated_at: iso(-18), window: healthWindow(now, null), failed_runs: null,
-    pipelines: prod ? PROD_PIPELINES.map(({ job, state }) => ({ job, domain: SCOPES[job]?.[0] ?? null, product: SCOPES[job]?.[1] ?? null, state, failed_runs: PROD_FAILED_RUNS[job][0] })) : [],
+    pipelines: prod ? PROD_PIPELINES.map(({ job }) => ({ job, domain: SCOPES[job]?.[0] ?? null, product: SCOPES[job]?.[1] ?? null, state: prodState(job, scenario), failed_runs: prodFailed(job, scenario) })) : [],
     services: [
       prod ? svc("dagster.read-api", "dagster-graphql", "healthy", "Dagster GraphQL answers")
         : svc("dagster.read-api", "dagster-graphql", "unknown", "the Dagster GraphQL API did not answer"),
@@ -475,6 +476,10 @@ const PROD_PIPELINES = [
   { job: "finance_ledger", state: "warning" },
   { job: "web_events", state: "healthy" },
 ] as const;
+/** `unfinished`: web_events' latest run failed (before its quality checks finished), so it is critical with one failure. */
+const unfinished = (job: string, scenario?: Scenario) => scenario === "unfinished" && job === "web_events";
+const prodState = (job: string, scenario?: Scenario): string => (unfinished(job, scenario) ? "critical" : PROD_PIPELINES.find((p) => p.job === job)!.state);
+const prodFailed = (job: string, scenario?: Scenario) => (unfinished(job, scenario) ? 1 : PROD_FAILED_RUNS[job][0]);
 
 function pipelinesHealth(stage: string, scenario?: Scenario) {
   const now = Date.now();
@@ -510,9 +515,11 @@ function pipelinesHealth(stage: string, scenario?: Scenario) {
   const midnight = Math.floor((now / 1000 - 36 * H) / 86400) * 86400;
   const ledger = run("finance_ledger", LEDGER_RUN, "SUCCESS", secs(0) - (midnight - 19 * 60), 51 * 60);
   const web = run("web_events", "0d9c3e7a-6b28-4f15-a3d0-8e1c5b2f4a67", "SUCCESS", 25 * 60, 60);
+  // `unfinished`: a later web_events run failed 12 min ago, before its quality checks finished (openlakeforge#1346).
+  const webFail = run("web_events", UNFINISHED_RUN, "FAILURE", 12 * 60 + 60, 60);
   const health = (job: string, latest: ReturnType<typeof run>, success: ReturnType<typeof run> | null, failed: number | null,
     schedule: { name: string | null; status: string; last_expected_at: string | null }, signals: unknown[]) => ({
-    job, domain: SCOPES[job]?.[0] ?? null, product: SCOPES[job]?.[1] ?? null, state: PROD_PIPELINES.find((p) => p.job === job)!.state, latest_run: latest, last_success: success,
+    job, domain: SCOPES[job]?.[0] ?? null, product: SCOPES[job]?.[1] ?? null, state: prodState(job, scenario), latest_run: latest, last_success: success,
     failed_runs: failed, covered_from: PROD_FAILED_RUNS[job]?.[1] === null ? null : iso(-PROD_FAILED_RUNS[job][1]!), schedule,
     freshness: { last_success_at: success ? new Date(success.ended_at * 1000).toISOString() : null, age_seconds: success ? secs(0) - success.ended_at : null },
     signals,
@@ -542,7 +549,13 @@ function pipelinesHealth(stage: string, scenario?: Scenario) {
         { ...signal("freshness", "disabled", "schedule is stopped", null, null), observed_at: null },
         signal("quality", "warning", "quality checks warned", ledger, 7 * 24 * H),
       ]),
-      health("web_events", web, web, PROD_FAILED_RUNS.web_events[0], { name: "web_events_hourly", status: "running", last_expected_at: iso(-25 * 60) }, [
+      unfinished("web_events", scenario) ? health("web_events", webFail, web, prodFailed("web_events", scenario), { name: "web_events_hourly", status: "running", last_expected_at: iso(-13 * 60) }, [
+        signal("execution", "critical", "latest run failed", webFail, H + 900),
+        signal("latest_success", "healthy", "a successful run is on record", web, H + 900),
+        signal("expected_run", "healthy", "the expected run started", null, 300),
+        signal("freshness", "healthy", "a run succeeded since the previous due time", web, null),
+        signal("quality", "unknown", "the run failed before its quality checks finished", webFail, H + 900),
+      ]) : health("web_events", web, web, PROD_FAILED_RUNS.web_events[0], { name: "web_events_hourly", status: "running", last_expected_at: iso(-25 * 60) }, [
         signal("execution", "healthy", "latest run succeeded", web, H + 900),
         signal("latest_success", "healthy", "a successful run is on record", web, H + 900),
         signal("expected_run", "healthy", "the expected run started", null, 300),
@@ -556,7 +569,8 @@ function pipelinesHealth(stage: string, scenario?: Scenario) {
 // ── Quality counts (openlakeforge #1257): StageQualityHealth. prod: sales_orders failed a blocking check,
 // finance_ledger warned and its manifest is incomplete, crm_accounts has no usable manifest (counts null, never
 // zeros), web_events passed. `unknown`: Dagster could not be read, so no counts at all. `empty`: no pipeline has
-// quality evidence yet.
+// quality evidence yet. `unfinished` (openlakeforge#1346): web_events' latest run failed before its quality checks
+// finished, so its row is unknown, names that run, and keeps the partial counts with `complete: false`.
 
 function qualityHealth(stage: string, scenario: Scenario) {
   const now = Date.now();
@@ -576,7 +590,9 @@ function qualityHealth(stage: string, scenario: Scenario) {
     entry("sales_orders", "sales", "c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21", 40 * 60, true, "critical", counts(14, 1, 2, 1), "a blocking quality check failed"),
     entry("crm_accounts", "crm", null, null, null, "unknown", null, "no finished run of the pipeline has quality evidence yet"),
     entry("finance_ledger", "finance", "e5d27b8c-0f41-4a9e-b6c3-1d8a2f7e9b05", 2 * 24 * 3600, false, "warning", counts(8, 2, 0, 0, 1), "quality checks warned"),
-    entry("web_events", null, "0d9c3e7a-6b28-4f15-a3d0-8e1c5b2f4a67", 25 * 60, true, "healthy", counts(6, 0, 0), "quality checks passed"),
+    scenario === "unfinished"
+      ? entry("web_events", null, UNFINISHED_RUN, 12 * 60, false, "unknown", counts(2, 0, 0), "the run failed before its quality checks finished")
+      : entry("web_events", null, "0d9c3e7a-6b28-4f15-a3d0-8e1c5b2f4a67", 25 * 60, true, "healthy", counts(6, 0, 0), "quality checks passed"),
   ];
   const known = pipelines.flatMap((p) => (p.counts ? [p.counts] : []));
   const totals = Object.fromEntries(Object.keys(counts(0, 0, 0)).map((k) => [k, known.reduce((n, c) => n + c[k as keyof typeof c], 0)]));
@@ -643,9 +659,10 @@ function alertIncidents(stage: string, scenario: Scenario) {
 
 const FAILED_RUN = "c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21";
 const LEDGER_RUN = "e5d27b8c-0f41-4a9e-b6c3-1d8a2f7e9b05";
+const UNFINISHED_RUN = "7f3a1c62-9e4b-4d08-b5a1-3c6e2d9f8b14"; // web_events, `unfinished` only
 
-function runsOnRecord() {
-  const runs = (pipelinesHealth("prod").pipelines as { latest_run: Record<string, unknown> | null; last_success: Record<string, unknown> | null }[])
+function runsOnRecord(scenario?: Scenario) {
+  const runs = (pipelinesHealth("prod", scenario).pipelines as { latest_run: Record<string, unknown> | null; last_success: Record<string, unknown> | null }[])
     .flatMap((p) => [p.latest_run, p.last_success]).filter((r): r is Record<string, unknown> => r !== null);
   return new Map([...runHistory(), ...runs].map((r) => [r.run_id as string, r]));
 }
@@ -654,6 +671,7 @@ type MockRun = { run_id: string; job_name: string; status: string; created_at: n
 /** As run_failure.run_manifest decides it: why a run has a quality manifest or not. */
 function manifestSource(scenario: Scenario, run: MockRun) {
   if (scenario === "unknown" && run.status === "FAILURE") return { name: "quality", status: "unavailable", reason: "the run's quality manifest could not be read" };
+  if (run.run_id === UNFINISHED_RUN) return { name: "quality", status: "available", reason: "read from the run's quality manifest" };
   if (!(run.job_name in SCOPES)) return { name: "quality", status: "not_provided", reason: "only a product pipeline's run writes a quality manifest" };
   if (run.job_name === "crm_accounts") return { name: "quality", status: "not_provided", reason: "the run wrote no quality manifest" };
   return { name: "quality", status: "available", reason: "read from the run's quality manifest" };
@@ -672,7 +690,8 @@ function runRoute(scenario: Scenario, stage: string, id: string, sub: string[], 
   }
   if (op === "list_run_logs" && scenario === "not-provided") throw new HttpError(404, `stage '${stage}' has no log archive`);
   if (stage !== "prod") throw new HttpError(502, `Dagster for stage '${stage}' could not be read`);
-  const run = runsOnRecord().get(id) as MockRun | undefined;
+  // The run page's address drops `mock=`, so `unfinished`'s failed run is found whatever the scenario: its link opens.
+  const run = (runsOnRecord(scenario).get(id) ?? (id === UNFINISHED_RUN ? runsOnRecord("unfinished").get(id) : undefined)) as MockRun | undefined;
   if (!run) throw new HttpError(404, `no run '${id}' in stage '${stage}'`);
   if (op === "get_run") return { json: run };
   if (op === "get_run_quality") return { json: runQuality(scenario, stage, run) };
@@ -690,13 +709,17 @@ function runRoute(scenario: Scenario, stage: string, id: string, sub: string[], 
   return {
     json: {
       run_id: id, job: run.job_name, domain: scope?.[0] ?? null, product: scope?.[1] ?? null, status: run.status,
-      steps: unknown ? null : failed ? [{
+      steps: unknown ? null : run.run_id === UNFINISHED_RUN ? [{
+        step: "floe_bronze_web_events", error_class: "S3ReadTimeoutError",
+        message: "reading web/events/2026-11-21T12 timed out after 300 s; 2 of 9 checks written to the quality manifest",
+        message_truncated: false,
+      }] : failed ? [{
         step: "floe_silver_orders", error_class: "SchemaMismatchError",
         message: "orders.amount: expected decimal(18,2), found string in orders_2026-11-16.csv; policy abort, 0 rows written to sales_silver.orders",
         message_truncated: true,
       }] : [],
       run_message: null, steps_truncated: false,
-      rows: quality.status !== "available" ? null : failed ? { rejected: 412, accepted: 0, complete: true }
+      rows: quality.status !== "available" ? null : run.run_id === UNFINISHED_RUN ? { rejected: 0, accepted: 1_250, complete: false } : failed ? { rejected: 412, accepted: 0, complete: true }
         : run.run_id === LEDGER_RUN ? { rejected: 37, accepted: 8_120, complete: false } : { rejected: 0, accepted: 19402, complete: true },
       sources: [
         unknown ? { name: "dagster", status: "unavailable", reason: "the run's event log could not be read" }
@@ -775,6 +798,14 @@ function runQuality(scenario: Scenario, stage: string, run: MockRun) {
       f("freshness.posted_at", "posted_at", "warn", "passed", "continued"),
       f("not_null.posted_at", "posted_at", "reject", "passed", "continued", { rows: 8_157, violations: 0 }),
       check("dbt", "not_null_fct_ledger_entry_id", "finance_gold.fct_ledger", "entry_id", "error", "not_run", "unknown"),
+    ];
+  } else if (run.run_id === UNFINISHED_RUN) {
+    // The run failed before its quality checks finished: two Floe checks were written, the rest never ran.
+    const floe = `${prefix}/floe/web_bronze.events/run_report.json`;
+    complete = false;
+    checks = [
+      check("floe", "schema.columns", "web_bronze.events", null, "abort", "passed", "continued", {}, floe),
+      check("floe", "not_null.event_id", "web_bronze.events", "event_id", "reject", "passed", "continued", { rows: 1_250, violations: 0 }, floe),
     ];
   } else {
     const floe = `${prefix}/floe/sales_silver.orders/run_report.json`;
@@ -888,8 +919,8 @@ function devRuns(from: number, to: number): MockRun[] {
 }
 
 /** The stage's archive between `from` and `to`, oldest first; a v1 record sits where the archiver wrote it. */
-function archive(stage: string, from: number, to: number): ArchiveLine[] {
-  const runs = stage === "prod" ? ([...runsOnRecord().values()] as MockRun[]) : devRuns(from - 3_600_000, to);
+function archive(stage: string, from: number, to: number, scenario?: Scenario): ArchiveLine[] {
+  const runs = stage === "prod" ? ([...runsOnRecord(scenario).values()] as MockRun[]) : devRuns(from - 3_600_000, to);
   const fromRuns = runs
     .filter((r) => (r.started_at ?? r.created_at) * 1000 < to && (r.ended_at ?? Date.now() / 1000) * 1000 >= from - 3_600_000)
     .flatMap((r) => runLines(r).map((l, i) => ({ l, i })));
@@ -992,7 +1023,7 @@ function logsRoute(scenario: Scenario, stage: string, url: URL): { json: unknown
   const from = hour === null ? day : day + hour * 3_600_000;
   const to = hour === null ? day + 86_400_000 : from + 3_600_000;
   const kept = Date.now() - LOG_RETENTION_DAYS[stage] * 86_400_000;
-  const lines = to <= kept ? [] : archive(stage, Math.max(from, kept), to).map((l) => shape(stage, l))
+  const lines = to <= kept ? [] : archive(stage, Math.max(from, kept), to, scenario).map((l) => shape(stage, l))
     .filter((l) => keep(l) && (!product || l.product === product) && (!runId || l.run_id === runId));
   return { json: { lines: lines.slice(0, limit), truncated: lines.length > limit } };
 }
@@ -1219,7 +1250,7 @@ function listRunsRoute(scenario: Scenario, stage: string, url: URL): { json: unk
   if (stage !== "prod") throw new HttpError(502, `Dagster for stage '${stage}' is unreachable`);
   if (scenario === "empty") return { json: { runs: [] } };
   const job = url.searchParams.get("job") ?? "";
-  const runs = [...runsOnRecord().values()] as MockRun[];
+  const runs = [...runsOnRecord(scenario).values()] as MockRun[];
   return {
     json: {
       runs: runs.filter((r) => !job || r.job_name === job).sort((a, b) => b.created_at - a.created_at).slice(0, limit)
