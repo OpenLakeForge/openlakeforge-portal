@@ -67,6 +67,38 @@ test("the failure summary comes first and carries the logs, reports, runbook, Da
   expect(Math.round(b!.width)).toBe(Math.round(a!.width));
 });
 
+test("each open incident of the run links its runbook section in a new tab", async ({ page }) => {
+  await page.goto(`/monitoring/prod/runs/${FAILED}`);
+  const incidents = card(page, "Open incidents");
+  await expect(incidents).toContainText("latest run failed");
+  const failed = incidents.getByRole("link", { name: "Runbook for run_failed (opens in a new tab)" });
+  await expect(failed).toHaveText("Runbook ↗ for run_failed (opens in a new tab)");
+  await expect(failed).toHaveAttribute("href", "http://docs.olf.localhost/runbooks/alerting#run_failed");
+  await expect(failed).toHaveAttribute("target", "_blank");
+  await expect(failed).toHaveAttribute("rel", "noopener noreferrer");
+  await expect(incidents.getByRole("link", { name: "Runbook for quality (opens in a new tab)" }))
+    .toHaveAttribute("href", "http://docs.olf.localhost/runbooks/alerting#quality");
+  await expect(incidents.getByRole("link", { name: /Runbook/ })).toHaveCount(2);
+});
+
+for (const [what, runbook] of [["null", null], ["absent (an older API)", undefined], ["not a web address", "ftp://docs.example/runbooks"]] as const) {
+  test(`the run's open incidents show no runbook link or placeholder when it is ${what}`, async ({ page }) => {
+    await page.route("**/api/v1/stages/prod/alerts/incidents", async (route) => {
+      const body = await (await route.fetch()).json();
+      for (const i of body.incidents) {
+        if (runbook === undefined) delete i.runbook; else i.runbook = runbook;
+      }
+      await route.fulfill({ json: body });
+    });
+    await page.goto(`/monitoring/prod/runs/${FAILED}`);
+    const incidents = card(page, "Open incidents");
+    await expect(incidents).toContainText("latest run failed");
+    await expect(incidents).toContainText("Delivered opened notification");
+    await expect(incidents.getByRole("link")).toHaveCount(0);
+    await expect(incidents).not.toContainText("Runbook");
+  });
+}
+
 test("with download rights the run's reports are same-origin downloads", async ({ page }) => {
   await page.goto(`/monitoring/prod/runs/${FAILED}?mock=admin`);
   const floe = page.getByRole("list", { name: "Quality reports" }).getByRole("link", { name: /Floe report/ });

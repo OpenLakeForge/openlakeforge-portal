@@ -9,6 +9,7 @@ import {
 } from "../lib/health-api";
 import { formatTime } from "../lib/time";
 import { DEADLINE_MS, Monitoring } from "./Monitoring";
+import { runbookUrl } from "./MonitoringAlerts";
 import { countsFrom, qualityWhy } from "./MonitoringQuality";
 import { StatusBadge } from "./StatusBadge";
 
@@ -968,7 +969,7 @@ describe("alert incidents", () => {
   const table = () => screen.getByRole("region", { name: "What needs attention" });
   const urls = (fetch: ReturnType<typeof vi.fn>) => fetch.mock.calls.map(([u]) => u as string);
   const incident = (id: string, delivery: AlertIncident["delivery"], over: Partial<AlertIncident> = {}): AlertIncident => ({
-    id, condition: "failed_run", severity: "critical", job: null, domain: "sales", product: "orders", table: null, component: null,
+    id, condition: "run_failed", severity: "critical", job: null, domain: "sales", product: "orders", table: null, component: null,
     opened_at: new Date(Date.now() - 3_600_000).toISOString(), last_seen_at: new Date(Date.now() - 120_000).toISOString(),
     summary: `incident ${id}`, run_ids: [], delivery, ...over,
   });
@@ -1081,6 +1082,7 @@ describe("alert incidents", () => {
     ["a severity of info", (b: StageAlertIncidents) => { (b.incidents![0] as { severity: string }).severity = "info"; }],
     ["no state", (b: StageAlertIncidents) => { delete (b as Partial<StageAlertIncidents>).state; }],
     ["a text stale flag", (b: StageAlertIncidents) => { (b.state as { stale: unknown }).stale = "no"; }],
+    ["a runbook that is not text", (b: StageAlertIncidents) => { (b.incidents![0] as { runbook: unknown }).runbook = 42; }],
   ])("reads an incidents answer with %s as unknown", async (_, spoil) => {
     const body = incidentsOf({ incidents: [incident("i-1", { status: "delivered", event: "opened", attempts: 1, receivers: 1, delivered: 1 })] });
     spoil(body);
@@ -1146,6 +1148,65 @@ describe("one list to act on", () => {
     expect(spool).toHaveTextContent("Warning");
     expect(spool).toHaveTextContent(/last seen \d+ s ago/);
     expect(within(screen.getByRole("region", { name: "Needs attention" })).getByText("4")).toBeInTheDocument();
+  });
+
+  describe("each incident's runbook section (#1344)", () => {
+    const BOOK = "https://docs.example/runbooks/alerting";
+    // The visible "Runbook" and the screen-reader-only rest; jsdom joins them without the space a browser keeps.
+    const RUNBOOK_NAME = (condition: string) => new RegExp(`^Runbook ?for ${condition} \\(opens in a new tab\\)$`);
+    const load = (incidents: AlertIncident[]) => {
+      api(() => ({ body: health({ state: "critical" }) }), () => ({ body: failing() }), undefined, { alerts: () => ({ body: incidentsOf({ incidents }) }) });
+      open();
+      return screen.findByRole("region", { name: "Pipeline health" });
+    };
+    const spool = (over: Partial<AlertIncident> = {}) =>
+      inc("spool", "service_degraded", { job: null, domain: null, product: null, component: "log-archive.spool-age", severity: "warning", summary: "the spool is not draining", run_ids: [], ...over });
+
+    it.each([
+      ["an https address", "https://docs.example/runbooks/alerting#run_failed", true],
+      ["an http address", "http://docs.olf.localhost/runbooks/alerting#quality", true],
+      ["a bare https:// with no host", "https://", false],
+      ["a bare http:/// with no host", "http:///runbooks", false],
+      ["a protocol-relative //host", "//docs.example/runbooks/alerting", false],
+      ["a data: address", "data:text/html,<p>runbook</p>", false],
+      ["a javascript: address", "javascript:alert(1)", false],
+      ["an upper-case HTTPS:// (left unlinked, conservatively)", "HTTPS://docs.example/runbooks", false],
+      ["leading whitespace", " https://docs.example/runbooks", false],
+      ["a relative path", "/runbooks/alerting#run_failed", false],
+      ["null", null, false],
+      ["undefined", undefined, false],
+    ])("runbookUrl links %s: %s", (_, value, linked) => {
+      expect(runbookUrl(value)).toBe(linked ? value : undefined);
+    });
+
+    it("links it on a row an incident joined and on a standalone one, in a new tab, saying which runbook", async () => {
+      await load([inc("failed", "run_failed", { runbook: `${BOOK}#run_failed` }), spool({ runbook: `${BOOK}#service_degraded` })]);
+      const joined = within(attentionRow("Run failed")).getByRole("link", { name: RUNBOOK_NAME("run_failed") });
+      expect(joined).toHaveAttribute("href", `${BOOK}#run_failed`);
+      expect(joined).toHaveAttribute("target", "_blank");
+      expect(joined).toHaveAttribute("rel", "noopener noreferrer");
+      expect(joined).toHaveTextContent(/^Runbook ↗ for run_failed \(opens in a new tab\)$/);
+      expect(joined.querySelector("[aria-hidden]")).toHaveTextContent("↗");
+      const alone = within(attentionRow("the spool is not draining")).getByRole("link", { name: RUNBOOK_NAME("service_degraded") });
+      expect(alone).toHaveAttribute("href", `${BOOK}#service_degraded`);
+      expect(alone).toHaveAttribute("rel", "noopener noreferrer");
+      // A signal no incident is about has no notification, so no runbook.
+      expect(within(attentionRow("Data is late")).queryByRole("link", { name: /Runbook/ })).toBeNull();
+    });
+
+    it.each([
+      ["null (no runbook page)", null],
+      ["absent (an API before #1344)", undefined],
+      ["not a web address", "javascript:alert(1)"],
+      ["a relative path", "/runbooks/alerting#run_failed"],
+    ])("shows no link and no placeholder when it is %s", async (_, runbook) => {
+      const over = runbook === undefined ? {} : { runbook };
+      await load([inc("failed", "run_failed", over), spool(over)]);
+      expect(within(list()).queryByRole("link", { name: /Runbook/ })).toBeNull();
+      expect(list()).not.toHaveTextContent(/Runbook/);
+      expect(attentionRow("Run failed").querySelector(".mon-delivery")).toHaveTextContent(/^Delivered$/);
+      expect(attentionRow("the spool is not draining")).toHaveTextContent("opened notification · 2 of 2 receivers · 1 attempt");
+    });
   });
 
   it("says a notification is unknown, not none, when the incidents are stale or cannot be read", async () => {
