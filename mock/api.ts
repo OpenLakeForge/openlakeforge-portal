@@ -338,8 +338,9 @@ async function filesRoute(req: IncomingMessage, url: URL, parts: string[]): Prom
  * offered them), `not-provided` (no quality reader, no alert evaluator), and for quality and incidents `unknown`,
  * `unavailable`, `stale` and `empty` (see qualityHealth and alertIncidents). `admin` is a platform admin: the log
  * archive is read on prod too, so a failed run there shows its archived lines. `slim` turns metrics off (the Slim profile),
- * and `unavailable` also makes the metrics backend unreachable. `healthy`: every PROD service probe answers healthy. */
-const MONITORING_SCENARIOS = ["no-access", "limited", "unauthorized", "not-provided", "unknown", "unavailable", "stale", "empty", "admin", "slim", "healthy"] as const;
+ * and `unavailable` also makes the metrics backend unreachable. `healthy`: every PROD service probe answers healthy.
+ * `unfinished`: PROD's web_events' latest run failed before its quality checks finished (see qualityHealth). */
+const MONITORING_SCENARIOS = ["no-access", "limited", "unauthorized", "not-provided", "unknown", "unavailable", "stale", "empty", "admin", "slim", "healthy", "unfinished"] as const;
 type Scenario = (typeof MONITORING_SCENARIOS)[number] | undefined;
 function scenarioOf(req: IncomingMessage): Scenario {
   let asked: string | null = null;
@@ -556,7 +557,8 @@ function pipelinesHealth(stage: string, scenario?: Scenario) {
 // ── Quality counts (openlakeforge #1257): StageQualityHealth. prod: sales_orders failed a blocking check,
 // finance_ledger warned and its manifest is incomplete, crm_accounts has no usable manifest (counts null, never
 // zeros), web_events passed. `unknown`: Dagster could not be read, so no counts at all. `empty`: no pipeline has
-// quality evidence yet.
+// quality evidence yet. `unfinished` (openlakeforge#1346): web_events' latest run failed before its quality checks
+// finished, so its row is unknown, names that run, and keeps the partial counts with `complete: false`.
 
 function qualityHealth(stage: string, scenario: Scenario) {
   const now = Date.now();
@@ -576,7 +578,9 @@ function qualityHealth(stage: string, scenario: Scenario) {
     entry("sales_orders", "sales", "c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21", 40 * 60, true, "critical", counts(14, 1, 2, 1), "a blocking quality check failed"),
     entry("crm_accounts", "crm", null, null, null, "unknown", null, "no finished run of the pipeline has quality evidence yet"),
     entry("finance_ledger", "finance", "e5d27b8c-0f41-4a9e-b6c3-1d8a2f7e9b05", 2 * 24 * 3600, false, "warning", counts(8, 2, 0, 0, 1), "quality checks warned"),
-    entry("web_events", null, "0d9c3e7a-6b28-4f15-a3d0-8e1c5b2f4a67", 25 * 60, true, "healthy", counts(6, 0, 0), "quality checks passed"),
+    scenario === "unfinished"
+      ? entry("web_events", null, "7f3a1c62-9e4b-4d08-b5a1-3c6e2d9f8b14", 12 * 60, false, "unknown", counts(2, 0, 0), "the run failed before its quality checks finished")
+      : entry("web_events", null, "0d9c3e7a-6b28-4f15-a3d0-8e1c5b2f4a67", 25 * 60, true, "healthy", counts(6, 0, 0), "quality checks passed"),
   ];
   const known = pipelines.flatMap((p) => (p.counts ? [p.counts] : []));
   const totals = Object.fromEntries(Object.keys(counts(0, 0, 0)).map((k) => [k, known.reduce((n, c) => n + c[k as keyof typeof c], 0)]));

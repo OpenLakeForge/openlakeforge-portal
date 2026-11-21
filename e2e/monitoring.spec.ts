@@ -103,9 +103,10 @@ test("a pipelines read that fails reads unknown with Retry, and the stage's own 
 test("PROD shows quality counts per product, and every open incident with its delivery in words, once", async ({ page }) => {
   await page.goto("/monitoring?stage=prod");
   await expect(page.getByRole("region", { name: "Data quality summary" })).toContainText("2 error 3 warn · 28 passed");
-  await expect(page.getByRole("region", { name: "Data quality summary" })).toContainText("counts from 3 of 4 pipelines");
+  await expect(page.getByRole("region", { name: "Data quality summary" })).toContainText("counts from 3 of 4 pipelines · 1 incomplete");
   await expect(quality(page).getByRole("row", { name: /crm · accounts/ })).toContainText("Counts unknown");
   await expect(quality(page).getByRole("row", { name: /finance · ledger/ })).toContainText("Incomplete");
+  await expect(quality(page).getByRole("row", { name: /finance · ledger/ })).not.toContainText("not every result is in yet");
   await expect(page.getByRole("region", { name: "Open alert incidents" })).toHaveCount(0); // merged into Needs attention
   for (const word of ["Delivered", "Pending", "Undeliverable", "Unrouted", "Unknown"]) {
     await expect(attention(page).locator(".mon-delivery", { hasText: new RegExp(`^${word}$`) })).toHaveCount(1);
@@ -263,6 +264,16 @@ for (const width of [1440, 1100, 900]) {
   });
 }
 
+test("a run that failed before its quality checks finished reads unknown and incomplete, in the API's words", async ({ page }) => {
+  await page.goto("/monitoring?stage=prod&mock=unfinished");
+  const web = quality(page).getByRole("row", { name: /web_events/ });
+  await expect(web).toContainText("Unknown");
+  await expect(web).toContainText("Incomplete");
+  await expect(web).toContainText("2 passed");
+  await expect(web.locator(".mon-why")).toHaveText("the run failed before its quality checks finished");
+  await expect(page.getByRole("region", { name: "Data quality summary" })).toContainText("counts from 3 of 4 pipelines · 2 incomplete");
+});
+
 test("screenshots: monitoring", async ({ page }) => {
   await shoot(page, "monitoring", async () => {
     await page.goto("/monitoring?stage=prod");
@@ -277,6 +288,10 @@ test("screenshots: monitoring", async ({ page }) => {
     await page.goto("/monitoring?stage=prod&mock=healthy");
     await expect(page.getByText(/^6 of 6 healthy/)).toBeVisible();
     await expect(pipelines(page)).toBeVisible();
+  });
+  await shoot(page, "monitoring-quality-unfinished", async () => {
+    await page.goto("/monitoring?stage=prod&mock=unfinished");
+    await expect(quality(page).getByRole("row", { name: /web_events/ })).toContainText("the run failed before its quality checks finished");
   });
   await shoot(page, "monitoring-dev", async () => {
     await page.goto("/monitoring?stage=dev");
