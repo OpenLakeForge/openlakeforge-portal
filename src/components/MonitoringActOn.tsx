@@ -4,7 +4,7 @@
 // whether a notification went out and how it was delivered, in the API's words. Read-only (ADR 0023, decision 3).
 
 import { worst, type AlertIncident, type HealthSignal } from "../lib/health-api";
-import { DELIVERY, deliveryLine, denied, type Alerts } from "./MonitoringAlerts";
+import { DELIVERY, deliveryLine, denied, IncidentRunbook, type Alerts } from "./MonitoringAlerts";
 import { attention, Breakable, JobLink, RANK, RunLink, type Pipes, type Row } from "./MonitoringPipelines";
 import { StatusBadge } from "./StatusBadge";
 import { Ago, Time, Zoned } from "./Time";
@@ -53,13 +53,15 @@ export function actOn(p: Pipes, a: Alerts, stage: string): Item[] {
   return rows.sort((x, y) => x.sort - y.sort || at(y) - at(x));
 }
 
-/** The notification cell: the incident's delivery, or why there is none, never a silent blank. */
+/** The notification cell: the incident's delivery, or why there is none, never a silent blank, and the runbook section
+ * its notification links to, when it has one. */
 function Notification({ r, a }: { r: Item; a: Alerts }) {
   if (r.incident) {
     return (
       <>
         <span className="mon-delivery" data-status={r.incident.delivery.status}>{DELIVERY[r.incident.delivery.status]}</span>
         <span className="mon-why">{deliveryLine(r.incident.delivery)}</span>
+        <IncidentRunbook incident={r.incident} />
       </>
     );
   }

@@ -82,7 +82,9 @@ attention: `sales_orders` failed with a failed blocking quality check, `crm_acco
 `finance_ledger`'s schedule is stopped and its last run warned on quality, `web_events` is healthy, the log spool is
 past its limit. "Needs attention" is the one list to act on: each warning or critical pipeline signal in the API's
 words and each open alert incident, each once (an incident about a listed signal joins its row), with whether a
-notification went out and how it was delivered. Pipeline names link to their runs
+notification went out and how it was delivered. An incident links its runbook section (**Runbook ↗**, the link its
+notification carries, openlakeforge#1344) when the API names one as a web address; with `null` or an older API that
+leaves the field out, there is no link. Pipeline names link to their runs
 (`/monitoring/<stage>/runs?job=<job>`) and a pipeline's "N failed in last 24h" to those failed runs
 (`&status=failed&window=24h`). The Pipelines table lists every job, with its failed runs in the API's 24 h window
 (openlakeforge#1319): `crm_accounts`' count could not be read, so it reads Unknown (never 0), and `web_events`' run read
@@ -128,7 +130,7 @@ so), then the checks that did not pass, with the passes collapsed behind their c
 (`get_run_failure`, `get_run`, `get_run_quality`; the run's logs share `list_logs`'s row), and a card says why when it is
 not. A report is a same-origin download from its `href`; one with `href: null` is named, not linked, with the reason.
 "Open in Dagster" is a plain link to the run on the stage's `orchestration` route; there is no Re-run in v0.7, and a
-Runbook link only when `get_run_quality` names one as a web address (the mock's failed runs do). A refused (403), unknown (404) or unreachable run reads Disabled or Unknown in the
+Runbook link only when `get_run_quality` names one as a web address (the mock's failed runs do); each open incident in the Open incidents card links its own runbook section the same way. A refused (403), unknown (404) or unreachable run reads Disabled or Unknown in the
 API's words, never green; a part the API could not read (`steps: null`, `rows: null`, `checks: null`) says so and is
 never shown as "nothing failed", passes or zeros. In the mock, PROD's `sales_orders` run `c94cbcb0…` failed a Floe step
 and a blocking check; `finance_ledger`'s run `e5d27b8c…` crossed midnight UTC, left an incomplete manifest and 308 lines

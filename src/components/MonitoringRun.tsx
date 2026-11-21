@@ -14,7 +14,7 @@ import {
 } from "../lib/health-api";
 import { dayKey, formatClock, formatDate, seconds, toMs, useTimeZone } from "../lib/time";
 import { DEADLINE_MS } from "./Monitoring";
-import { alerts, DELIVERY, deliveryLine } from "./MonitoringAlerts";
+import { alerts, DELIVERY, deliveryLine, IncidentRunbook, runbookUrl } from "./MonitoringAlerts";
 import { absent, pipes, runHref, type Part } from "./MonitoringPipelines";
 import { StatusBadge } from "./StatusBadge";
 import { Ago, Time, Zoned, ZoneSwitch } from "./Time";
@@ -606,6 +606,7 @@ function Incidents({ a, runId, job, now, retry }: { a: Part<StageAlertIncidents>
                     <span className="mon-what">{i.summary}</span>
                     <span className="mon-why f-mono">{i.condition}{i.table ? ` · ${i.table}` : ""} · opened <Time at={i.opened_at} now={now} /> · last seen <Ago at={i.last_seen_at} now={now} /></span>
                     <span className="mon-why"><span className="mon-delivery" data-status={i.delivery.status}>{DELIVERY[i.delivery.status]}</span> {deliveryLine(i.delivery)}</span>
+                    <IncidentRunbook incident={i} />
                   </span>
                 </li>
               ))}
@@ -627,9 +628,6 @@ function OpenInDagster({ url, runId }: { url?: string; runId: string }) {
     </a>
   );
 }
-
-/** A runbook is shown only when the API names one as a web address (#1325 answers null until the signal catalog has one). */
-const runbookUrl = (r: string | null) => (r && /^https?:\/\//.test(r) ? r : undefined);
 
 function Fact({ term, children }: { term: string; children: React.ReactNode }) {
   return <div><dt className="label">{term}</dt><dd>{children}</dd></div>;

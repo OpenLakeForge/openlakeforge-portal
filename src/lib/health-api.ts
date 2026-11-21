@@ -313,6 +313,9 @@ export type AlertIncident = {
   summary: string;
   run_ids: string[];
   delivery: AlertDelivery;
+  /** `<runbook page>#<condition>`, the link the notification carries in `links.runbook` (#1344); null when the
+   * deployment sets no runbook page, absent from an API before it. Linked only as an http(s) address. */
+  runbook?: string | null;
 };
 /** `incidents: null` is "could not be read", never "none open"; `stale` says the evaluator has stopped running. */
 export type StageAlertIncidents = {
@@ -334,7 +337,8 @@ const isDelivery = (v: unknown) =>
 const isIncident = (v: unknown) =>
   isObject(v) && isText(v.id) && isText(v.condition) && (v.severity === "warning" || v.severity === "critical")
   && isOptional(isTextOrNull)(v.job) && isTextOrNull(v.domain) && isTextOrNull(v.product) && isTextOrNull(v.table) && isTextOrNull(v.component)
-  && isText(v.opened_at) && isText(v.last_seen_at) && isText(v.summary) && Array.isArray(v.run_ids) && v.run_ids.every(isText) && isDelivery(v.delivery);
+  && isText(v.opened_at) && isText(v.last_seen_at) && isText(v.summary) && Array.isArray(v.run_ids) && v.run_ids.every(isText) && isDelivery(v.delivery)
+  && isOptional(isTextOrNull)(v.runbook);
 
 export function isStageQualityHealth(body: unknown): body is StageQualityHealth {
   return isObject(body) && isText(body.stage) && isText(body.evaluated_at)

@@ -120,6 +120,42 @@ test("PROD shows quality counts per product, and every open incident with its de
   await expect(page.getByRole("region", { name: "Alerts summary" })).toContainText("5 open incidents");
 });
 
+const BOOK = "http://docs.olf.localhost/runbooks/alerting";
+
+test("each open incident links its runbook section in a new tab, on a joined row and on a standalone one", async ({ page }) => {
+  await page.goto("/monitoring?stage=prod");
+  const joined = attention(page).getByRole("row", { name: /Run failed/ }).getByRole("link", { name: "Runbook for failed_run (opens in a new tab)" });
+  await expect(joined).toHaveText("Runbook ↗");
+  await expect(joined).toHaveAttribute("href", `${BOOK}#failed_run`);
+  await expect(joined).toHaveAttribute("target", "_blank");
+  await expect(joined).toHaveAttribute("rel", "noopener noreferrer");
+  const alone = attention(page).getByRole("row", { name: /No durable write/ }).getByRole("link", { name: /^Runbook for service_degraded/ });
+  await expect(alone).toHaveAttribute("href", `${BOOK}#service_degraded`);
+  await expect(alone).toHaveAttribute("rel", "noopener noreferrer");
+  // One per open incident; a signal no incident is about has none.
+  await expect(attention(page).getByRole("link", { name: /^Runbook for / })).toHaveCount(5);
+  const quiet = attention(page).getByRole("row").filter({ has: page.locator('.mon-delivery[data-status="none"]') });
+  await expect(quiet).toHaveCount(3);
+  await expect(quiet.getByRole("link", { name: /Runbook/ })).toHaveCount(0);
+});
+
+for (const [what, runbook] of [["null", null], ["absent (an older API)", undefined], ["not a web address", "javascript:alert(1)"]] as const) {
+  test(`an incident whose runbook is ${what} shows no link and no placeholder`, async ({ page }) => {
+    await page.route("**/api/v1/stages/prod/alerts/incidents", async (route) => {
+      const body = await (await route.fetch()).json();
+      for (const i of body.incidents) {
+        if (runbook === undefined) delete i.runbook; else i.runbook = runbook;
+      }
+      await route.fulfill({ json: body });
+    });
+    await page.goto("/monitoring?stage=prod");
+    await expect(page.getByRole("region", { name: "Alerts summary" })).toContainText("5 open incidents");
+    await expect(attention(page).getByRole("row", { name: /Run failed/ }).locator(".mon-delivery")).toHaveText("Delivered");
+    await expect(attention(page).getByRole("link", { name: /Runbook/ })).toHaveCount(0);
+    await expect(attention(page)).not.toContainText("Runbook");
+  });
+}
+
 test("DEV's stale alert evaluator reads stale, and its quality is not configured", async ({ page }) => {
   const reads: string[] = [];
   page.on("request", (r) => reads.push(r.url()));
