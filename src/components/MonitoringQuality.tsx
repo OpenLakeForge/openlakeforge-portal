@@ -1,7 +1,7 @@
 // Monitoring · data quality: the Data quality card and the per-pipeline table, from
 // GET /api/v1/stages/{stage}/health/quality. Counts are the API's; `counts: null` is unknown and never shown as zeros.
 
-import { ApiError, worst, type HealthState, type QualityCounts, type StageQualityHealth } from "../lib/health-api";
+import { ApiError, worst, type HealthState, type PipelineQuality, type QualityCounts, type StageQualityHealth } from "../lib/health-api";
 import { absent, RunLink, type Part } from "./MonitoringPipelines";
 import { StatusBadge } from "./StatusBadge";
 import { Time, Zoned } from "./Time";
@@ -32,6 +32,22 @@ export function countsLine(c: QualityCounts): string {
   return parts.join(" · ");
 }
 
+/** Where the card's totals come from: "counts from all 3 pipelines" ("from 1 pipeline"), or "of N" when some have none, and
+ * "· K incomplete" when K of the counted ones are partial (`complete === false`), so a partial sum never looks whole.
+ * A row with no counts is not in the sum (only in "of N"), so it is never called incomplete here. */
+export function countsFrom(counted: number, pipelines: number, incomplete: number): string {
+  const noun = pipelines === 1 ? "pipeline" : "pipelines";
+  const from = counted < pipelines ? `counts from ${counted} of ${pipelines} ${noun}` : pipelines === 1 ? "counts from 1 pipeline" : `counts from all ${pipelines} ${noun}`;
+  return incomplete ? `${from} · ${incomplete} incomplete` : from;
+}
+
+/** A row's reason as shown. An incomplete row with its own reason (a run that failed or was canceled before its
+ * checks finished) shows that reason alone; only one with none (a run still writing results) says results are pending. */
+export function qualityWhy(row: Pick<PipelineQuality, "complete" | "reason">): string {
+  if (row.complete !== false || row.reason.trim()) return row.reason;
+  return "not every result is in yet";
+}
+
 export function QualityCard({ q, retry }: { q: Quality; retry?(): void }) {
   const totals = q.ok ? q.data.totals : null;
   const pipelines = q.ok ? q.data.pipelines.length : 0;
@@ -42,7 +58,7 @@ export function QualityCard({ q, retry }: { q: Quality; retry?(): void }) {
   else {
     // Totals add up the known counts only: say when some pipelines have none, so a partial sum never looks whole.
     const extra = [totals.blocking && `${totals.blocking} blocking`, totals.not_run && `${totals.not_run} not run`, totals.unknown && `${totals.unknown} unknown`];
-    extra.push(q.counted < pipelines ? `counts from ${q.counted} of ${pipelines} pipelines` : `counts from all ${pipelines} pipelines`);
+    extra.push(countsFrom(q.counted, pipelines, q.data.pipelines.filter((x) => x.counts && x.complete === false).length));
     note = extra.filter(Boolean).join(" · ");
   }
   return (
@@ -81,7 +97,7 @@ export function QualityTable({ q, now, stage }: { q: Extract<Quality, { ok: true
                     {x.counts ? countsLine(x.counts) : "Counts unknown"}
                     {x.complete === false && <span className="mon-tag">Incomplete</span>}
                   </span>
-                  <span className="mon-why f-mono">{x.complete === false ? `not every result is in yet · ${x.reason}` : x.reason}</span>
+                  <span className="mon-why f-mono">{qualityWhy(x)}</span>
                 </td>
                 <td className="f-mono">{x.run_id ? <><Time at={x.observed_at} now={now} bare /> · <RunLink stage={stage} run={x.run_id} /></> : "No run"}</td>
               </tr>
