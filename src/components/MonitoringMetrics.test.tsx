@@ -111,7 +111,8 @@ describe("chart helpers", () => {
 
   it("summarises each line in words: its latest sample and its peak", () => {
     const s = shape([lineOf({ component: "trino" }, [0.5, 1.25, null]), lineOf({ component: "polaris" }, [null, null, null])], { by: "component", single: "CPU" });
-    const words = summary(s, "cores", "24h");
+    // The fixture's samples are on Nov 20, 2026: read them on that day, so the time is written without a date.
+    const words = summary(s, "cores", "24h", undefined, Date.UTC(2026, 10, 20, 12));
     expect(words[0]).toBe("polaris: no sample in the last 24h");
     expect(words[1]).toMatch(/^trino: 1\.25 cores last sample \d\d:\d\d.*, peak 1\.25 cores$/);
   });

@@ -107,9 +107,10 @@ the mock reads it from the request's Referer:
 | `admin` | A platform admin: PROD's log archive and quality reports are readable too, so a failed run shows its lines and report links. |
 | `slim` | Metrics are off (the Slim profile): Resource metrics reads Disabled, and Metrics draws only the pipeline charts. |
 | `healthy` | Every PROD service probe answers healthy: Services folds to one line, with "Show all 6 services". |
+| `unfinished` | PROD's `web_events` run `7f3a1c62…` failed before its quality checks finished: its quality row reads Unknown, Incomplete, with the run's partial counts and the API's reason, and the Data quality card says "· 2 incomplete". The pipeline reads Critical with that run as its latest, and the run's link opens its Failed run screen. |
 
 Without `mock=`, PROD's Data quality card sums the known counts (`crm_accounts` has none: "Counts unknown", never
-zeros; `finance_ledger`'s manifest is incomplete), and Needs attention shows one incident per delivery status
+zeros; `finance_ledger`'s manifest is incomplete: "counts from 3 of 4 pipelines · 1 incomplete"), and Needs attention shows one incident per delivery status
 (delivered, pending, undeliverable, unrouted, unknown). DEV's alert evaluator is stale and DEV has no quality reader.
 
 Each run named on the page (a Needs attention row, a pipeline's latest run, a quality row, an incident) links to its
