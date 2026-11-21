@@ -870,6 +870,18 @@ describe("data quality", () => {
     expect(qualityRow("sales_orders").querySelector(".mon-why")).toHaveTextContent(/^not every result is in yet$/);
   });
 
+  it("calls only counted rows incomplete: a failed run with no counts is left out of the sum, not called partial", async () => {
+    const body = qualityOf({ pipelines: [
+      pq("sales_orders", { state: "unknown", complete: false, counts: null, reason: "the run failed before its quality checks finished" }),
+      pq("crm_accounts"), pq("web_events"),
+    ] });
+    api(() => ({ body: health() }), undefined, undefined, { quality: () => ({ body }) });
+    open();
+    await screen.findByRole("region", { name: "Quality by pipeline" });
+    expect(card().querySelector(".mon-note")).toHaveTextContent(/^counts from 2 of 3 pipelines$/);
+    expect(qualityRow("sales_orders")).toHaveTextContent("Incomplete");
+  });
+
   it("words the reason and the card sentence the same outside the page", () => {
     expect(qualityWhy({ complete: false, reason: "the run was canceled before its quality checks finished" })).toBe("the run was canceled before its quality checks finished");
     expect(qualityWhy({ complete: false, reason: " " })).toBe("not every result is in yet");

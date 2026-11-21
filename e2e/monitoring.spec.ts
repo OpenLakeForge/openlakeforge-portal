@@ -272,6 +272,13 @@ test("a run that failed before its quality checks finished reads unknown and inc
   await expect(web).toContainText("2 passed");
   await expect(web.locator(".mon-why")).toHaveText("the run failed before its quality checks finished");
   await expect(page.getByRole("region", { name: "Data quality summary" })).toContainText("counts from 3 of 4 pipelines · 2 incomplete");
+  // The other routes agree: web_events' latest run is that failed run, and its link opens the run.
+  await expect(pipelines(page).getByRole("row", { name: /web_events/ })).toContainText(/Critical\s*Failed · .*7f3a1c62.*1 failed since/);
+  await web.getByRole("link", { name: "Open run 7f3a1c62" }).click();
+  await expect(page).toHaveURL(/\/monitoring\/prod\/runs\/7f3a1c62-9e4b-4d08-b5a1-3c6e2d9f8b14$/);
+  await expect(page.getByRole("heading", { level: 1, name: "web_events" })).toBeVisible();
+  await expect(page.getByRole("list", { name: "Run" })).toContainText("floe_bronze_web_events");
+  await expect(page.getByRole("region", { name: "Quality checks", exact: true })).toContainText("2 passed");
 });
 
 test("screenshots: monitoring", async ({ page }) => {

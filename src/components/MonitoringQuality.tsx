@@ -33,7 +33,8 @@ export function countsLine(c: QualityCounts): string {
 }
 
 /** Where the card's totals come from: "counts from all 3 pipelines" ("from 1 pipeline"), or "of N" when some have none, and
- * "· K incomplete" when K of them are partial (`complete === false`), so a partial sum never looks whole. */
+ * "· K incomplete" when K of the counted ones are partial (`complete === false`), so a partial sum never looks whole.
+ * A row with no counts is not in the sum (only in "of N"), so it is never called incomplete here. */
 export function countsFrom(counted: number, pipelines: number, incomplete: number): string {
   const noun = pipelines === 1 ? "pipeline" : "pipelines";
   const from = counted < pipelines ? `counts from ${counted} of ${pipelines} ${noun}` : pipelines === 1 ? "counts from 1 pipeline" : `counts from all ${pipelines} ${noun}`;
@@ -57,7 +58,7 @@ export function QualityCard({ q, retry }: { q: Quality; retry?(): void }) {
   else {
     // Totals add up the known counts only: say when some pipelines have none, so a partial sum never looks whole.
     const extra = [totals.blocking && `${totals.blocking} blocking`, totals.not_run && `${totals.not_run} not run`, totals.unknown && `${totals.unknown} unknown`];
-    extra.push(countsFrom(q.counted, pipelines, q.data.pipelines.filter((x) => x.complete === false).length));
+    extra.push(countsFrom(q.counted, pipelines, q.data.pipelines.filter((x) => x.counts && x.complete === false).length));
     note = extra.filter(Boolean).join(" · ");
   }
   return (
