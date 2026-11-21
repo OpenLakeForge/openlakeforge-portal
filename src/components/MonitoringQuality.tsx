@@ -32,10 +32,11 @@ export function countsLine(c: QualityCounts): string {
   return parts.join(" · ");
 }
 
-/** Where the card's totals come from: "counts from all 3 pipelines", or "of N" when some have none, and
+/** Where the card's totals come from: "counts from all 3 pipelines" ("from 1 pipeline"), or "of N" when some have none, and
  * "· K incomplete" when K of them are partial (`complete === false`), so a partial sum never looks whole. */
 export function countsFrom(counted: number, pipelines: number, incomplete: number): string {
-  const from = counted < pipelines ? `counts from ${counted} of ${pipelines} pipelines` : `counts from all ${pipelines} pipelines`;
+  const noun = pipelines === 1 ? "pipeline" : "pipelines";
+  const from = counted < pipelines ? `counts from ${counted} of ${pipelines} ${noun}` : pipelines === 1 ? "counts from 1 pipeline" : `counts from all ${pipelines} ${noun}`;
   return incomplete ? `${from} · ${incomplete} incomplete` : from;
 }
 

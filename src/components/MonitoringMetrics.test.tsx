@@ -67,7 +67,7 @@ const open = (entry = "/monitoring/metrics?stage=prod") =>
   render(<MemoryRouter initialEntries={[entry]}><MonitoringMetrics stages={["dev", "prod"]} /></MemoryRouter>);
 const card = (title: string) => screen.findByRole("region", { name: title });
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("chart helpers", () => {
   it("folds lines past the limit into one 'other' line, keeping the largest by name", () => {
@@ -110,6 +110,9 @@ describe("chart helpers", () => {
   });
 
   it("summarises each line in words: its latest sample and its peak", () => {
+    // The fixture's samples are on Nov 20, 2026: pin the clock to that day so the time is written without a date.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-20T12:00:00Z"));
     const s = shape([lineOf({ component: "trino" }, [0.5, 1.25, null]), lineOf({ component: "polaris" }, [null, null, null])], { by: "component", single: "CPU" });
     const words = summary(s, "cores", "24h");
     expect(words[0]).toBe("polaris: no sample in the last 24h");

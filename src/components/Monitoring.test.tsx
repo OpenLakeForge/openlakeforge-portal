@@ -859,7 +859,7 @@ describe("data quality", () => {
     expect(qualityRow("sales_orders")).toHaveTextContent("the run failed before its quality checks finished");
     expect(qualityRow("sales_orders")).not.toHaveTextContent("not every result is in yet");
     expect(qualityRow("sales_orders")).toHaveTextContent("Unknown");
-    expect(card()).toHaveTextContent(/· 1 incomplete$/);
+    expect(card()).toHaveTextContent(/counts from 1 pipeline · 1 incomplete$/);
   });
 
   it("keeps 'not every result is in yet' for an incomplete row with no reason of its own", async () => {
@@ -878,6 +878,9 @@ describe("data quality", () => {
     expect(countsFrom(3, 4, 0)).toBe("counts from 3 of 4 pipelines");
     expect(countsFrom(3, 4, 1)).toBe("counts from 3 of 4 pipelines · 1 incomplete");
     expect(countsFrom(3, 3, 2)).toBe("counts from all 3 pipelines · 2 incomplete");
+    expect(countsFrom(1, 1, 0)).toBe("counts from 1 pipeline");
+    expect(countsFrom(1, 1, 1)).toBe("counts from 1 pipeline · 1 incomplete");
+    expect(countsFrom(0, 1, 0)).toBe("counts from 0 of 1 pipeline");
   });
 
   it.each([
