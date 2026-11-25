@@ -1041,7 +1041,9 @@ describe("alert incidents", () => {
     open();
     expect(await screen.findByText("Nothing needs attention: no pipeline signal is warning or critical and no alert incident is open.")).toBeInTheDocument();
     expect(within(acard()).queryByText("Healthy")).toBeNull();
-    expect(acard()).toHaveTextContent("No open incident");
+    // A whole green ring over "0 incidents": no made-up count is listed to draw it.
+    expect(acard()).toHaveTextContent("0incidents0 incidentsCritical 0Warning 0");
+    expect(acard().querySelector('.mon-ring circle[data-tone="ok"]')).not.toBeNull();
     expect(screen.queryByRole("button", { name: /acknowledge/i })).toBeNull();
   });
 
@@ -1053,7 +1055,7 @@ describe("alert incidents", () => {
     expect(attentionRow("incident i-1")).toBeInTheDocument();
     expect(within(acard()).getAllByText("Warning")[0]).toBeInTheDocument(); // as the rollup ranks it: a warning outranks unknown
     expect(acard()).toHaveTextContent("Stale: the alert evaluator has not run since");
-    expect(acard()).not.toHaveTextContent("No open incident");
+    expect(acard().querySelector('.mon-ring circle[data-tone="ok"]')).toBeNull();
   });
 
   it("does not take a stale empty list for no incidents", async () => {
@@ -1062,6 +1064,7 @@ describe("alert incidents", () => {
     expect(await screen.findByText(/none can be ruled out/)).toBeInTheDocument();
     expect(screen.queryByText("Nothing needs attention: no pipeline signal is warning or critical and no alert incident is open.")).toBeNull();
     expect(within(acard()).getByText("Unknown")).toBeInTheDocument();
+    expect(acard().querySelector('.mon-ring circle[data-tone="ok"]')).toBeNull();
   });
 
   it.each([
