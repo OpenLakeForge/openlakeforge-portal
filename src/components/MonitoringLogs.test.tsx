@@ -129,7 +129,7 @@ describe("MonitoringLogs", () => {
     open("/monitoring/dev/logs?date=2026-11-19&hour=14&pod=trino-coordinator-0");
     const r = await rows();
     expect(r).toHaveLength(5);
-    expect(r[1]).toHaveTextContent(/14:03:00\.339\s*INFO\s*trino-coordinator-0\s*trino\s*Query 0001_03/);
+    expect(r[1]).toHaveTextContent(/14:03:00\.339\s*INFO\s*trino\s*trino-coordinator-0\s*Query 0001_03/);
     expect(within(r[3]).getByRole("link", { name: "Run 8ad7e2f8's window" })).toHaveAttribute("href", "/monitoring/dev/logs?run=8ad7e2f8-0000-4000-a000-000000000000");
     expect(within(r[0]).getByRole("link", { name: "Filter to dagster-daemon-5f7c9" })).toHaveAttribute("href", "/monitoring/dev/logs?date=2026-11-19&hour=14&pod=dagster-daemon-5f7c9");
     expect(r[4]).toHaveTextContent("Unreadable record: the record is not valid JSON");
@@ -331,6 +331,25 @@ describe("MonitoringLogs", () => {
     expect(screen.getByRole("columnheader", { name: "Time (UTC)" })).toBeInTheDocument();
     expect(document.querySelectorAll("tr.run-day")).toHaveLength(2);
     expect(lines()[0]).toHaveTextContent("23:30:00.125");
+  });
+
+  it("opens an unreadable record too, and keeps a line open with its record when a search moves the rows", async () => {
+    const user = userEvent.setup();
+    api(); // this API ignores `q`: after one read the search filters the lines loaded
+    open("/monitoring/dev/logs?date=2026-11-19&hour=14");
+    await rows();
+    const search = screen.getByRole("searchbox", { name: "Search" });
+    await user.type(search, "e");
+    await screen.findByText(/does not search/);
+    await user.clear(search);
+    const button = async (words: string) => (await rows()).find((r) => r.textContent?.includes(words))!.querySelector<HTMLButtonElement>(".lg-msg")!;
+    await user.click(await button("Scheduler tick"));
+    await user.click(await button("Unreadable record"));
+    expect(await button("Unreadable record")).toHaveAttribute("aria-expanded", "true");
+    await user.type(search, "Memory");
+    expect(await button("Memory pool")).toHaveAttribute("aria-expanded", "false");
+    await user.clear(search);
+    expect(await button("Scheduler tick")).toHaveAttribute("aria-expanded", "true");
   });
 
   it("moves between lines with the arrow keys", async () => {

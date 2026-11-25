@@ -34,11 +34,12 @@ test("browse: a deep link to a day, hour and product lists its lines; a pod narr
   const day = yesterday();
   await page.goto(`/monitoring/dev/logs?date=${day}&hour=02&product=orders`);
   await expect(rows(page)).toHaveCount(2);
-  await expect(rows(page).first()).toContainText(/02:00:1\d\.000\s*INFO\s*dagster-run-\w{8}\s*floe/);
+  await expect(rows(page).first()).toContainText(/02:00:1\d\.000\s*INFO\s*floe\s*dagster-run-\w{8}/);
   await expect(rows(page).first()).toContainText("Starting sales_orders");
   await expect(page.getByLabel("Product", { exact: true })).toHaveValue("orders");
   expect(asked).toEqual([`/api/v1/stages/dev/logs?date=${day}&hour=2&product=orders&limit=500`]);
   // A pod narrows to that pod's lines of the same hour; the product filter is dropped with it.
+  await rows(page).first().getByRole("button").click(); // a line opens to its pod and run
   await rows(page).first().getByRole("link", { name: /^Filter to / }).click();
   await expect(page).toHaveURL(new RegExp(`date=${day}&hour=02&pod=dagster-run-`));
   await expect(rows(page)).toHaveCount(2);
@@ -49,6 +50,7 @@ test("browse: a deep link to a day, hour and product lists its lines; a pod narr
   await expect(page).toHaveURL(new RegExp(`date=${day}&hour=01$`));
   await expect(card(page)).toContainText(`${day}, 01:00–02:00 (UTC)`);
   // Filters typed in apply on Enter.
+  await page.getByText("+ Filter").click();
   await page.getByLabel("Container", { exact: true }).fill("trino");
   await page.getByLabel("Container", { exact: true }).press("Enter");
   await expect(page).toHaveURL(/container=trino/);

@@ -4,9 +4,8 @@
 // stale evaluator's list is shown as stale, never as current.
 
 import { ApiError, worst, type AlertDelivery, type AlertIncident, type HealthState, type StageAlertIncidents } from "../lib/health-api";
+import { Gauge } from "./MonitoringGauges";
 import { type Part } from "./MonitoringPipelines";
-import { StatusBadge } from "./StatusBadge";
-import { Ago } from "./Time";
 
 export type Alerts =
   | { ok: true; data: StageAlertIncidents & { incidents: NonNullable<StageAlertIncidents["incidents"]> }; state: HealthState; stale: boolean }
@@ -61,15 +60,20 @@ export function IncidentRunbook({ incident }: { incident: AlertIncident }) {
   );
 }
 
-export function AlertsCard({ a, now }: { a: Alerts; now: number }) {
+export function AlertsCard({ a }: { a: Alerts }) {
   const n = a.ok ? a.data.incidents.length : 0;
+  const of = (severity: HealthState) => (a.ok ? a.data.incidents.filter((i) => i.severity === severity).length : 0);
+  // No open incident is a whole green ring only for a current evaluation; a stale one proves nothing.
+  const clear = a.ok && !a.stale && n === 0;
   return (
-    <section className="mon-card" aria-label="Alerts summary">
-      <div className="mon-card-top"><h2 className="label">Alerts</h2><StatusBadge state={a.state} /></div>
-      {a.ok ? <p className="mon-value"><strong>{n}</strong> open incident{n === 1 ? "" : "s"}</p> : <p className="mon-value"><strong>—</strong></p>}
-      <p className="mon-note">
-        {!a.ok ? a.reason : a.stale ? `Stale: ${a.data.state.reason}` : <>Evaluated <Ago at={a.data.state.evaluated_at} now={now} /></>}
-      </p>
-    </section>
+    <Gauge
+      label="Alerts summary" title="Alerts" state={a.state === "healthy" ? undefined : a.state}
+      center={a.ok ? String(n) : "—"} unit={a.ok ? `open incident${n === 1 ? "" : "s"}`.replace("open ", "") : undefined}
+      slices={clear ? [{ label: "No open incident", value: 1, tone: "ok" }] : a.ok ? [
+        { label: "Critical", value: of("critical"), tone: "bad" }, { label: "Warning", value: of("warning"), tone: "warn" },
+        { label: "Other", value: n - of("critical") - of("warning"), tone: "none", optional: true },
+      ] : []}
+      note={!a.ok ? a.reason : a.stale ? `Stale: ${a.data.state.reason}` : undefined}
+    />
   );
 }

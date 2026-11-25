@@ -25,8 +25,8 @@ test("Runs is reached from the overview with the keyboard, keeps the stage, and 
   await expect(rows(page).nth(2)).toContainText("sales · orders");
   await expect(rows(page).nth(2)).toContainText(/Running.*so far/);
   await expect(page.getByText(/Read the newest 100 runs, the most the API answers at once/)).toContainText("before this window starts");
-  // One read of the runs, with the API's largest limit; status and window are the browser's.
-  expect(reads.filter((u) => u.startsWith("/api/v1/stages/prod/runs"))).toEqual(["/api/v1/stages/prod/runs?limit=100"]);
+  // One read of the runs by the overview's gauge and one by this page, with the API's largest limit; status and window are the browser's.
+  expect(reads.filter((u) => u.startsWith("/api/v1/stages/prod/runs"))).toEqual(["/api/v1/stages/prod/runs?limit=100", "/api/v1/stages/prod/runs?limit=100"]);
   // Overview keeps the stage on the way back.
   await expect(views(page).getByRole("link", { name: "Overview" })).toHaveAttribute("href", "/monitoring?stage=prod");
 });
@@ -39,7 +39,7 @@ test("a deep link with its filters opens pre-filtered, and each row opens its ru
   await expect(page.getByRole("radio", { name: "Failed runs" })).toBeChecked();
   await expect(page.getByRole("radio", { name: "Last 7 days" })).toBeChecked();
   await expect(rows(page)).toHaveCount(3); // the header and two failures
-  await expect(page.getByText(/Read all \d+ runs Dagster holds of sales_orders/)).toBeVisible();
+  await expect(page.getByText(/Read all \d+ runs Dagster holds/)).toHaveCount(0); // a whole window needs no note
   expect(reads).toEqual(["?limit=100&job=sales_orders"]);
   const link = rows(page).nth(1).getByRole("link", { name: "Open run c94cbcb0" });
   await link.focus();

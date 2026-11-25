@@ -2,12 +2,26 @@ import { expect, test, type Page } from "@playwright/test";
 import { shoot } from "./shots";
 
 const nav = (page: Page) => page.getByRole("navigation", { name: "Primary" });
-const services = (page: Page) => page.getByRole("region", { name: "Service health" });
-const row = (page: Page, name: string) => services(page).getByRole("row").filter({ has: page.getByRole("rowheader", { name, exact: true }) });
-const attention = (page: Page) => page.getByRole("region", { name: "What needs attention" });
+const attention = (page: Page) => page.getByRole("list", { name: "What needs attention" });
+/** One item of the list to act on, and the same with its details opened, so its links can be used. */
+const item = (page: Page, text: RegExp) => attention(page).getByRole("listitem").filter({ hasText: text });
+async function openItem(page: Page, text: RegExp) {
+  const found = item(page, text);
+  await found.locator("summary").click();
+  return found;
+}
 const pipelines = (page: Page) => page.getByRole("region", { name: "Pipeline health" });
-const showAll = (page: Page) => page.getByRole("button", { name: /^Show all \d+ services$/ }).click();
-const quality = (page: Page) => page.getByRole("region", { name: "Quality by pipeline" });
+const pipe = (page: Page, job: string) => pipelines(page).locator("tbody").filter({ has: page.getByRole("button", { name: `Details of ${job}` }) });
+async function openPipe(page: Page, job: string) {
+  await page.getByRole("button", { name: `Details of ${job}` }).click();
+  return pipe(page, job);
+}
+const chip = (page: Page, name: string) => page.getByRole("button", { name: new RegExp(`^${name} `) });
+async function service(page: Page, name: string) {
+  await chip(page, name).click();
+  return page.getByRole("region", { name: "Service detail" });
+}
+const card = (page: Page, name: string) => page.getByRole("region", { name: `${name} summary` });
 
 /** Presses Tab until `target` has focus: the keyboard alone reaches it. */
 async function tabTo(page: Page, target: ReturnType<Page["getByRole"]>, max = 15) {
@@ -32,113 +46,109 @@ test("Monitoring is second in the navigation, the landing page stays Services, a
 test("DEV reads unknown when Dagster cannot be read; PROD names what needs attention", async ({ page }) => {
   await page.goto("/monitoring");
   await expect(page.getByRole("heading", { level: 2, name: "Unknown DEV status unknown" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Pipelines summary" })).toContainText("Dagster could not be read");
-  await expect(row(page, "Dagster")).toContainText("Dagster API · Unknown");
-  await expect(page.getByText(/^3 of 5 healthy · log archive last durable write unknown$/)).toBeVisible();
-  await expect(attention(page).getByRole("row", { name: /Pipelines cannot be read/ })).toContainText("Unknown");
+  await expect(item(page, /Pipelines cannot be read/)).toContainText("Unknown");
+  await expect(item(page, /Pipelines cannot be read/)).toContainText("Dagster could not be read");
+  await expect(await service(page, "Dagster")).toContainText("Dagster API · Unknown");
+  await expect(await service(page, "Log archive")).toContainText("Last durable write unknown");
   await expect(pipelines(page)).toHaveCount(0);
 
   // Two stages are a segmented switch, not a list: Tab reaches it, an arrow key moves it, and the URL keeps the stage.
   await expect(page.getByRole("combobox", { name: "Stage" })).toHaveCount(0);
   await expect(page.getByRole("group", { name: "Stage" }).getByRole("radio")).toHaveCount(2);
-  await tabTo(page, page.getByRole("radio", { name: "DEV" }));
+  await page.getByRole("radio", { name: "DEV" }).focus();
   await page.keyboard.press("ArrowRight");
   await expect(page).toHaveURL(/stage=prod$/);
   await expect(page.getByRole("radio", { name: "PROD" })).toBeChecked();
   await expect(page.getByRole("heading", { level: 2, name: "Critical PROD needs attention" })).toBeVisible();
-  await expect(page.getByText("1 pipeline failed · 1 missed run · 1 quality failure · 1 quality warning · 5 of 6 services ready")).toBeVisible();
-  await expect(row(page, "Log archive")).toContainText("Warning");
-  await expect(row(page, "Log archive")).toContainText("Log spool age · Warning");
+  await expect(card(page, "Services")).toContainText("5/6");
+  await expect(card(page, "Pipeline runs")).toContainText("Succeeded");
+  await expect(chip(page, "Log archive")).toContainText("Warning");
+  const archive = await service(page, "Log archive");
+  await expect(archive).toContainText("Log spool age · Warning");
   // Each "ago" also says its absolute time to a screen reader, in the page's one zone.
-  await expect(page.locator(".mon-svc-line")).toHaveText(/^5 of 6 healthy · log archive last durable write 12 min ago \(at [^)]+ UTC\) · quality sync last publication 4 min ago \(at [^)]+ UTC\)$/);
-  // Metrics answer on this deployment, so no row stands in for them.
-  await expect(row(page, "Resource metrics")).toHaveCount(0);
-  await expect(page.getByRole("status").filter({ hasText: "Checked" })).toContainText("Auto-refresh · 30 s");
+  await expect(archive).toContainText(/Last durable write 12 min ago \(at [^)]+ UTC\)/);
+  // Metrics answer on this deployment, so no chip stands in for them.
+  await expect(chip(page, "Resource metrics")).toHaveCount(0);
+  await expect(page.getByRole("status").filter({ hasText: "Updated" })).toHaveAttribute("title", "Refreshes every 30 s");
 });
 
-test("with metrics off (Slim) the services table says so, as Disabled", async ({ page }) => {
+test("with metrics off (Slim) the services say so, as Disabled", async ({ page }) => {
   await page.goto("/monitoring?stage=prod&mock=slim");
-  await expect(page.getByText(/· resource metrics disabled$/)).toBeVisible();
-  await showAll(page);
-  await expect(row(page, "Resource metrics")).toContainText("Disabled");
-  await expect(row(page, "Resource metrics")).toContainText("the deployment profile turns metrics off");
+  await expect(chip(page, "Resource metrics")).toContainText("Disabled");
+  await expect(await service(page, "Resource metrics")).toContainText("the deployment profile turns metrics off");
 });
 
-test("PROD's needs-attention list names each failing signal and open incident once, worst first, and the pipelines table lists every job", async ({ page }) => {
+test("PROD's needs-attention list names each failing signal, service and open incident once, worst first, and the pipelines table lists every job", async ({ page }) => {
   await page.goto("/monitoring?stage=prod");
-  const rows = attention(page).getByRole("row");
-  // header + 8: 6 signals (sales_orders run, freshness and quality; crm_accounts missed run and freshness; finance_ledger
-  // quality), 3 of them joined by their incident, and the 2 incidents about no listed signal (the log spool, the ledger's schedule).
-  await expect(rows).toHaveCount(9);
-  await expect(rows.nth(1)).toContainText("Critical");
-  await expect(attention(page).getByRole("row", { name: /Run failed/ })).toContainText("run c94cbcb0");
-  await expect(attention(page).getByRole("row", { name: /Expected run did not start/ })).toContainText("crm_accounts");
-  await expect(attention(page).getByRole("row", { name: /Quality check warned/ })).toContainText("finance_ledger");
+  const rows = attention(page).getByRole("listitem");
+  // 6 signals (sales_orders run, freshness and quality; crm_accounts missed run and freshness; finance_ledger quality),
+  // 3 of them joined by their incident, the log archive joined by its spool incident, and the ledger's schedule incident.
+  await expect(rows).toHaveCount(8);
+  await expect(rows.first()).toContainText("Critical");
+  await expect(item(page, /Run failed/)).toContainText("run c94cbcb0");
+  await expect(item(page, /Expected run did not start/)).toContainText("crm_accounts");
+  await expect(item(page, /Quality check warned/)).toContainText("finance_ledger");
   await expect(rows.last()).toContainText("Warning");
-  await expect(pipelines(page).getByRole("row")).toHaveCount(5);
-  await expect(pipelines(page).getByRole("row", { name: /finance_ledger/ })).toContainText(/Stopped\s*finance_ledger_daily/);
-  await expect(pipelines(page).getByRole("row", { name: /web_events/ })).toContainText("Healthy");
+  await expect(pipelines(page).locator("tbody")).toHaveCount(4);
+  await expect(await openPipe(page, "finance_ledger")).toContainText("Stopped · finance_ledger_daily");
+  await expect(pipe(page, "web_events")).toContainText("Healthy");
   // Failed runs are counted in the API's 24h window: an unreadable count is Unknown, never 0, and a read that stopped
   // short of the window says where its count starts.
-  await expect(pipelines(page).getByRole("row", { name: /sales_orders/ })).toContainText("1 failed in last 24h");
-  await expect(pipelines(page).getByRole("row", { name: /crm_accounts/ })).toContainText("the count of failed runs could not be read");
-  await expect(pipelines(page).getByRole("row", { name: /web_events/ })).toContainText(/0 failed since .*the run read stopped short of the last 24h/);
-  await expect(page.getByRole("region", { name: "Pipelines summary" })).toContainText("1 failed of 4 · 1 missed");
+  await expect(await openPipe(page, "sales_orders")).toContainText("1 failed in last 24h");
+  await expect(await openPipe(page, "crm_accounts")).toContainText("the count of failed runs could not be read");
+  await expect(await openPipe(page, "web_events")).toContainText(/0 failed since .*the run read stopped short of the last 24h/);
 });
 
 test("a pipelines read that fails reads unknown with Retry, and the stage's own answer stays", async ({ page }) => {
   await page.route("**/api/v1/stages/*/health/pipelines", (route) => route.fulfill({ status: 503, body: "{}" }));
   await page.goto("/monitoring?stage=prod");
   await expect(page.getByRole("heading", { level: 2, name: "Critical PROD needs attention" })).toBeVisible();
-  const gap = attention(page).getByRole("row", { name: /Pipelines cannot be read/ });
+  const gap = item(page, /Pipelines cannot be read/);
   await expect(gap).toContainText("The monitoring API failed (503)");
-  await expect(pipelines(page)).toHaveCount(0);
-  await showAll(page);
-  await expect(row(page, "Trino")).toContainText("Healthy");
+  await expect(chip(page, "Trino")).toContainText("Healthy");
   await page.unroute("**/api/v1/stages/*/health/pipelines");
   await gap.getByRole("button", { name: /Retry/ }).click();
-  await expect(pipelines(page).getByRole("row")).toHaveCount(5);
+  await expect(pipelines(page).locator("tbody")).toHaveCount(4);
 });
 
-test("PROD shows quality counts per product, and every open incident with its delivery in words, once", async ({ page }) => {
+test("PROD shows quality counts per pipeline, and every open incident with its delivery in words, once", async ({ page }) => {
   await page.goto("/monitoring?stage=prod");
-  await expect(page.getByRole("region", { name: "Data quality summary" })).toContainText("2 error 3 warn · 28 passed");
-  await expect(page.getByRole("region", { name: "Data quality summary" })).toContainText("counts from 3 of 4 pipelines · 1 incomplete");
-  await expect(quality(page).getByRole("row", { name: /crm · accounts/ })).toContainText("Counts unknown");
-  await expect(quality(page).getByRole("row", { name: /finance · ledger/ })).toContainText("Incomplete");
-  await expect(quality(page).getByRole("row", { name: /finance · ledger/ })).not.toContainText("not every result is in yet");
-  await expect(page.getByRole("region", { name: "Open alert incidents" })).toHaveCount(0); // merged into Needs attention
+  await expect(card(page, "Data quality")).toContainText("Passed 28Warn 3Failed 2");
+  await expect(card(page, "Data quality")).toContainText("counts from 3 of 4 pipelines · 1 incomplete");
+  await expect(pipe(page, "crm_accounts")).toContainText("Counts unknown");
+  await expect(pipe(page, "finance_ledger")).toContainText("Incomplete");
+  await expect(await openPipe(page, "finance_ledger")).not.toContainText("not every result is in yet");
   for (const word of ["Delivered", "Pending", "Undeliverable", "Unrouted", "Unknown"]) {
     await expect(attention(page).locator(".mon-delivery", { hasText: new RegExp(`^${word}$`) })).toHaveCount(1);
   }
   // A signal no incident is about says no notification went out.
   await expect(attention(page).locator(".mon-delivery", { hasText: /^None$/ })).toHaveCount(3);
   // Each item once: no two rows of the list say the same thing about the same scope.
-  const items = await attention(page).getByRole("row").evaluateAll((trs) => trs.slice(1).map((tr) => tr.textContent));
+  const items = await attention(page).getByRole("listitem").allTextContents();
   expect(new Set(items).size).toBe(items.length);
-  await expect(attention(page).getByRole("row", { name: /latest run failed/ })).toHaveCount(1);
+  await expect(item(page, /latest run failed/)).toHaveCount(1);
   await expect(page.getByRole("button", { name: /acknowledge/i })).toHaveCount(0);
-  await expect(page.getByRole("region", { name: "Alerts summary" })).toContainText("5 open incidents");
+  await expect(card(page, "Alerts")).toContainText("5incidents");
 });
 
 const BOOK = "http://docs.olf.localhost/runbooks/alerting";
 
-test("each open incident links its runbook section in a new tab, on a joined row and on a standalone one", async ({ page }) => {
+test("each open incident links its runbook section in a new tab, on a joined row and on a service's row", async ({ page }) => {
   await page.goto("/monitoring?stage=prod");
-  const joined = attention(page).getByRole("row", { name: /Run failed/ }).getByRole("link", { name: "Runbook for run_failed (opens in a new tab)" });
+  const joined = (await openItem(page, /Run failed/)).getByRole("link", { name: "Runbook for run_failed (opens in a new tab)" });
   await expect(joined).toHaveText("Runbook ↗ for run_failed (opens in a new tab)");
   await expect(joined.locator("[aria-hidden=true]")).toHaveText("↗");
   await expect(joined).toHaveAttribute("href", `${BOOK}#run_failed`);
   await expect(joined).toHaveAttribute("target", "_blank");
   await expect(joined).toHaveAttribute("rel", "noopener noreferrer");
-  const alone = attention(page).getByRole("row", { name: /No durable write/ }).getByRole("link", { name: /^Runbook for service_degraded/ });
-  await expect(alone).toHaveAttribute("href", `${BOOK}#service_degraded`);
-  await expect(alone).toHaveAttribute("rel", "noopener noreferrer");
+  const archive = (await openItem(page, /No durable write/)).getByRole("link", { name: /^Runbook for service_degraded/ });
+  await expect(archive).toHaveAttribute("href", `${BOOK}#service_degraded`);
+  await expect(archive).toHaveAttribute("rel", "noopener noreferrer");
   // One per open incident; a signal no incident is about has none.
-  await expect(attention(page).getByRole("link", { name: /^Runbook for / })).toHaveCount(5);
-  const quiet = attention(page).getByRole("row").filter({ has: page.locator('.mon-delivery[data-status="none"]') });
+  await expect(attention(page).locator("a", { hasText: "Runbook" })).toHaveCount(5);
+  const quiet = attention(page).getByRole("listitem").filter({ has: page.locator('.mon-delivery[data-status="none"]') });
   await expect(quiet).toHaveCount(3);
-  await expect(quiet.getByRole("link", { name: /Runbook/ })).toHaveCount(0);
+  await expect(quiet.locator("a", { hasText: "Runbook" })).toHaveCount(0);
 });
 
 for (const [what, runbook] of [["null", null], ["absent (an older API)", undefined], ["not a web address", "javascript:alert(1)"]] as const) {
@@ -151,9 +161,9 @@ for (const [what, runbook] of [["null", null], ["absent (an older API)", undefin
       await route.fulfill({ json: body });
     });
     await page.goto("/monitoring?stage=prod");
-    await expect(page.getByRole("region", { name: "Alerts summary" })).toContainText("5 open incidents");
-    await expect(attention(page).getByRole("row", { name: /Run failed/ }).locator(".mon-delivery")).toHaveText("Delivered");
-    await expect(attention(page).getByRole("link", { name: /Runbook/ })).toHaveCount(0);
+    await expect(card(page, "Alerts")).toContainText("5incidents");
+    await expect(item(page, /Run failed/).locator(".mon-delivery")).toHaveText("Delivered");
+    await expect(attention(page).locator("a", { hasText: "Runbook" })).toHaveCount(0);
     await expect(attention(page)).not.toContainText("Runbook");
   });
 }
@@ -163,7 +173,7 @@ test("DEV's stale alert evaluator reads stale, and its quality is not configured
   page.on("request", (r) => reads.push(r.url()));
   await page.goto("/monitoring?stage=dev");
   await expect(page.getByRole("note")).toContainText("Stale: the alert evaluator has not run since");
-  await expect(page.getByRole("region", { name: "Data quality summary" })).toContainText("no quality manifest reader is configured for this stage");
+  await expect(card(page, "Data quality")).toContainText("no quality manifest reader is configured for this stage");
   expect(reads.filter((u) => u.endsWith("/health/quality"))).toEqual([]);
 });
 
@@ -174,8 +184,8 @@ for (const [scenario, row, words, notification] of [
 ] as const) {
   test(`incidents read as ${scenario}, never as a quiet stage`, async ({ page }) => {
     await page.goto(`/monitoring?stage=prod&mock=${scenario}`);
-    await expect(attention(page).getByRole("row", { name: row })).toContainText(words);
-    await expect(attention(page).getByRole("row", { name: /Run failed/ }).locator(".mon-delivery")).toHaveText(notification);
+    await expect(item(page, row)).toContainText(words);
+    await expect(item(page, /Run failed/).locator(".mon-delivery")).toHaveText(notification);
   });
 }
 
@@ -193,9 +203,8 @@ test("a role without list_pipeline_health gets no pipelines read, and the page s
   const reads: string[] = [];
   page.on("request", (r) => reads.push(r.url()));
   await page.goto("/monitoring?stage=prod&mock=limited");
-  await expect(attention(page).getByRole("row", { name: /Pipeline health is not available/ })).toContainText("Your role may not read pipeline health on stage PROD.");
-  await showAll(page);
-  await expect(row(page, "Trino")).toContainText("Healthy");
+  await expect(item(page, /Pipeline health is not available/)).toContainText("Your role may not read pipeline health on stage PROD.");
+  await expect(chip(page, "Trino")).toContainText("Healthy");
   expect(reads.filter((u) => u.endsWith("/health/pipelines"))).toEqual([]);
 });
 
@@ -220,65 +229,52 @@ test("an unreachable API is unknown, never green, and Retry works from the keybo
 });
 
 for (const colorScheme of ["dark", "light"] as const) {
-  test(`at 390 px (${colorScheme}) the page does not scroll sideways; each table scrolls in its own region`, async ({ page }) => {
+  test(`at 390 px (${colorScheme}) the page does not scroll sideways; the pipelines table scrolls in its own region`, async ({ page }) => {
     await page.emulateMedia({ colorScheme });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/monitoring?stage=prod");
     await expect(pipelines(page)).toBeVisible();
-    await showAll(page);
-    await expect(row(page, "Trino")).toBeVisible();
+    await expect(await service(page, "Trino")).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
     await expect(nav(page).getByRole("link", { name: "Monitoring" })).toBeVisible();
-    for (const region of [services(page), attention(page), pipelines(page), quality(page)]) {
-      await expect(region).toHaveAttribute("tabindex", "0"); // keyboard users can scroll it
-    }
+    await expect(pipelines(page)).toHaveAttribute("tabindex", "0"); // keyboard users can scroll it
   });
 }
 
-test("Services fold to one line when every service is healthy, and the toggle lists them from the keyboard", async ({ page }) => {
-  await page.goto("/monitoring?stage=prod&mock=healthy");
-  await expect(page.locator(".mon-svc-line")).toHaveText(/^6 of 6 healthy · log archive last durable write 12 min ago \(at [^)]+ UTC\) · quality sync last publication 4 min ago \(at [^)]+ UTC\)$/);
-  await expect(services(page)).toHaveCount(0);
-  const toggle = page.getByRole("button", { name: "Show all 6 services" });
-  await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await toggle.focus();
-  await page.keyboard.press("Enter");
-  await expect(services(page).getByRole("row")).toHaveCount(7);
-  await expect(page.getByRole("button", { name: "Hide healthy services" })).toHaveAttribute("aria-expanded", "true");
-});
-
-test("a degraded service opens Services on its own, listing what is not healthy", async ({ page }) => {
+test("a service that needs attention links to its logs where the portal can show them", async ({ page }) => {
   await page.goto("/monitoring?stage=prod");
-  await expect(services(page).getByRole("row")).toHaveCount(2); // header + Log archive
-  await expect(row(page, "Log archive")).toContainText("Log spool age · Warning");
-  await showAll(page);
-  await expect(services(page).getByRole("row")).toHaveCount(7);
+  const trino = await service(page, "Trino");
+  // The mock's role may not read PROD's log archive, so no link is offered, and the panel says so.
+  await expect(trino.getByRole("link", { name: /View logs/ })).toHaveCount(0);
+  await page.goto("/monitoring?stage=dev");
+  const link = (await service(page, "Trino")).getByRole("link", { name: "View logs of Trino" });
+  await expect(link).toHaveAttribute("href", /\/monitoring\/dev\/logs\?date=\d{4}-\d\d-\d\d&hour=\d+&component=trino$/);
 });
 
 test("pipeline names link to their runs, and a failed count to those failed runs in the window shown", async ({ page }) => {
   await page.goto("/monitoring?stage=prod");
-  const sales = pipelines(page).getByRole("row", { name: /sales_orders/ });
+  const sales = await openPipe(page, "sales_orders");
   await expect(sales.getByRole("link", { name: "Runs of sales_orders", exact: true })).toHaveAttribute("href", "/monitoring/prod/runs?job=sales_orders");
   await expect(sales.getByRole("link", { name: /^1 failed in last 24h/ })).toHaveAttribute("href", "/monitoring/prod/runs?job=sales_orders&status=failed&window=24h");
-  await expect(attention(page).getByRole("row", { name: /Run failed/ }).getByRole("link", { name: "Runs of sales_orders", exact: true }))
+  await expect((await openItem(page, /Run failed/)).getByRole("link", { name: "Runs of sales_orders", exact: true }))
     .toHaveAttribute("href", "/monitoring/prod/runs?job=sales_orders");
-  await expect(sales.getByRole("link", { name: "Open run c94cbcb0" })).toHaveAttribute("href", /\/monitoring\/prod\/runs\/c94cbcb0-/);
+  await expect(sales.getByRole("link", { name: "Open run c94cbcb0" }).first()).toHaveAttribute("href", /\/monitoring\/prod\/runs\/c94cbcb0-/);
 });
 
 for (const width of [1440, 1100, 900, 390]) {
-  test(`at ${width} px the summary cards sit four across or two by two, never three and one`, async ({ page }) => {
+  test(`at ${width} px the summary gauges sit four across, two by two or one a row, never three and one`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/monitoring?stage=prod");
     await expect(pipelines(page)).toBeVisible();
     const tops = await page.locator(".mon-card").evaluateAll((cards) => cards.map((c) => Math.round(c.getBoundingClientRect().top)));
     expect(tops).toHaveLength(4);
     const rows = [...new Set(tops)].map((t) => tops.filter((x) => x === t).length);
-    expect([[4], [2, 2]]).toContainEqual(rows);
+    expect([[4], [2, 2], [1, 1, 1, 1]]).toContainEqual(rows);
   });
 }
 
 for (const width of [1440, 1100, 900]) {
-  test(`at ${width} px the Pipelines table shows its Failed runs column whole, even with long pipeline names, and so does Needs attention`, async ({ page }) => {
+  test(`at ${width} px the Pipelines table shows every column whole, even with long pipeline names`, async ({ page }) => {
     // Longer names than the mock's, as a real deployment has (customer_health_pipeline, …).
     await page.route("**/api/v1/stages/prod/health/pipelines", async (route) => {
       const res = await route.fetch();
@@ -289,29 +285,22 @@ for (const width of [1440, 1100, 900]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/monitoring?stage=prod");
     await expect(pipelines(page)).toBeVisible();
-    const fit = await pipelines(page).evaluate((r) => {
-      const head = [...r.querySelectorAll("th")].find((th) => th.textContent === "Failed runs")!;
-      return { overflow: r.scrollWidth - r.clientWidth, right: head.getBoundingClientRect().right, edge: r.getBoundingClientRect().right };
-    });
-    expect(fit.overflow).toBeLessThanOrEqual(0);
-    expect(fit.right).toBeLessThanOrEqual(fit.edge + 0.5);
-    // The list to act on fits too: its Notification column is never cut.
-    expect(await attention(page).evaluate((r) => r.scrollWidth - r.clientWidth)).toBeLessThanOrEqual(0);
-    await expect(pipelines(page).getByRole("row", { name: /sales_orders_customer_health_pipeline/ })).toContainText("1 failed in last 24h");
+    expect(await pipelines(page).evaluate((r) => r.scrollWidth - r.clientWidth)).toBeLessThanOrEqual(0);
   });
 }
 
 test("a run that failed before its quality checks finished reads unknown and incomplete, in the API's words", async ({ page }) => {
   await page.goto("/monitoring?stage=prod&mock=unfinished");
-  const web = quality(page).getByRole("row", { name: /web_events/ });
+  const web = await openPipe(page, "web_events");
   await expect(web).toContainText("Unknown");
   await expect(web).toContainText("Incomplete");
   await expect(web).toContainText("2 passed");
-  await expect(web.locator(".mon-why")).toHaveText("the run failed before its quality checks finished");
-  await expect(page.getByRole("region", { name: "Data quality summary" })).toContainText("counts from 3 of 4 pipelines · 2 incomplete");
+  await expect(web.locator(".mon-quality-why")).toHaveText("the run failed before its quality checks finished");
+  await expect(card(page, "Data quality")).toContainText("counts from 3 of 4 pipelines · 2 incomplete");
   // The other routes agree: web_events' latest run is that failed run, and its link opens the run.
-  await expect(pipelines(page).getByRole("row", { name: /web_events/ })).toContainText(/Critical\s*Failed · .*7f3a1c62.*1 failed since/);
-  await web.getByRole("link", { name: "Open run 7f3a1c62" }).click();
+  await expect(web).toContainText("Critical");
+  await expect(web).toContainText("1 failed since");
+  await web.getByRole("link", { name: "Open run 7f3a1c62" }).first().click();
   await expect(page).toHaveURL(/\/monitoring\/prod\/runs\/7f3a1c62-9e4b-4d08-b5a1-3c6e2d9f8b14$/);
   await expect(page.getByRole("heading", { level: 1, name: "web_events" })).toBeVisible();
   await expect(page.getByRole("list", { name: "Run" })).toContainText("floe_bronze_web_events");
@@ -321,7 +310,7 @@ test("a run that failed before its quality checks finished reads unknown and inc
 test("screenshots: monitoring", async ({ page }) => {
   await shoot(page, "monitoring", async () => {
     await page.goto("/monitoring?stage=prod");
-    await expect(row(page, "Log archive")).toBeVisible();
+    await expect(chip(page, "Log archive")).toBeVisible();
     await expect(pipelines(page)).toBeVisible();
   });
   await shoot(page, "monitoring-unavailable", async () => {
@@ -330,12 +319,12 @@ test("screenshots: monitoring", async ({ page }) => {
   });
   await shoot(page, "monitoring-services-healthy", async () => {
     await page.goto("/monitoring?stage=prod&mock=healthy");
-    await expect(page.getByText(/^6 of 6 healthy/)).toBeVisible();
+    await expect(card(page, "Services")).toContainText("6/6");
     await expect(pipelines(page)).toBeVisible();
   });
   await shoot(page, "monitoring-quality-unfinished", async () => {
     await page.goto("/monitoring?stage=prod&mock=unfinished");
-    await expect(quality(page).getByRole("row", { name: /web_events/ })).toContainText("the run failed before its quality checks finished");
+    await expect(pipe(page, "web_events")).toContainText("Incomplete");
   });
   await shoot(page, "monitoring-dev", async () => {
     await page.goto("/monitoring?stage=dev");

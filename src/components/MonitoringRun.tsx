@@ -4,6 +4,7 @@
 // Read-only: there is no Re-run in v0.7 (openlakeforge#333, 2026-11-16); the next step is the run in Dagster.
 // Nothing here is inferred. A part the API could not read says so in its own words, and none of it reads green.
 
+import { duration } from "../lib/time";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import {
@@ -18,6 +19,8 @@ import { alerts, DELIVERY, deliveryLine, IncidentRunbook, runbookUrl } from "./M
 import { absent, pipes, runHref, type Part } from "./MonitoringPipelines";
 import { StatusBadge } from "./StatusBadge";
 import { Ago, Time, Zoned, ZoneSwitch } from "./Time";
+
+export { duration };
 
 /** The failure read is held to 20 s by the API itself (#1271); the page waits a little longer before calling it unreachable. */
 export const RUN_DEADLINE_MS = 25_000;
@@ -35,14 +38,6 @@ export function runState(status: string): HealthState {
   return "unknown";
 }
 const RUN_WORD: Record<string, string> = { SUCCESS: "succeeded", FAILURE: "failed", CANCELED: "was canceled", CANCELING: "is canceling", STARTED: "is running", QUEUED: "is queued", STARTING: "is starting", NOT_STARTED: "has not started" };
-
-/** "1 min 54 s", "2 h 5 min". */
-export function duration(seconds: number): string {
-  const s = Math.max(0, Math.round(seconds));
-  if (s < 60) return `${s} s`;
-  if (s < 3600) return `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ""}`;
-  return `${Math.floor(s / 3600)} h${Math.floor((s % 3600) / 60) ? ` ${Math.floor((s % 3600) / 60)} min` : ""}`;
-}
 
 type Snap = {
   failure: Part<RunFailure>;

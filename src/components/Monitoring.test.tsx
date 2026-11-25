@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,7 +14,6 @@ import { countsFrom, qualityWhy } from "./MonitoringQuality";
 import { StatusBadge } from "./StatusBadge";
 
 const soon = () => new Date(Date.now() + 40_000).toISOString();
-const svcLine = () => document.querySelector(".mon-svc-line") as HTMLElement;
 const SERVICE_NAMES: Record<string, string> = { trino: "Trino", polaris: "Polaris", dagster: "Dagster", "log-archive": "Log archive", "quality-sync": "Quality sync" };
 const svc = (component: string, state: HealthState, over = {}) => {
   const service = component.split(".")[0];
@@ -80,6 +79,7 @@ type Reply = { status?: number; body?: unknown } | "down";
 type Panels = { quality?: (stage: string) => Reply; alerts?: (stage: string) => Reply };
 /** The panels' routes: quality counts with every check passed and no open incident, unless `panels` says otherwise. */
 function panel(input: string, panels: Panels = {}): Reply | undefined {
+  if (/\/runs\?/.test(input)) return { body: { runs: [] } };
   const [, stage = "", path] = /stages\/([^/]+)\/(health\/quality|alerts\/incidents)$/.exec(input) ?? [];
   if (path === "health/quality") return (panels.quality ?? ((st) => ({ body: qualityOf({ stage: st }) })))(stage);
   if (path === "alerts/incidents") return (panels.alerts ?? ((st) => ({ body: incidentsOf({ stage: st }) })))(stage);
@@ -114,11 +114,26 @@ const healthCalls = (fetch: ReturnType<typeof vi.fn>) => fetch.mock.calls.map(([
 const open = (stages = ["dev", "prod"], entry = "/monitoring?stage=prod") =>
   render(<MemoryRouter initialEntries={[entry]}><Monitoring stages={stages} /></MemoryRouter>);
 const banner = () => screen.getByRole("heading", { level: 2, name: /PROD/ });
-const attentionRow = (name: string) => within(screen.getByRole("region", { name: "What needs attention" })).getByRole("row", { name: new RegExp(name) });
-const pipelineRow = (name: string) => within(screen.getByRole("region", { name: "Pipeline health" })).getByRole("row", { name: new RegExp(name) });
-const serviceRow = (name: string) => within(screen.getByRole("region", { name: "Service health" })).getByRole("row", { name: new RegExp(name) });
-/** Opens the Services panel's full list (it folds to one line when every service is healthy). */
-const showAllServices = () => userEvent.click(screen.getByRole("button", { name: /^Show all \d+ services$/ }));
+const attention = () => screen.getByRole("list", { name: "What needs attention" });
+/** The list's one item that says `name`. */
+const attentionRow = (name: string) => {
+  const found = within(attention()).getAllByRole("listitem").filter((li) => new RegExp(name).test(li.textContent ?? ""));
+  expect(found).toHaveLength(1);
+  return found[0];
+};
+/** A disclosure opened (once): returns the element to read. */
+const opened = (button: HTMLElement) => {
+  if (button.getAttribute("aria-expanded") !== "true") fireEvent.click(button);
+  return button;
+};
+/** One pipeline's line and its details. */
+const pipelineRow = (job: string) => opened(within(screen.getByRole("region", { name: "Pipeline health" })).getByRole("button", { name: `Details of ${job}` })).closest("tbody")!;
+/** One service's panel. */
+const serviceRow = (name: string) => {
+  opened(screen.getByRole("button", { name: new RegExp(`^${name} `) }));
+  return screen.getByRole("region", { name: "Service detail" });
+};
+const card = (name: string) => screen.getByRole("region", { name: `${name} summary` });
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
@@ -139,18 +154,11 @@ describe("overview", () => {
     api(() => ({ body: health() }));
     open();
     expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
-    expect(screen.getByText("0 pipelines failed · 2 of 2 services ready")).toBeInTheDocument();
-    // Every service is healthy: Services is one line, with a toggle, and its table is folded away.
-    expect(svcLine()).toHaveTextContent(/^2 of 2 healthy · resource metrics disabled$/);
-    expect(screen.queryByRole("region", { name: "Service health" })).toBeNull();
-    const toggle = screen.getByRole("button", { name: "Show all 2 services" });
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    await userEvent.click(toggle);
-    expect(screen.getByRole("button", { name: "Hide healthy services" })).toHaveAttribute("aria-expanded", "true");
+    expect(card("Services")).toHaveTextContent("2/2");
     expect(serviceRow("Trino")).toHaveTextContent("Healthy");
     expect(serviceRow("Resource metrics")).toHaveTextContent("Disabled");
     expect(serviceRow("Resource metrics")).toHaveTextContent("no metrics source is connected to the API");
-    expect(screen.getByRole("status")).toHaveTextContent(/Checked \d+ s ago/);
+    expect(screen.getByRole("status")).toHaveTextContent(/Updated \d+ s ago/);
   });
 
   it("names failures and keeps the API's critical rollup", async () => {
@@ -164,12 +172,47 @@ describe("overview", () => {
     );
     open();
     expect(await screen.findByRole("heading", { name: "Critical PROD needs attention" })).toBeInTheDocument();
-    const pipelines = screen.getByRole("region", { name: "Pipelines summary" });
-    expect(pipelines).toHaveTextContent("1 failed of 2 · 0 missed");
-    // Counts only: the card names no pipeline and no time; the table and the list hold the detail.
-    expect(pipelines).toHaveTextContent(/1 critical · 1 healthy$/);
-    expect(pipelines).not.toHaveTextContent(/sales_orders|crm|Last success/);
-    expect(within(pipelines).getByText("Critical")).toBeInTheDocument();
+    expect(attentionRow("Run failed")).toHaveTextContent("sales_orders");
+    expect(pipelineRow("sales_orders")).toHaveTextContent("Critical");
+  });
+
+  it("counts the last day's runs by how they ended, and says when the runs cannot be read", async () => {
+    const runs = [run("a", "SUCCESS"), run("b", "FAILURE"), run("c", "STARTED"), { ...run("old", "FAILURE"), created_at: Date.now() / 1000 - 200_000 }];
+    let reply: Reply = { body: { runs } };
+    const fetch = vi.fn(async (input: string) => respond(
+      input === CAPS_URL ? { body: caps() } : input.includes("/runs") ? reply : panel(input) ?? (input.endsWith("/pipelines") ? { body: pipes() } : { body: health() }),
+    ));
+    vi.stubGlobal("fetch", fetch);
+    open();
+    await screen.findByRole("heading", { name: "Healthy PROD is healthy" });
+    expect(card("Pipeline runs")).toHaveTextContent("3runs");
+    expect(card("Pipeline runs")).toHaveTextContent("Succeeded 1Failed 1Running 1");
+    expect(within(card("Pipeline runs")).getByRole("link", { name: /Runs/ })).toHaveAttribute("href", "/monitoring/prod/runs");
+    cleanup();
+    reply = { status: 503, body: {} };
+    open();
+    await screen.findByRole("heading", { name: "Healthy PROD is healthy" });
+    expect(card("Pipeline runs")).toHaveTextContent("Unknown");
+    expect(card("Pipeline runs")).toHaveTextContent("The monitoring API failed (503)");
+    expect(card("Pipeline runs")).not.toHaveTextContent("Succeeded");
+  });
+
+  it("lists a service that is not healthy, with a link to its logs only where the portal can show them", async () => {
+    const observed_at = "2026-11-19T09:41:00Z";
+    const services = [
+      svc("trino.readiness", "critical", { reason: "coordinator is not ready", observed_at, expires_at: soon() }),
+      svc("polaris.readiness", "critical", { reason: "readiness check failed" }),
+    ];
+    api(() => ({ body: health({ state: "critical", services }) }));
+    open();
+    await screen.findByRole("heading", { name: "Critical PROD needs attention" });
+    expect(attentionRow("coordinator is not ready")).toHaveTextContent("Trino");
+    expect(within(attentionRow("coordinator is not ready")).getByRole("link", { name: "View logs of Trino" }))
+      .toHaveAttribute("href", "/monitoring/prod/logs?date=2026-11-19&hour=9&component=trino");
+    expect(within(attentionRow("readiness check failed")).queryByRole("link", { name: /View logs/ })).toBeNull();
+    // The ring's centre is also text for a screen reader.
+    expect(within(card("Services")).getByText("0/2 up")).toHaveClass("sr-only");
+    expect(serviceRow("Polaris")).toHaveTextContent("The portal cannot show this service's logs yet.");
   });
 
   it("never shows an expired healthy answer as healthy", async () => {
@@ -178,10 +221,9 @@ describe("overview", () => {
     open();
     expect(await screen.findByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
     expect(screen.queryByText(/is healthy/)).toBeNull();
-    expect(banner().closest("section")).toHaveTextContent("1 service answer expired");
     expect(serviceRow("Trino")).toHaveTextContent("Unknown");
     expect(serviceRow("Trino")).toHaveTextContent(/Stale: no fresh answer/);
-    expect(within(screen.getByRole("region", { name: "Services summary" })).getByText("0 of 1")).toBeInTheDocument();
+    expect(card("Services")).toHaveTextContent("0/1");
   });
 
   it("keeps a worse API rollup when a probe has expired", async () => {
@@ -198,10 +240,6 @@ describe("overview", () => {
     expect(await screen.findByRole("heading", { name: "Unknown PROD status unknown" })).toBeInTheDocument();
     expect(attentionRow("Pipelines cannot be read")).toHaveTextContent("Unknown");
     expect(attentionRow("Pipelines cannot be read")).toHaveTextContent("Dagster could not be read");
-    const pipelines = screen.getByRole("region", { name: "Pipelines summary" });
-    expect(within(pipelines).getByText("Unknown")).toBeInTheDocument();
-    expect(pipelines).toHaveTextContent("Dagster could not be read");
-    expect(pipelines).not.toHaveTextContent(/failed/);
   });
 
   it("shows an absent service list as a gap, not as zero healthy", async () => {
@@ -209,9 +247,10 @@ describe("overview", () => {
     api(() => ({ body: health({ services: [], integrations }) }));
     open();
     await screen.findByRole("heading", { name: /PROD/ });
-    expect(serviceRow("Service probes")).toHaveTextContent("Disabled");
-    expect(serviceRow("Service probes")).toHaveTextContent("no service probes are configured");
-    expect(screen.getByText(/service probes give no answer/)).toBeInTheDocument();
+    const gap = screen.getByText(/Service probes:/).closest("p")!;
+    expect(gap).toHaveTextContent("Disabled");
+    expect(gap).toHaveTextContent("no service probes are configured");
+    expect(card("Services")).toHaveTextContent("—");
   });
 });
 
@@ -242,8 +281,7 @@ describe("pipelines and needs attention", () => {
     api(() => ({ body: health({ state: "critical" }) }), () => ({ body: troubled() }));
     open();
     expect(await screen.findByRole("heading", { name: "Critical PROD needs attention" })).toBeInTheDocument();
-    expect(screen.getByText(/^1 pipeline failed · 1 missed run · 1 quality warning · 2 of 2 services ready/)).toBeInTheDocument();
-    const rows = within(screen.getByRole("region", { name: "What needs attention" })).getAllByRole("row").slice(1);
+    const rows = within(attention()).getAllByRole("listitem");
     expect(rows.map((r) => r.querySelector(".mon-what")?.textContent)).toEqual(["Run failed", "Expected run did not start", "Quality check warned"]);
     expect(attentionRow("Run failed")).toHaveTextContent("Critical");
     expect(attentionRow("Run failed")).toHaveTextContent("latest run failed");
@@ -251,9 +289,7 @@ describe("pipelines and needs attention", () => {
     expect(attentionRow("Run failed")).toHaveTextContent("run c94cbcb0");
     expect(attentionRow("Quality check warned")).toHaveTextContent("Warning");
     expect(pipelineRow("erp_inventory")).toBeInTheDocument(); // a stopped schedule is listed, but needs no attention
-    expect(within(screen.getByRole("region", { name: "What needs attention" })).queryByText("erp_inventory")).toBeNull();
-    const summary = screen.getByRole("region", { name: "Pipelines summary" });
-    expect(summary).toHaveTextContent("1 failed of 3 · 1 missed");
+    expect(attention()).not.toHaveTextContent("erp_inventory");
   });
 
   it("links each signal's run and each pipeline's latest run to its Failed-run screen", async () => {
@@ -278,10 +314,9 @@ describe("pipelines and needs attention", () => {
     api(() => ({ body: health({ state: "critical" }) }), () => ({ body: missed }));
     open();
     await screen.findByRole("region", { name: "Pipeline health" });
-    // The column header names the zone; the cell holds the time on a 24-hour clock, in UTC by default.
-    expect(screen.getByRole("columnheader", { name: "When (UTC)" })).toBeInTheDocument();
+    // The time is on a 24-hour clock, in UTC by default, and names the zone.
     expect(attentionRow("Expected run did not start")).toHaveTextContent(`due ${formatTime(due, "UTC", Date.now())}`);
-    expect(within(attentionRow("Expected run did not start")).getByText(formatTime(due, "UTC", Date.now())).closest("time")).toHaveAttribute("dateTime", due.toISOString());
+    expect(attentionRow("Expected run did not start").querySelector(".mon-when time")).toHaveAttribute("dateTime", due.toISOString());
   });
 
   it("falls back to the schedule's last tick, without the word due, when the API sends no `due`", async () => {
@@ -296,17 +331,17 @@ describe("pipelines and needs attention", () => {
     open();
     await screen.findByRole("region", { name: "Pipeline health" });
     expect(pipelineRow("sales_orders")).toHaveTextContent("Critical");
-    expect(pipelineRow("sales_orders")).toHaveTextContent(/Failed · .*c94cbcb0/);
+    expect(pipelineRow("sales_orders")).toHaveTextContent(/Failed · .*c94cbcb0/s);
     expect(pipelineRow("sales_orders")).toHaveTextContent("2 failed in last 24h");
     expect(pipelineRow("erp_inventory")).toHaveTextContent("Disabled");
-    expect(pipelineRow("erp_inventory")).toHaveTextContent(/Stopped\s*erp_daily/);
+    expect(pipelineRow("erp_inventory")).toHaveTextContent("Stopped · erp_daily");
   });
 
   it("reads a failed-run count that could not be read as Unknown, never 0", async () => {
     api(() => ({ body: health() }), () => ({ body: pipes({ failed_runs: null, pipelines: [pipeline("sales_orders", { failed_runs: null })] }) }));
     open();
     await screen.findByRole("region", { name: "Pipeline health" });
-    const cell = pipelineRow("sales_orders").querySelectorAll("td")[4];
+    const cell = within(pipelineRow("sales_orders") as HTMLElement).getByText("Failed runs").nextElementSibling!;
     expect(cell).toHaveTextContent("Unknown");
     expect(cell).toHaveTextContent("the count of failed runs could not be read");
     expect(cell).not.toHaveTextContent("0");
@@ -364,7 +399,7 @@ describe("pipelines and needs attention", () => {
     api(() => ({ body: health() }));
     open();
     expect(await screen.findByText(/Nothing needs attention/)).toBeInTheDocument();
-    expect(within(screen.getByRole("region", { name: "Needs attention" })).getByText("0")).toBeInTheDocument();
+    expect(document.querySelector(".mon-act .f-count")).toHaveTextContent("0");
   });
 
   it("reads an expired healthy pipeline signal as unknown, in the row, the pipeline and the stage", async () => {
@@ -372,7 +407,6 @@ describe("pipelines and needs attention", () => {
     api(() => ({ body: health() }), () => ({ body: pipes({ pipelines: [pipeline("sales_orders", { signals: [sig("execution", "healthy", old)] })] }) }));
     open();
     expect(await screen.findByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
-    expect(screen.getByText(/1 pipeline signal expired/)).toBeInTheDocument();
     expect(attentionRow("No current evidence")).toHaveTextContent("execution: answer expired");
     expect(pipelineRow("sales_orders")).toHaveTextContent("Unknown");
     expect(screen.queryByText(/Nothing needs attention/)).toBeNull();
@@ -396,14 +430,12 @@ describe("pipelines and needs attention", () => {
     const fetch = api(() => ({ body: health() }), () => (fail ? { status: 502, body: { detail: "bad gateway" } } : { body: pipes() }));
     open();
     expect(await screen.findByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
-    expect(screen.getByText(/pipelines cannot be read · 2 of 2 services ready/)).toBeInTheDocument();
     expect(attentionRow("Pipelines cannot be read")).toHaveTextContent("The monitoring API failed (502)");
-    expect(within(screen.getByRole("region", { name: "Pipelines summary" })).getByText("Unknown")).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Pipeline health" })).toBeNull();
-    await showAllServices();
+    // The quality answer still names its pipelines, so their checks stay readable without the pipelines read.
+    expect(pipelineRow("sales_orders")).not.toHaveTextContent("Latest success");
     expect(serviceRow("Trino")).toHaveTextContent("Healthy"); // the stage answer still stands
     fail = false;
-    await userEvent.click(within(screen.getByRole("region", { name: "What needs attention" })).getByRole("button", { name: /Retry/ }));
+    await userEvent.click(within(attention()).getByRole("button", { name: /Retry/ }));
     expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
     expect(fetch.mock.calls.filter(([u]) => (u as string).endsWith("/pipelines"))).toHaveLength(2);
   });
@@ -415,18 +447,19 @@ describe("pipelines and needs attention", () => {
     open();
     await act(() => vi.advanceTimersByTimeAsync(0));
     expect(screen.getByRole("region", { name: "Pipeline health" })).toBeInTheDocument();
+    expect(pipelineRow("sales_orders")).toHaveTextContent("Last success");
     fail = true;
     await act(() => vi.advanceTimersByTimeAsync(30_000));
     await act(() => vi.advanceTimersByTimeAsync(0));
     expect(attentionRow("Pipelines cannot be read")).toHaveTextContent("isn’t answering");
     expect(attentionRow("Pipelines cannot be read")).toHaveTextContent("Last good snapshot");
-    expect(screen.queryByRole("region", { name: "Pipeline health" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Pipeline health" })).not.toHaveTextContent("Healthy 0 failed");
   });
 
   it("shows a refused pipelines read in the API's words, with no retry", async () => {
     api(() => ({ body: health() }), () => ({ status: 403, body: { detail: "role analyst may not call list_pipeline_health" } }));
     open();
-    expect(await screen.findByRole("region", { name: "What needs attention" })).toHaveTextContent("role analyst may not call list_pipeline_health");
+    expect(await screen.findByRole("list", { name: "What needs attention" })).toHaveTextContent("role analyst may not call list_pipeline_health");
     expect(attentionRow("Pipeline health is not available")).toHaveTextContent("Disabled");
     expect(screen.queryByRole("button", { name: /Retry/ })).toBeNull();
     expect(banner()).toHaveTextContent("Unknown");
@@ -453,8 +486,7 @@ describe("pipelines and needs attention", () => {
     open();
     expect(await screen.findByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
     expect(attentionRow("Pipelines cannot be read")).toHaveTextContent("Unknown");
-    expect(within(screen.getByRole("region", { name: "What needs attention" })).getByRole("button", { name: /Retry/ })).toBeInTheDocument();
-    await showAllServices();
+    expect(within(attention()).getByRole("button", { name: /Retry/ })).toBeInTheDocument();
     expect(serviceRow("Trino")).toHaveTextContent("Healthy");
   });
 
@@ -478,7 +510,6 @@ describe("pipelines and needs attention", () => {
     api(() => ({ body: health({ pipelines: [], integrations }) }), () => ({ status: 404, body: { detail: "no Dagster is configured for stage 'prod'" } }));
     open();
     expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
-    expect(screen.getByText(/no Dagster on this stage/)).toBeInTheDocument();
     expect(attentionRow("Pipeline health is not available")).toHaveTextContent("no Dagster is configured for stage 'prod'");
   });
 });
@@ -630,7 +661,7 @@ describe("a health read that never answers", () => {
     await advance(1);
     expect(screen.getByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
     expect(attentionRow("Pipelines cannot be read")).toHaveTextContent(`did not answer within ${DEADLINE_MS / 1000} s`);
-    expect(screen.getByText(/^2 of 2 healthy/)).toBeInTheDocument(); // the services' own answer stands
+    expect(card("Services")).toHaveTextContent("2/2"); // the services' own answer stands
   });
 
   it("after a good snapshot, drops it for Unknown when a refresh stalls", async () => {
@@ -649,7 +680,7 @@ describe("a health read that never answers", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Last good snapshot");
     expect(screen.queryByText("Healthy")).toBeNull();
-    expect(screen.queryByRole("region", { name: "Service health" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Services summary" })).toBeNull();
   });
 });
 
@@ -697,7 +728,7 @@ describe("monitoring capabilities", () => {
     open();
     expect(await screen.findByRole("heading", { level: 2, name: "Disabled PROD health is not available" })).toBeInTheDocument();
     expect(await screen.findByRole("region", { name: "Pipeline health" })).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Service health" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Trino / })).toBeNull();
     expect(healthCalls(fetch)).toEqual([]);
   });
 
@@ -708,7 +739,6 @@ describe("monitoring capabilities", () => {
     const fetch = api(() => ({ body: health({ pipelines: [], integrations }) }), undefined, () => ({ body: caps(access("prod", { capabilities })) }));
     open();
     expect(await screen.findByRole("heading", { name: "Healthy PROD is healthy" })).toBeInTheDocument();
-    expect(screen.getByText(/no Dagster on this stage/)).toBeInTheDocument();
     expect(attentionRow("Pipeline health is not available")).toHaveTextContent("no Dagster is configured for this stage");
     expect(urls(fetch).some((u) => u.endsWith("/pipelines"))).toBe(false);
   });
@@ -718,9 +748,10 @@ describe("monitoring capabilities", () => {
     api(() => ({ body: health() }), undefined, () => ({ body: caps(access("prod", { capabilities })) }));
     open();
     await screen.findByRole("heading", { name: /PROD/ });
-    expect(serviceRow("Service probes")).toHaveTextContent("Disabled");
-    expect(serviceRow("Service probes")).toHaveTextContent("no service probes are configured");
-    expect(within(screen.getByRole("region", { name: "Service health" })).queryByText("Trino")).toBeNull();
+    const gap = screen.getByText(/Service probes:/).closest("p")!;
+    expect(gap).toHaveTextContent("Disabled");
+    expect(gap).toHaveTextContent("no service probes are configured");
+    expect(screen.queryByRole("button", { name: /^Trino / })).toBeNull();
   });
 
   it.each([
@@ -753,19 +784,13 @@ describe("services by service", () => {
     }));
     open();
     await screen.findByRole("heading", { name: /PROD/ });
-    const names = () => within(screen.getByRole("region", { name: "Service health" })).getAllByRole("row").slice(1).map((r) => r.querySelector("th")?.textContent);
-    // A service that is not healthy opens the panel on its own, listing only what is not healthy; the toggle lists all.
-    expect(names()).toEqual(["Dagster"]);
-    await userEvent.click(screen.getByRole("button", { name: "Show all 2 services" }));
-    expect(names()).toEqual(["Dagster", "Trino", "Resource metrics"]);
-    await userEvent.click(screen.getByRole("button", { name: "Show only problems" }));
-    expect(names()).toEqual(["Dagster"]);
-    expect(within(serviceRow("Dagster")).getAllByText("Unknown")[0]).toHaveClass("mon-badge");
+    const names = [...document.querySelectorAll(".mon-chip")].map((c) => c.firstChild?.textContent?.trim());
+    expect(names).toEqual(["Dagster", "Trino", "Resource metrics"]);
     expect(serviceRow("Dagster")).toHaveTextContent("Dagster API · Unknown");
     expect(serviceRow("Dagster")).toHaveTextContent("Dagster workloads · Healthy");
     expect(screen.queryByText(/dagster\.read-api/)).toBeNull(); // the machine key is never shown
-    expect(screen.getByText(/1 of 2 services ready/)).toBeInTheDocument();
-    expect(within(screen.getByRole("region", { name: "Services summary" })).getByText("Unknown")).toBeInTheDocument();
+    expect(card("Services")).toHaveTextContent("1/2");
+    expect(within(card("Services")).getAllByText("Unknown")[0]).toBeInTheDocument();
   });
 
   it("shows the log archive's last durable write and the last quality publication from last_success_at", async () => {
@@ -774,18 +799,17 @@ describe("services by service", () => {
     open();
     await screen.findByRole("heading", { name: /PROD/ });
     // Each "ago" keeps its absolute time on hover and for a screen reader.
-    expect(svcLine()).toHaveTextContent(
-      /^2 of 2 healthy · log archive last durable write 3 min ago \(at [^)]+ UTC\) · quality sync last publication 3 min ago \(at [^)]+ UTC\) · resource metrics disabled$/,
-    );
-    expect(svcLine().querySelector("time")).toHaveAttribute("dateTime", at);
+    expect(serviceRow("Log archive")).toHaveTextContent(/Last durable write 3 min ago \(at [^)]+ UTC\)/);
+    expect(serviceRow("Quality sync")).toHaveTextContent(/Last publication 3 min ago \(at [^)]+ UTC\)/);
+    expect(serviceRow("Quality sync").querySelector("time")).toHaveAttribute("dateTime", at);
   });
 
   it("reads a null last_success_at as unknown, never as a time", async () => {
     api(() => ({ body: health({ services: [svc("log-archive.newest-object", "unknown", { last_success_at: null }), svc("trino.readiness", "healthy")] }) }));
     open();
     await screen.findByRole("heading", { name: /PROD/ });
-    expect(svcLine()).toHaveTextContent(/^1 of 2 healthy · log archive last durable write unknown/);
-    expect(screen.queryByText(/last durable write \d/)).toBeNull();
+    expect(serviceRow("Log archive")).toHaveTextContent("Last durable write unknown");
+    expect(screen.queryByText(/durable write \d/)).toBeNull();
   });
 
   it.each([
@@ -804,8 +828,9 @@ describe("services by service", () => {
 });
 
 describe("data quality", () => {
-  const card = () => screen.getByRole("region", { name: "Data quality summary" });
-  const qualityRow = (name: string) => within(screen.getByRole("region", { name: "Quality by pipeline" })).getByRole("row", { name: new RegExp(name) });
+  const qcard = () => card("Data quality");
+  const qualityRow = (job: string) => pipelineRow(job) as HTMLElement;
+  const ready = () => screen.findByRole("region", { name: "Pipeline health" });
   const urls = (fetch: ReturnType<typeof vi.fn>) => fetch.mock.calls.map(([u]) => u as string);
 
   it("shows each pipeline's counts and their totals, and a null count as unknown, never as zeros", async () => {
@@ -820,11 +845,11 @@ describe("data quality", () => {
     api(() => ({ body: health() }), undefined, undefined, { quality: () => ({ body }) });
     open();
     expect(await within(await screen.findByRole("region", { name: "Data quality summary" })).findByText("Critical")).toBeInTheDocument();
-    expect(card()).toHaveTextContent("2 error 1 warn · 10 passed");
-    expect(card()).toHaveTextContent("1 blocking · counts from 2 of 3 pipelines");
+    expect(qcard()).toHaveTextContent("Passed 10Warn 1Failed 2");
+    expect(qcard()).toHaveTextContent("1 blocking · counts from 2 of 3 pipelines");
     expect(qualityRow("sales_orders")).toHaveTextContent("2 error (1 blocking) · 1 warn · 10 passed");
     expect(qualityRow("crm_accounts")).toHaveTextContent("Counts unknown");
-    expect(qualityRow("crm_accounts")).not.toHaveTextContent(/\d/);
+    expect(qualityRow("crm_accounts")).not.toHaveTextContent(/\d (passed|error|warn)/);
     expect(qualityRow("crm_accounts")).toHaveTextContent("Unknown");
     expect(qualityRow("web_events")).toHaveTextContent("0 error · 0 warn · 0 passed"); // zero is a count, unlike null
   });
@@ -833,18 +858,19 @@ describe("data quality", () => {
     const body = qualityOf({ totals: null, pipelines: [pq("sales_orders", { state: "unknown", counts: null, reason: "the manifest could not be read" })] });
     api(() => ({ body: health() }), undefined, undefined, { quality: () => ({ body }) });
     open();
-    await screen.findByRole("region", { name: "Quality by pipeline" });
-    expect(card()).toHaveTextContent("—");
-    expect(card()).toHaveTextContent("No pipeline has quality counts yet");
-    expect(card()).not.toHaveTextContent(/\d/);
-    expect(within(card()).getByText("Unknown")).toBeInTheDocument();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    expect(qcard()).toHaveTextContent("—");
+    expect(qcard()).toHaveTextContent("No pipeline has quality counts yet");
+    expect(qcard()).not.toHaveTextContent(/\d/);
+    expect(within(qcard()).getByText("Unknown")).toBeInTheDocument();
   });
 
   it("marks an incomplete manifest as incomplete and keeps its counts", async () => {
     const body = qualityOf({ pipelines: [pq("sales_orders", { state: "unknown", complete: false, counts: counts({ passed: 3 }), reason: "dbt results are not in yet" })] });
     api(() => ({ body: health() }), undefined, undefined, { quality: () => ({ body }) });
     open();
-    expect(await screen.findByText("Incomplete")).toBeInTheDocument();
+    await ready();
+    expect(screen.getByText("Incomplete")).toBeInTheDocument();
     expect(qualityRow("sales_orders")).toHaveTextContent("3 passed");
     expect(qualityRow("sales_orders")).toHaveTextContent("dbt results are not in yet");
     expect(qualityRow("sales_orders")).not.toHaveTextContent("not every result is in yet");
@@ -856,19 +882,21 @@ describe("data quality", () => {
       reason: "the run failed before its quality checks finished" })] });
     api(() => ({ body: health() }), undefined, undefined, { quality: () => ({ body }) });
     open();
-    expect(await screen.findByText("Incomplete")).toBeInTheDocument();
+    await ready();
+    expect(screen.getByText("Incomplete")).toBeInTheDocument();
     expect(qualityRow("sales_orders")).toHaveTextContent("the run failed before its quality checks finished");
     expect(qualityRow("sales_orders")).not.toHaveTextContent("not every result is in yet");
     expect(qualityRow("sales_orders")).toHaveTextContent("Unknown");
-    expect(card()).toHaveTextContent(/counts from 1 pipeline · 1 incomplete$/);
+    expect(qcard()).toHaveTextContent(/counts from 1 pipeline · 1 incomplete$/);
   });
 
   it("keeps 'not every result is in yet' for an incomplete row with no reason of its own", async () => {
     const body = qualityOf({ pipelines: [pq("sales_orders", { state: "unknown", complete: false, counts: counts({ passed: 3 }), reason: "" })] });
     api(() => ({ body: health() }), undefined, undefined, { quality: () => ({ body }) });
     open();
-    expect(await screen.findByText("Incomplete")).toBeInTheDocument();
-    expect(qualityRow("sales_orders").querySelector(".mon-why")).toHaveTextContent(/^not every result is in yet$/);
+    await ready();
+    expect(screen.getByText("Incomplete")).toBeInTheDocument();
+    expect(qualityRow("sales_orders").querySelector(".mon-quality-why")).toHaveTextContent(/^not every result is in yet$/);
   });
 
   it("calls only counted rows incomplete: a failed run with no counts is left out of the sum, not called partial", async () => {
@@ -878,8 +906,8 @@ describe("data quality", () => {
     ] });
     api(() => ({ body: health() }), undefined, undefined, { quality: () => ({ body }) });
     open();
-    await screen.findByRole("region", { name: "Quality by pipeline" });
-    expect(card().querySelector(".mon-note")).toHaveTextContent(/^counts from 2 of 3 pipelines$/);
+    await screen.findByRole("region", { name: "Pipeline health" });
+    expect(qcard().querySelector(".mon-note")).toHaveTextContent(/^counts from 2 of 3 pipelines$/);
     expect(qualityRow("sales_orders")).toHaveTextContent("Incomplete");
   });
 
@@ -906,8 +934,10 @@ describe("data quality", () => {
       ? { state: "unknown", complete: false, reason: "the run failed before its quality checks finished" } : {})) });
     api(() => ({ body: health() }), undefined, undefined, { quality: () => ({ body }) });
     open();
-    await screen.findByRole("region", { name: "Quality by pipeline" });
-    expect(card().querySelector(".mon-note")).toHaveTextContent(new RegExp(`^${sentence}$`));
+    await screen.findByRole("region", { name: "Pipeline health" });
+    // A sum from every pipeline, all complete, needs no words.
+    if (k) expect(qcard().querySelector(".mon-note")).toHaveTextContent(new RegExp(`^${sentence}$`));
+    else expect(qcard().querySelector(".mon-note")).toBeNull();
   });
 
   it.each([
@@ -919,15 +949,15 @@ describe("data quality", () => {
     api(() => ({ body: health() }), undefined, undefined, { quality: () => ({ body: qualityOf({ integrations, totals: null, pipelines: [] }) }) });
     open();
     expect(await screen.findByText(reason)).toBeInTheDocument();
-    expect(within(card()).getByText(word)).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Quality by pipeline" })).toBeNull();
+    expect(within(qcard()).getByText(word)).toBeInTheDocument();
+    expect(screen.queryByText("Checks unknown")).toBeNull();
   });
 
   it("does not read quality for a role without get_stage_quality_health, nor on a stage with no quality source", async () => {
     const fetch = api(() => ({ body: health() }), undefined, () => ({ body: caps(access("prod", { operations: ["get_stage_health", "list_pipeline_health"] })) }));
     open();
     expect(await screen.findByText("Your role may not read quality counts on stage PROD.")).toBeInTheDocument();
-    expect(within(card()).getByText("Disabled")).toBeInTheDocument();
+    expect(within(qcard()).getByText("Disabled")).toBeInTheDocument();
     expect(urls(fetch).some((u) => u.endsWith("/health/quality"))).toBe(false);
   });
 
@@ -943,8 +973,8 @@ describe("data quality", () => {
     api(() => ({ body: health() }), undefined, undefined, { quality: () => ({ status: 403, body: { detail: "role analyst may not call get_stage_quality_health" } }) });
     open();
     expect(await screen.findByText("role analyst may not call get_stage_quality_health")).toBeInTheDocument();
-    expect(within(card()).getByText("Disabled")).toBeInTheDocument();
-    expect(within(card()).queryByRole("button", { name: /Retry/ })).toBeNull();
+    expect(within(qcard()).getByText("Disabled")).toBeInTheDocument();
+    expect(within(qcard()).queryByRole("button", { name: /Retry/ })).toBeNull();
   });
 
   it.each([
@@ -958,15 +988,15 @@ describe("data quality", () => {
     api(() => ({ body: health() }), undefined, undefined, { quality: () => ({ body }) });
     open();
     expect(await within(await screen.findByRole("region", { name: "Data quality summary" })).findByText("Unknown")).toBeInTheDocument();
-    expect(card()).toHaveTextContent("The monitoring API failed (500)");
-    expect(within(card()).getByRole("button", { name: /Retry/ })).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Quality by pipeline" })).toBeNull();
+    expect(qcard()).toHaveTextContent("The monitoring API failed (500)");
+    expect(within(qcard()).getByRole("button", { name: /Retry/ })).toBeInTheDocument();
+    expect(screen.queryByText("Checks unknown")).toBeNull();
   });
 });
 
 describe("alert incidents", () => {
-  const card = () => screen.getByRole("region", { name: "Alerts summary" });
-  const table = () => screen.getByRole("region", { name: "What needs attention" });
+  const acard = () => card("Alerts");
+  const ready = () => screen.findByRole("list", { name: "What needs attention" });
   const urls = (fetch: ReturnType<typeof vi.fn>) => fetch.mock.calls.map(([u]) => u as string);
   const incident = (id: string, delivery: AlertIncident["delivery"], over: Partial<AlertIncident> = {}): AlertIncident => ({
     id, condition: "run_failed", severity: "critical", job: null, domain: "sales", product: "orders", table: null, component: null,
@@ -981,7 +1011,8 @@ describe("alert incidents", () => {
       run_ids: ["c94cbcb0-5d1e-4a8e"], job: "sales_orders", product: null, domain: null,
     })] }));
     open();
-    const row = await within(await screen.findByRole("region", { name: "What needs attention" })).findByRole("row", { name: /incident a/ });
+    await ready();
+    const row = attentionRow("incident a");
     expect(within(row).getByRole("link", { name: "Open run c94cbcb0" })).toHaveAttribute("href", "/monitoring/prod/runs/c94cbcb0-5d1e-4a8e");
     expect(within(row).getByRole("link", { name: "Runs of sales_orders" })).toHaveAttribute("href", "/monitoring/prod/runs?job=sales_orders");
   });
@@ -995,21 +1026,22 @@ describe("alert incidents", () => {
   ] as const)("shows a %s delivery in words", async (_, delivery, word, line) => {
     show(incidentsOf({ incidents: [incident("i-1", delivery)] }));
     open();
-    const row = await within(await screen.findByRole("region", { name: "What needs attention" })).findByRole("row", { name: /incident i-1/ });
+    await ready();
+    const row = attentionRow("incident i-1");
     expect(row.querySelector(".mon-delivery")).toHaveTextContent(new RegExp(`^${word}$`));
     expect(row).toHaveTextContent(line);
     expect(row).toHaveTextContent("Critical");
     expect(row).toHaveTextContent("sales · orders");
-    expect(within(card()).getByText("Critical")).toBeInTheDocument();
-    expect(card()).toHaveTextContent("1 open incident");
+    expect(within(acard()).getAllByText("Critical")[0]).toBeInTheDocument();
+    expect(acard()).toHaveTextContent("1incident");
   });
 
   it("says no open incidents only for a current evaluation, and offers no acknowledgement", async () => {
     show(incidentsOf());
     open();
-    expect(await within(await screen.findByRole("region", { name: "What needs attention" })).findByText("Nothing needs attention: no pipeline signal is warning or critical and no alert incident is open.")).toBeInTheDocument();
-    expect(within(card()).getByText("Healthy")).toBeInTheDocument();
-    expect(card()).toHaveTextContent(/0 open incidents.*Evaluated \d+ s ago/);
+    expect(await screen.findByText("Nothing needs attention: no pipeline signal is warning or critical and no alert incident is open.")).toBeInTheDocument();
+    expect(within(acard()).queryByText("Healthy")).toBeNull();
+    expect(acard()).toHaveTextContent("No open incident");
     expect(screen.queryByRole("button", { name: /acknowledge/i })).toBeNull();
   });
 
@@ -1018,10 +1050,10 @@ describe("alert incidents", () => {
     show(incidentsOf({ state, incidents: [incident("i-1", { status: "delivered", event: "opened", attempts: 1, receivers: 1, delivered: 1 }, { severity: "warning" })] }));
     open();
     expect(await screen.findByRole("note")).toHaveTextContent("Stale: the alert evaluator has not run since 2026-11-19T09:00:00+00:00. Its incidents and notifications may be out of date.");
-    expect(within(table()).getByRole("row", { name: /incident i-1/ })).toBeInTheDocument();
-    expect(within(card()).getByText("Warning")).toBeInTheDocument(); // as the rollup ranks it: a warning outranks unknown
-    expect(card()).toHaveTextContent("Stale: the alert evaluator has not run since");
-    expect(card()).not.toHaveTextContent("Evaluated");
+    expect(attentionRow("incident i-1")).toBeInTheDocument();
+    expect(within(acard()).getAllByText("Warning")[0]).toBeInTheDocument(); // as the rollup ranks it: a warning outranks unknown
+    expect(acard()).toHaveTextContent("Stale: the alert evaluator has not run since");
+    expect(acard()).not.toHaveTextContent("No open incident");
   });
 
   it("does not take a stale empty list for no incidents", async () => {
@@ -1029,7 +1061,7 @@ describe("alert incidents", () => {
     open();
     expect(await screen.findByText(/none can be ruled out/)).toBeInTheDocument();
     expect(screen.queryByText("Nothing needs attention: no pipeline signal is warning or critical and no alert incident is open.")).toBeNull();
-    expect(within(card()).getByText("Unknown")).toBeInTheDocument();
+    expect(within(acard()).getByText("Unknown")).toBeInTheDocument();
   });
 
   it.each([
@@ -1038,25 +1070,27 @@ describe("alert incidents", () => {
   ] as const)("shows an %s state with incidents null as such, never as none", async (status, reason, word, title) => {
     show(incidentsOf({ state: { status, reason, evaluated_at: null, stale: null }, incidents: null }));
     open();
-    const row = await within(await screen.findByRole("region", { name: "What needs attention" })).findByRole("row", { name: new RegExp(title) });
+    await ready();
+    const row = attentionRow(title);
     expect(row).toHaveTextContent(reason);
     expect(row).toHaveTextContent(word);
-    expect(card()).toHaveTextContent("—");
+    expect(acard()).toHaveTextContent("—");
     expect(screen.queryByText("Nothing needs attention: no pipeline signal is warning or critical and no alert incident is open.")).toBeNull();
   });
 
   it("reads incidents null as unknown even when the state says available", async () => {
     show(incidentsOf({ incidents: null }));
     open();
-    expect(await within(await screen.findByRole("region", { name: "What needs attention" })).findByRole("row", { name: /Incidents cannot be read/ })).toHaveTextContent("Unknown");
+    await ready();
+    expect(attentionRow("Incidents cannot be read")).toHaveTextContent("Unknown");
   });
 
   it("does not read incidents for a role without list_alert_incidents", async () => {
     const fetch = api(() => ({ body: health() }), undefined, () => ({ body: caps(access("prod", { operations: ["get_stage_health"] })) }));
     open();
     expect(await within(await screen.findByRole("region", { name: "Alerts summary" })).findByText("Your role may not read alert incidents on stage PROD.")).toBeInTheDocument();
-    expect(within(card()).getByText("Disabled")).toBeInTheDocument();
-    expect(within(table()).getByRole("row", { name: /Alert incidents are not available/ })).toHaveTextContent("Your role may not read alert incidents");
+    expect(within(acard()).getByText("Disabled")).toBeInTheDocument();
+    expect(attentionRow("Alert incidents are not available")).toHaveTextContent("Your role may not read alert incidents");
     expect(urls(fetch).some((u) => u.endsWith("/alerts/incidents"))).toBe(false);
   });
 
@@ -1064,17 +1098,19 @@ describe("alert incidents", () => {
     let reply: Reply = { status: 403, body: { detail: "role analyst may not call list_alert_incidents" } };
     api(() => ({ body: health() }), undefined, undefined, { alerts: () => reply });
     open();
-    const refused = await within(await screen.findByRole("region", { name: "What needs attention" })).findByRole("row", { name: /Alert incidents are not available/ });
+    await ready();
+    const refused = attentionRow("Alert incidents are not available");
     expect(refused).toHaveTextContent("role analyst may not call list_alert_incidents");
-    expect(within(table()).queryByRole("button", { name: /Retry/ })).toBeNull();
+    expect(within(attention()).queryByRole("button", { name: /Retry/ })).toBeNull();
     cleanup();
     reply = { status: 503, body: {} };
     open();
-    const gap = await within(await screen.findByRole("region", { name: "What needs attention" })).findByRole("row", { name: /Incidents cannot be read/ });
+    await ready();
+    const gap = attentionRow("Incidents cannot be read");
     expect(gap).toHaveTextContent("The monitoring API failed (503)");
     reply = { body: incidentsOf() };
     await userEvent.click(within(gap).getByRole("button", { name: /Retry/ }));
-    expect(await within(table()).findByText("Nothing needs attention: no pipeline signal is warning or critical and no alert incident is open.")).toBeInTheDocument();
+    expect(await screen.findByText("Nothing needs attention: no pipeline signal is warning or critical and no alert incident is open.")).toBeInTheDocument();
   });
 
   it.each([
@@ -1088,8 +1124,9 @@ describe("alert incidents", () => {
     spoil(body);
     show(body);
     open();
-    expect(await within(await screen.findByRole("region", { name: "What needs attention" })).findByRole("row", { name: /Incidents cannot be read/ })).toHaveTextContent("Unknown");
-    expect(within(card()).getByText("Unknown")).toBeInTheDocument();
+    await ready();
+    expect(attentionRow("Incidents cannot be read")).toHaveTextContent("Unknown");
+    expect(within(acard()).getByText("Unknown")).toBeInTheDocument();
   });
 });
 
@@ -1118,8 +1155,8 @@ describe("one list to act on", () => {
     opened_at: new Date(seen - 600_000).toISOString(), last_seen_at: new Date(seen).toISOString(), summary: `summary of ${id}`,
     run_ids: [RUN], delivery: delivered, ...over,
   });
-  const list = () => screen.getByRole("region", { name: "What needs attention" });
-  const names = () => within(list()).getAllByRole("row").slice(1).map((r) => r.querySelector(".mon-what")?.textContent);
+  const list = () => attention();
+  const names = () => within(list()).getAllByRole("listitem").map((r) => r.querySelector(".mon-what")?.textContent);
 
   it("joins an incident to the signal it is about, so neither is shown twice, and keeps an incident about nothing listed", async () => {
     const incidents = [
@@ -1147,7 +1184,7 @@ describe("one list to act on", () => {
     expect(spool).toHaveTextContent("log-archive.spool-age");
     expect(spool).toHaveTextContent("Warning");
     expect(spool).toHaveTextContent(/last seen \d+ s ago/);
-    expect(within(screen.getByRole("region", { name: "Needs attention" })).getByText("4")).toBeInTheDocument();
+    expect(document.querySelector(".mon-act .f-count")).toHaveTextContent("4");
   });
 
   describe("each incident's runbook section (#1344)", () => {
@@ -1242,29 +1279,38 @@ describe("one list to act on", () => {
     api(() => ({ body: health() }), undefined, () => ({ body: caps(access("prod", { operations: ["list_pipeline_health", "list_alert_incidents"] })) }));
     open();
     expect(await screen.findByRole("heading", { level: 2, name: "Disabled PROD health is not available" })).toBeInTheDocument();
-    const cards = ["Services summary", "Pipelines summary", "Data quality summary", "Alerts summary"].map((name) => screen.getByRole("region", { name }));
+    const cards = ["Services summary", "Pipeline runs summary", "Data quality summary", "Alerts summary"].map((name) => screen.getByRole("region", { name }));
     expect(cards).toHaveLength(4);
     expect(cards[0]).toHaveTextContent("Your role may not read the stage health.");
   });
 
-  it("keeps the services card to counts", async () => {
-    api(() => ({ body: health({ services: [svc("trino.readiness", "warning"), svc("polaris.readiness", "healthy")] }) }));
+  it("keeps an incident's opened and last seen times on the service row it joins", async () => {
+    const opened_at = new Date(Date.now() - 3_600_000).toISOString();
+    const incidents = [inc("spool", "service_degraded", { job: null, domain: null, product: null, component: "trino.readiness", severity: "warning", summary: "the coordinator is slow", run_ids: [], opened_at })];
+    api(() => ({ body: health({ state: "warning", services: [svc("trino.readiness", "warning")] }) }), undefined, undefined, { alerts: () => ({ body: incidentsOf({ incidents }) }) });
     open();
-    const card = await screen.findByRole("region", { name: "Services summary" });
-    expect(card).toHaveTextContent("1 of 2 ready");
-    expect(card).toHaveTextContent("1 warning · 1 healthy");
-    expect(card).not.toHaveTextContent(/Trino|Polaris/);
+    await screen.findByRole("region", { name: "Pipeline health" });
+    const row = attentionRow("the coordinator is slow");
+    expect(row.querySelector(".mon-when time")).toHaveAttribute("dateTime", opened_at);
+    expect(row).toHaveTextContent(/last seen \d+ s ago/);
+  });
+
+  it("keeps the services card to counts, leaving a disabled service out of them", async () => {
+    api(() => ({ body: health({ services: [svc("trino.readiness", "warning"), svc("polaris.readiness", "healthy"), svc("quality-sync.publication", "disabled")] }) }));
+    open();
+    const services = await screen.findByRole("region", { name: "Services summary" });
+    expect(services).toHaveTextContent("1/2");
+    expect(services).toHaveTextContent("Up 1Warning 1Critical 0");
+    expect(services).not.toHaveTextContent(/Trino|Polaris/);
   });
 });
 
 describe("status badges in rows", () => {
-  it("give every row's accessible name its state in words", async () => {
+  it("give every service chip its state in words", async () => {
     api(() => ({ body: health({ state: "warning", services: [svc("trino.readiness", "warning")] }) }));
     open();
-    const region = await screen.findByRole("region", { name: "Service health" });
-    expect(within(region).getByRole("row", { name: /^Trino Warning/ })).toBeInTheDocument();
-    await showAllServices();
-    expect(within(region).getByRole("row", { name: /^Resource metrics Disabled/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Trino Warning" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resource metrics Disabled" })).toBeInTheDocument();
     for (const dot of document.querySelectorAll(".mon-dot")) expect(dot).toHaveAttribute("aria-hidden", "true");
   });
 });

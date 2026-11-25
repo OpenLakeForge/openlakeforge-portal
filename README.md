@@ -72,26 +72,33 @@ browser tests do this with `page.route`) and the Files item disappears.
 
 The Monitoring page (`/monitoring`) first reads `GET /api/v1/monitoring-capabilities`: it offers only the stages
 listed there, and each panel calls its route only when the role has that operation and the stage has its source.
-It then reads `GET /api/v1/stages/{stage}/health` and
-`GET /api/v1/stages/{stage}/health/pipelines` from the same mock, together, within one 10 s deadline. Service rows
-are grouped by service (the worst row decides). When every service is healthy, Services is one line ("6 of 6 healthy ·
-log archive last durable write 12 min ago · …", "unknown" when the API has no time) with "Show all"; otherwise it lists
-the services that are not healthy. The stage switch is a segmented DEV | PROD control (a list from four stages on),
-and the four summary cards hold counts only, four across or two by two. `prod` needs
-attention: `sales_orders` failed with a failed blocking quality check, `crm_accounts` missed its run,
+It then reads `GET /api/v1/stages/{stage}/health`,
+`GET /api/v1/stages/{stage}/health/pipelines`, the quality, incidents and runs routes from the same mock, together,
+within one 10 s deadline. The head has the "UTC | Local" switch, "Updated N s ago" and Refresh on one line (the page
+also refreshes every 30 s); the stage switch, a segmented DEV | PROD control (a list from four stages on), sits beside
+the tabs. The page keeps one line per thing and opens the rest on demand:
+
+- four gauges (services up, the last day's runs by outcome, quality checks, open incidents), four across, two by two or
+  one a row. Each ring's counts are listed beside it; a source with no answer reads "—" with its state and the API's
+  reason. A disabled service is not counted.
+- "needs attention", the one list to act on, headed by the stage's state: each warning or critical pipeline signal, each
+  service that is not healthy and each open alert incident, once (an incident about a listed signal or service joins its
+  row). A row opens its reason, times, runs, whether a notification went out and how it was delivered, and the incident's
+  runbook section (**Runbook ↗**, openlakeforge#1344) when the API names one as a web address. A Dagster or Trino row has
+  **View logs**: the stage's lines of that component in the hour it was checked. The other services run in the platform
+  namespace, whose logs the API does not serve yet.
+- Pipelines: state, latest run, how long it took and its checks; **Details** opens the last success, schedule, failed
+  runs (openlakeforge#1319, linking to them), product and the quality reason.
+- Services: a chip per service (probe rows grouped by `service`, the worst row decides); one opens its probes, the last
+  durable write or publication ("unknown" when the API has no time) and, for Dagster and Trino, its logs.
+
+`prod` needs attention: `sales_orders` failed with a failed blocking quality check, `crm_accounts` missed its run,
 `finance_ledger`'s schedule is stopped and its last run warned on quality, `web_events` is healthy, the log spool is
-past its limit. "Needs attention" is the one list to act on: each warning or critical pipeline signal in the API's
-words and each open alert incident, each once (an incident about a listed signal joins its row), with whether a
-notification went out and how it was delivered. An incident links its runbook section (**Runbook ↗**, the link its
-notification carries, openlakeforge#1344) when the API names one as a web address; with `null` or an older API that
-leaves the field out, there is no link. Pipeline names link to their runs
-(`/monitoring/<stage>/runs?job=<job>`) and a pipeline's "N failed in last 24h" to those failed runs
-(`&status=failed&window=24h`). The Pipelines table lists every job, with its failed runs in the API's 24 h window
-(openlakeforge#1319): `crm_accounts`' count could not be read, so it reads Unknown (never 0), and `web_events`' run read
-stopped short of the window, so its count says where it starts. `dev` reads unknown because Dagster cannot be read. No backend
-state is ever shown green: an unreachable API, an expired probe or pipeline signal, or a missing source reads Unknown
-or Disabled. When only the pipelines read fails, the stage's own answer stays and the pipelines read Unknown, with
-Retry and the last good snapshot time.
+past its limit. `crm_accounts`' failed-run count could not be read, so it reads Unknown (never 0), and `web_events'` run
+read stopped short of the window, so its count says where it starts. `dev` reads unknown because Dagster cannot be read.
+No backend state is ever shown green: an unreachable API, an expired probe or pipeline signal, or a missing source reads
+Unknown or Disabled. When only the pipelines read fails, the stage's own answer stays and the list says so, with Retry
+and the last good snapshot time.
 
 Add `mock=<scenario>` to the page's address (`/monitoring?stage=prod&mock=limited`) to see another role or state;
 the mock reads it from the request's Referer:
@@ -108,14 +115,14 @@ the mock reads it from the request's Referer:
 | `empty` | No open incident in a current evaluation, and no pipeline with quality evidence yet. |
 | `admin` | A platform admin: PROD's log archive and quality reports are readable too, so a failed run shows its lines and report links. |
 | `slim` | Metrics are off (the Slim profile): Resource metrics reads Disabled, and Metrics draws only the pipeline charts. |
-| `healthy` | Every PROD service probe answers healthy: Services folds to one line, with "Show all 6 services". |
-| `unfinished` | PROD's `web_events` run `7f3a1c62…` failed before its quality checks finished: its quality row reads Unknown, Incomplete, with the run's partial counts and the API's reason, and the Data quality card says "· 2 incomplete". The pipeline reads Critical with that run as its latest, and the run's link opens its Failed run screen. |
+| `healthy` | Every PROD service probe answers healthy: the Services gauge reads 6/6 and no service is in the list. |
+| `unfinished` | PROD's `web_events` run `7f3a1c62…` failed before its quality checks finished: its checks read Unknown, Incomplete, with the run's partial counts and the API's reason, and the Data quality gauge says "· 2 incomplete". The pipeline reads Critical with that run as its latest, and the run's link opens its Failed run screen. |
 
-Without `mock=`, PROD's Data quality card sums the known counts (`crm_accounts` has none: "Counts unknown", never
-zeros; `finance_ledger`'s manifest is incomplete: "counts from 3 of 4 pipelines · 1 incomplete"), and Needs attention shows one incident per delivery status
+Without `mock=`, PROD's Data quality gauge sums the known counts (`crm_accounts` has none: "Counts unknown", never
+zeros; `finance_ledger`'s manifest is incomplete: "counts from 3 of 4 pipelines · 1 incomplete"), and the list to act on shows one incident per delivery status
 (delivered, pending, undeliverable, unrouted, unknown). DEV's alert evaluator is stale and DEV has no quality reader.
 
-Each run named on the page (a Needs attention row, a pipeline's latest run, a quality row, an incident) links to its
+Each run named on the page (a row of the list to act on, a pipeline's details, an incident) links to its
 **Failed run** screen, `/monitoring/<stage>/runs/<run_id>`. It reads
 `GET /api/v1/stages/{stage}/runs/{run_id}/failure` (the failing steps, the first line of each error, redacted by the
 API, the rows Floe rejected, and the job's domain and product), `GET /api/v1/stages/{stage}/runs/{run_id}` (start and
@@ -140,8 +147,8 @@ and manifest unreadable, `mock=unauthorized` refuses it with 403, and a data-eng
 is told PROD's archive and report downloads are not theirs (`mock=admin` has both).
 
 Every Monitoring page writes its times one way ([`src/lib/time.ts`](src/lib/time.ts)): in one time zone, UTC by
-default (the archive, the API and the logs are UTC) or the browser's own, picked once with the "UTC | Local (<zone>)"
-switch in the page head and kept in this browser (`localStorage`; UTC when storage is blocked). A 24-hour clock, with
+default (the archive, the API and the logs are UTC) or the browser's own, picked once with the "UTC | Local"
+switch in the page head (the zone's name is its tooltip) and kept in this browser (`localStorage`; UTC when storage is blocked). A 24-hour clock, with
 the date when the time is not today in that zone and the year when it is not this year: "17:28", "Nov 19 17:28",
 "Nov 19, 2025 17:28". A column of times names the zone in its header ("Started (UTC)"), a chart in its axis caption,
 and any other time carries it ("started 17:28 UTC"). Relative times stay ("5 s ago"), each a `<time>` with its absolute
@@ -165,14 +172,14 @@ The **Runs** view (`/monitoring/<stage>/runs?job=<job>&product=<product>&status=
 next to Metrics; 24h by default) lists the stage's runs, newest first: pipeline, domain · product, status, start, duration and
 a link to each run's screen. It reads `GET /api/v1/stages/{stage}/runs?limit=100` (with `job=` when a pipeline is picked) and,
 for the domain and product, the pipelines route. That route filters by job only and answers at most the newest 100 runs, so
-status, product and window are filtered in the browser among the runs read, and the page says how far back the read reached:
+status, product and window are filtered in the browser among the runs read, and when the read stopped short the page says how far back it reached:
 a window older than the read says its earlier runs were not read, never that there were none. The capabilities do not list
 `list_runs`; the page asks it when the role has `get_run` (the same permission row). In the mock, PROD holds more than 100
 runs (an unfiltered 7d read stops short), a run in progress and a queued one; DEV's Dagster cannot be read, `mock=empty` has
 no run, and `unauthorized`, `limited` and `no-access` refuse or skip the read.
 
 The **Logs** view (`/monitoring/<stage>/logs?date=YYYY-MM-DD&hour=HH&run=<run_id>&product=&pod=&container=&component=&level=info|warning|error|critical&q=<text>&match_run=true`,
-next to Runs) browses the stage's log archive by UTC day and hour (the current hour when no date is given; a date alone is the
+next to Runs) is one search bar, **+ Filter** (product, pod, container, component, shown as removable chips), the level, day and hour, and one row per line (no colour codes or repeated console prefix; a click or Enter opens the whole line, its pod and run). It browses the stage's log archive by UTC day and hour (the current hour when no date is given; a date alone is the
 whole day) with `GET /api/v1/stages/{stage}/logs`, at most 500 lines a read: that route has no cursor, so a truncated answer
 says so and asks for a narrower filter. With `run=` it reads the run's window from `GET /api/v1/stages/{stage}/runs/{run_id}/logs`
 (narrowed to `date`/`hour` when given) and pages with Load more; an API without `log_retention_days` has no run window, so the
