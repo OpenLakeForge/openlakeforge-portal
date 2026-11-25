@@ -208,7 +208,7 @@ describe("overview", () => {
     await screen.findByRole("heading", { name: "Critical PROD needs attention" });
     expect(attentionRow("coordinator is not ready")).toHaveTextContent("Trino");
     expect(within(attentionRow("coordinator is not ready")).getByRole("link", { name: "View logs of Trino" }))
-      .toHaveAttribute("href", "/monitoring/prod/logs?date=2026-11-19&hour=9&component=trino");
+      .toHaveAttribute("href", "/monitoring/prod/logs?date=2026-11-19&since=2026-11-19T09%3A26%3A00.000Z&component=trino"); // 15 min before the check
     expect(within(attentionRow("readiness check failed")).queryByRole("link", { name: /View logs/ })).toBeNull();
     // The ring's centre is also text for a screen reader.
     expect(within(card("Services")).getByText("0/2 up")).toHaveClass("sr-only");
@@ -1041,7 +1041,9 @@ describe("alert incidents", () => {
     open();
     expect(await screen.findByText("Nothing needs attention: no pipeline signal is warning or critical and no alert incident is open.")).toBeInTheDocument();
     expect(within(acard()).queryByText("Healthy")).toBeNull();
-    expect(acard()).toHaveTextContent("No open incident");
+    // A whole green ring over "0 incidents": no made-up count is listed to draw it.
+    expect(acard()).toHaveTextContent("0incidents0 incidentsCritical 0Warning 0");
+    expect(acard().querySelector('.mon-ring circle[data-tone="ok"]')).not.toBeNull();
     expect(screen.queryByRole("button", { name: /acknowledge/i })).toBeNull();
   });
 
@@ -1053,7 +1055,7 @@ describe("alert incidents", () => {
     expect(attentionRow("incident i-1")).toBeInTheDocument();
     expect(within(acard()).getAllByText("Warning")[0]).toBeInTheDocument(); // as the rollup ranks it: a warning outranks unknown
     expect(acard()).toHaveTextContent("Stale: the alert evaluator has not run since");
-    expect(acard()).not.toHaveTextContent("No open incident");
+    expect(acard().querySelector('.mon-ring circle[data-tone="ok"]')).toBeNull();
   });
 
   it("does not take a stale empty list for no incidents", async () => {
@@ -1062,6 +1064,7 @@ describe("alert incidents", () => {
     expect(await screen.findByText(/none can be ruled out/)).toBeInTheDocument();
     expect(screen.queryByText("Nothing needs attention: no pipeline signal is warning or critical and no alert incident is open.")).toBeNull();
     expect(within(acard()).getByText("Unknown")).toBeInTheDocument();
+    expect(acard().querySelector('.mon-ring circle[data-tone="ok"]')).toBeNull();
   });
 
   it.each([
@@ -1282,6 +1285,28 @@ describe("one list to act on", () => {
     const cards = ["Services summary", "Pipeline runs summary", "Data quality summary", "Alerts summary"].map((name) => screen.getByRole("region", { name }));
     expect(cards).toHaveLength(4);
     expect(cards[0]).toHaveTextContent("Your role may not read the stage health.");
+  });
+
+  it("opens a failing service's logs just before its alert opened, never before that day", async () => {
+    const at = (opened_at: string) => {
+      const incidents = [inc("down", "service_degraded", { job: null, domain: null, product: null, component: "trino.readiness", severity: "warning", summary: "Trino is degraded", run_ids: [], opened_at })];
+      api(() => ({ body: health({ state: "warning", services: [svc("trino.readiness", "warning")] }) }), undefined, undefined, { alerts: () => ({ body: incidentsOf({ incidents }) }) });
+      open();
+      return screen.findByRole("link", { name: "View logs of Trino" });
+    };
+    expect(await at("2026-11-19T15:32:56Z")).toHaveAttribute("href", "/monitoring/prod/logs?date=2026-11-19&since=2026-11-19T15%3A22%3A56.000Z&component=trino");
+    cleanup();
+    expect(await at("2026-11-19T00:04:00Z")).toHaveAttribute("href", "/monitoring/prod/logs?date=2026-11-19&since=2026-11-19T00%3A00%3A00.000Z&component=trino");
+  });
+
+  it("opens a healthy service's logs at the hour it was checked, though an old alert is still open for it", async () => {
+    const observed_at = "2026-11-19T15:30:00Z";
+    const incidents = [inc("old", "service_degraded", { job: null, domain: null, product: null, component: "trino.readiness", severity: "warning", summary: "Trino was degraded", run_ids: [], opened_at: "2026-11-18T08:00:00Z" })];
+    api(() => ({ body: health({ services: [svc("trino.readiness", "healthy", { observed_at, expires_at: soon() })] }) }), undefined, undefined, { alerts: () => ({ body: incidentsOf({ incidents }) }) });
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    expect(within(serviceRow("Trino")).getByRole("link", { name: "View logs of Trino" }))
+      .toHaveAttribute("href", "/monitoring/prod/logs?date=2026-11-19&hour=15&component=trino");
   });
 
   it("keeps an incident's opened and last seen times on the service row it joins", async () => {

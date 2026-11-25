@@ -68,8 +68,9 @@ export function AlertsCard({ a }: { a: Alerts }) {
   return (
     <Gauge
       label="Alerts summary" title="Alerts" state={a.state === "healthy" ? undefined : a.state}
-      center={a.ok ? String(n) : "—"} unit={a.ok ? `open incident${n === 1 ? "" : "s"}`.replace("open ", "") : undefined}
-      slices={clear ? [{ label: "No open incident", value: 1, tone: "ok" }] : a.ok ? [
+      center={a.ok ? String(n) : "—"} unit={a.ok ? `incident${n === 1 ? "" : "s"}` : undefined}
+      fill={clear ? "ok" : undefined}
+      slices={a.ok ? [
         { label: "Critical", value: of("critical"), tone: "bad" }, { label: "Warning", value: of("warning"), tone: "warn" },
         { label: "Other", value: n - of("critical") - of("warning"), tone: "none", optional: true },
       ] : []}

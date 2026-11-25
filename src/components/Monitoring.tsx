@@ -62,11 +62,29 @@ const oldest = (rows: Shown[]) =>
 /** The services whose pods run in the stage's namespace, named as their log records' `component`. The others run in the
  * platform namespace, whose logs the API does not serve yet. */
 const SERVICE_LOGS = new Set(["dagster", "trino"]);
-/** Their lines of the UTC hour the service was last checked: the API does not say when a failure began. */
-function serviceLogs(stage: string, service: string, observed: string | null | undefined, now: number): string {
+/** How far before its alert opened a failing service's lines start: the evaluator runs every 5 minutes. */
+const BEFORE_ALERT_MS = 10 * 60_000;
+/** And before the check, for a failing service no alert is open for: when it began is not known. */
+const BEFORE_CHECK_MS = 15 * 60_000;
+
+/** The Logs address of one service. A failing one opens just before the failure, from its open alert when there is one:
+ * the archive answers oldest first, 500 lines at most, so the start of the hour can be far from it. A healthy one
+ * opens the UTC hour it was checked in. */
+function serviceLogs(stage: string, service: string, healthy: boolean, observed: string | null | undefined, opened: string | undefined, now: number): string {
   const read = observed ? Date.parse(observed) : NaN;
-  const at = new Date(Number.isNaN(read) ? now : read);
-  const q = new URLSearchParams({ date: at.toISOString().slice(0, 10), hour: String(at.getUTCHours()), component: service });
+  const checked = Number.isNaN(read) ? now : read;
+  // A healthy service's alert is history (recovered, or a stale evaluation): only a failing one starts from it.
+  const alert = !healthy && opened ? Date.parse(opened) : NaN;
+  const event = Number.isNaN(alert) ? checked : alert;
+  const date = new Date(event).toISOString().slice(0, 10);
+  const q = new URLSearchParams({ date });
+  if (healthy) q.set("hour", String(new Date(event).getUTCHours()));
+  else {
+    const from = event - (Number.isNaN(alert) ? BEFORE_CHECK_MS : BEFORE_ALERT_MS);
+    // Not before the day shown: a day's read never reaches into the one before.
+    q.set("since", new Date(Math.max(from, Date.parse(`${date}T00:00:00Z`))).toISOString());
+  }
+  q.set("component", service);
   return `/monitoring/${encodeURIComponent(stage)}/logs?${q}`;
 }
 
@@ -222,8 +240,11 @@ function Overview({ access, snap, now, retry }: { access: MonitoringStage; snap:
   ]);
   const metrics = integration("metrics");
   const metricsGap = absent(metrics);
+  /** When the open alert about one of a service's probes opened: the earliest, when there are several. */
+  const alerted = (g: ServiceGroup) => (a.ok
+    ? a.data.incidents.filter((i) => g.rows.some((r) => r.component === i.component)).map((i) => i.opened_at).sort()[0] : undefined);
   const logs = (g: ServiceGroup) => (SERVICE_LOGS.has(g.service) && access.operations.includes("list_logs")
-    ? serviceLogs(access.stage, g.service, oldest(g.rows as Shown[]), now) : undefined);
+    ? serviceLogs(access.stage, g.service, g.state === "healthy", oldest(g.rows as Shown[]), alerted(g), now) : undefined);
   const troubled = groups.filter((g) => g.state !== "healthy" && g.state !== "disabled").map((g) => serviceItem(g, logs(g)));
   // A disabled service is switched off, not down: it is not counted.
   const counted = groups.filter((g) => g.state !== "disabled");

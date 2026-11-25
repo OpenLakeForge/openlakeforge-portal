@@ -41,6 +41,8 @@ const Q_MAX = 200;
 /** What the page shows, as its address says it. `hour` undefined is the whole day. */
 export type LogsView = {
   date?: string; hour?: number; run?: string;
+  /** Browse mode only: lines from this instant on, as a "View logs" link asks for. */
+  since?: string;
   pod?: string; container?: string; component?: string; product?: string;
   level?: Floor; q?: string;
   /** Run mode only: the API's `match_run`, the lines tagged with the run and no other workload's. */
@@ -53,6 +55,7 @@ export function logsHref(stage: string, v: LogsView = {}): string {
   if (v.run) q.set("run", v.run);
   if (v.date) q.set("date", v.date);
   if (v.hour !== undefined) q.set("hour", pad(v.hour));
+  if (v.since && !v.run) q.set("since", v.since);
   for (const k of ["product", "pod", "container", "component", "level", "q"] as const) if (v[k]) q.set(k, v[k]!);
   if (v.run && v.matchRun) q.set("match_run", "true");
   const s = q.toString();
@@ -79,6 +82,9 @@ export function readLogsParams(params: URLSearchParams, now: number): LogsView &
     else ignored.push(`hour=${h}`);
   }
   if (!date && hour !== undefined && run) { ignored.push(`hour=${h}`); hour = undefined; }
+  let since = run ? undefined : text("since");
+  if (since && Number.isNaN(Date.parse(since))) { ignored.push(`since=${since}`); since = undefined; }
+  if (since && !date) date = utcToday(Date.parse(since)); // a start with no day is that day, never the current hour
   if (!date && !run) {
     date = utcToday(now);
     if (hour === undefined && h === undefined) hour = new Date(now).getUTCHours();
@@ -87,7 +93,7 @@ export function readLogsParams(params: URLSearchParams, now: number): LogsView &
   let level: Floor | undefined;
   if (l) { if ((FLOORS as string[]).includes(l)) level = l as Floor; else ignored.push(`level=${l}`); }
   return {
-    date, hour, run, level, q: params.get("q") ?? undefined, matchRun: !!run && params.get("match_run") === "true",
+    date, hour, since, run, level, q: params.get("q") ?? undefined, matchRun: !!run && params.get("match_run") === "true",
     pod: text("pod"), container: text("container"), component: text("component"), product: text("product"), ignored,
   };
 }
@@ -178,7 +184,7 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
   const moreCtl = useRef<AbortController | null>(null);
 
   const view = readLogsParams(params, opened);
-  const { date, hour, run, pod, container, component, product, level } = view;
+  const { date, hour, since, run, pod, container, component, product, level } = view;
   const q = view.q ?? "";
   const matchRun = !!view.matchRun;
   // The search reaches the API once typing pauses; until then, and on an API that does not search, the lines read are
@@ -218,7 +224,7 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
   const runOpen = access ? runGate(access, "get_run", "this run") : undefined;
   const runMode = run ? (older ? "day" : "window") : "";
   const keyOf = (qr: string | undefined) => JSON.stringify([
-    stage, run, date, hour, pod, container, component, run ? "" : product, levelSent, older, runOpen?.open ?? null,
+    stage, run, date, hour, since, pod, container, component, run ? "" : product, levelSent, older, runOpen?.open ?? null,
     runMode === "window" && matchRun, qr ?? "", attempt,
   ]);
   const qRead = noSearch ? undefined : qSent;
@@ -246,7 +252,7 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
       read = day.then((d) => listLogs(stage, { date: d, hour, pod, container, component, runId: run, severity, q: qRead, limit: LOGS_LIMIT }, ctl.signal)
         .then((r) => ({ ...r, next: null, day: d })));
     } else {
-      read = listLogs(stage, { date: date!, hour, pod, container, component, product, severity, q: qRead, limit: LOGS_LIMIT }, ctl.signal)
+      read = listLogs(stage, { date: date!, hour, since, pod, container, component, product, severity, q: qRead, limit: LOGS_LIMIT }, ctl.signal)
         .then((r) => ({ ...r, next: null }));
     }
     read.then(
@@ -291,7 +297,9 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
 
   /** Changes the address; the effective day and hour are written out, so a link copied from here opens the same lines. */
   const pick = (next: Partial<LogsView>, opts: { replace?: boolean } = {}) => {
-    const merged: LogsView = { date, hour, run, pod, container, component, product, level, q: q || undefined, matchRun, ...next };
+    const merged: LogsView = { date, hour, since, run, pod, container, component, product, level, q: q || undefined, matchRun, ...next };
+    // Picking another day or hour drops the start: it belonged to the one left.
+    if (("date" in next || "hour" in next) && !("since" in next)) merged.since = undefined;
     navigate(logsHref(stage, merged), { replace: opts.replace });
   };
   const switchStage = (s: string) => navigate(logsHref(s, { date, hour, level }));
@@ -407,7 +415,7 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
               </label>
               <span className="q-label lg-utc" aria-hidden="true">UTC</span>
             </div>
-            {(run || active.length > 0) && (
+            {(run || since || active.length > 0) && (
               <div className="lg-chips">
                 {run && (
                   <div className="lg-run" role="group" aria-label="Run">
@@ -419,6 +427,11 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
                       </button>
                     </span>
                   </div>
+                )}
+                {since && (
+                  <button type="button" className="lg-chip f-mono" aria-label="Remove the start time" onClick={() => pick({ since: undefined })}>
+                    from <Time at={since} now={now} /> <span aria-hidden="true">×</span>
+                  </button>
                 )}
                 {active.map(([name, value]) => (
                   <button key={name} type="button" className="lg-chip f-mono" aria-label={`Remove filter ${name} ${value}`} onClick={() => pick({ [name]: undefined })}>
@@ -528,7 +541,7 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
   const day = data.day ?? date;
   const where = run && !data.day
     ? <>run <span className="f-mono">{short(run)}</span>'s window{data.since && data.until ? <>, <Time at={data.since} now={now} /> → <Time at={data.until} now={now} /></> : ""}</>
-    : <>{run ? <>run <span className="f-mono">{short(run)}</span> on </> : null}{day}{hour !== undefined ? `, ${pad(hour)}:00–${pad((hour + 1) % 24)}:00` : ", whole day"} (UTC)</>;
+    : <>{run ? <>run <span className="f-mono">{short(run)}</span> on </> : null}{day}{hour !== undefined ? `, ${pad(hour)}:00–${pad((hour + 1) % 24)}:00` : view.since ? `, from ${new Date(view.since).toISOString().slice(11, 16)}` : ", whole day"} (UTC)</>;
   const expired = retention !== null && day !== undefined && day < addDays(today, -retention);
   const step = (n: number) => hour !== undefined
     ? (() => { const t = Date.parse(`${date}T00:00:00Z`) + (hour + n) * HOUR_MS; return { date: utcToday(t), hour: new Date(t).getUTCHours() }; })()
@@ -583,7 +596,7 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
           The archive holds no {level ? `${SEVERITY_LABEL[level].toLowerCase()} ` : ""}line{data.searched ? <> containing “{data.searched}”</> : null}{filtered ? " matching these filters" : ""} for {where}.
           {!expired && " Lines still in the collector's spool are not archived yet."}
         </p>
-        {(filtered || level || data.searched) && <p className="mon-why"><Link className="run-link" to={logsHref(stage, { run, date, hour })}>Show every line of {run ? "this run" : "this time"}</Link></p>}
+        {(filtered || level || data.searched || view.since) && <p className="mon-why"><Link className="run-link" to={logsHref(stage, { run, date, hour })}>Show every line of {run ? "this run" : "this time"}</Link></p>}
       </div>
     );
   } else if (!shown.length) {
@@ -615,7 +628,7 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
           <td className="lg-where">
             <span className="mon-why f-mono lg-container">{l.container}</span>
             <span className="lg-extra">
-              <Link className="run-link f-mono" to={logsHref(stage, { run, date, hour, pod: l.pod, level })} aria-label={`Filter to ${l.pod}`}>{l.pod}</Link>
+              <Link className="run-link f-mono" to={logsHref(stage, { run, date, hour, since: view.since, pod: l.pod, level })} aria-label={`Filter to ${l.pod}`}>{l.pod}</Link>
               {l.run_id && l.run_id !== run && (
                 <Link className="run-link lg-run-link" to={logsHref(stage, { run: l.run_id })} aria-label={`Run ${short(l.run_id)}'s window`}>run {short(l.run_id)}</Link>
               )}

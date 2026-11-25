@@ -1023,8 +1023,10 @@ function logsRoute(scenario: Scenario, stage: string, url: URL): { json: unknown
   const from = hour === null ? day : day + hour * 3_600_000;
   const to = hour === null ? day + 86_400_000 : from + 3_600_000;
   const kept = Date.now() - LOG_RETENTION_DAYS[stage] * 86_400_000;
+  const since = Date.parse(url.searchParams.get("since") ?? "");
   const lines = to <= kept ? [] : archive(stage, Math.max(from, kept), to, scenario).map((l) => shape(stage, l))
-    .filter((l) => keep(l) && (!product || l.product === product) && (!runId || l.run_id === runId));
+    .filter((l) => keep(l) && (!product || l.product === product) && (!runId || l.run_id === runId)
+      && (Number.isNaN(since) || Date.parse(l.timestamp ?? "") >= since));
   return { json: { lines: lines.slice(0, limit), truncated: lines.length > limit } };
 }
 

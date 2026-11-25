@@ -352,6 +352,23 @@ describe("MonitoringLogs", () => {
     expect(await button("Scheduler tick")).toHaveAttribute("aria-expanded", "true");
   });
 
+  it("starts at `since` when a link asks, and drops it with its chip or another hour", async () => {
+    const user = userEvent.setup();
+    const fetch = api();
+    open("/monitoring/dev/logs?date=2026-11-19&since=2026-11-19T14%3A22%3A56.000Z&component=trino");
+    await rows();
+    expect(reads(fetch)).toEqual(["/api/v1/stages/dev/logs?date=2026-11-19&since=2026-11-19T14%3A22%3A56.000Z&component=trino&limit=500"]);
+    expect(screen.getByText(/DEV · 2026-11-19, from 14:22 \(UTC\)/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Remove the start time" }));
+    expect(where()).toBe("/monitoring/dev/logs?date=2026-11-19&component=trino");
+    cleanup();
+    open("/monitoring/dev/logs?date=2026-11-19&since=2026-11-19T14%3A22%3A56.000Z");
+    await rows();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Hour (UTC)" }), "9");
+    expect(where()).toBe("/monitoring/dev/logs?date=2026-11-19&hour=09");
+    expect(readLogsParams(new URLSearchParams("since=nonsense"), Date.parse("2026-11-19T10:00:00Z")).ignored).toEqual(["since=nonsense"]);
+  });
+
   it("moves between lines with the arrow keys", async () => {
     api();
     open("/monitoring/dev/logs?date=2026-11-19&hour=14");

@@ -13,7 +13,7 @@ export type Slice = { label: string; value: number; tone: Tone; optional?: boole
 const R = 40;
 const C = 2 * Math.PI * R;
 
-function Ring({ slices, center, unit }: { slices: Slice[]; center: string; unit?: string }) {
+function Ring({ slices, center, unit, fill }: { slices: Slice[]; center: string; unit?: string; fill?: Tone }) {
   const shown = slices.filter((s) => s.value > 0);
   const total = shown.reduce((n, s) => n + s.value, 0);
   const gap = shown.length > 1 ? 2 : 0;
@@ -21,7 +21,7 @@ function Ring({ slices, center, unit }: { slices: Slice[]; center: string; unit?
   return (
     <svg className="mon-ring" viewBox="0 0 96 96" aria-hidden="true" focusable="false">
       <g transform="rotate(-90 48 48)" fill="none" strokeWidth="10">
-        {total === 0 && <circle cx="48" cy="48" r={R} data-tone="none" strokeDasharray="6 6.57" />}
+        {total === 0 && <circle cx="48" cy="48" r={R} data-tone={fill ?? "none"} strokeDasharray={fill ? undefined : "6 6.57"} />}
         {shown.map((s) => {
           const length = (s.value / total) * C;
           const from = at;
@@ -35,9 +35,10 @@ function Ring({ slices, center, unit }: { slices: Slice[]; center: string; unit?
   );
 }
 
-export function Gauge({ label, title, to, center, unit, slices, state, note, children }: {
+export function Gauge({ label, title, to, center, unit, slices, fill, state, note, children }: {
   label: string; title: string; to?: string; center: string; unit?: string; slices: Slice[]; state?: HealthState;
-  note?: React.ReactNode; children?: React.ReactNode;
+  /** The whole ring in one tone when every count is zero and that is the answer. Without it, zero is a dashed ring. */
+  fill?: Tone; note?: React.ReactNode; children?: React.ReactNode;
 }) {
   return (
     <section className="mon-card mon-gauge" aria-label={label}>
@@ -46,7 +47,7 @@ export function Gauge({ label, title, to, center, unit, slices, state, note, chi
         {state && <StatusBadge state={state} />}
       </div>
       <div className="mon-gauge-body">
-        <Ring slices={slices} center={center} unit={unit} />
+        <Ring slices={slices} center={center} unit={unit} fill={fill} />
         {center !== "—" && <span className="sr-only">{center} {unit}</span>}
         <ul className="mon-legend">
           {slices.filter((s) => !s.optional || s.value > 0).map((s) => (

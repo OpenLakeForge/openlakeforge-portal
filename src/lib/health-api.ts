@@ -703,6 +703,8 @@ export type LogsQuery = {
   /** The UTC day, `YYYY-MM-DD`. */
   date: string;
   hour?: number;
+  /** Only lines from this instant on: the answer starts there instead of at the start of the day or hour. */
+  since?: string;
   pod?: string; container?: string; component?: string; product?: string; runId?: string;
   severity?: LogSeverity;
   /** Case-insensitive text in the message (openlakeforge#1349); an older API ignores it. */
@@ -714,6 +716,7 @@ export type LogsQuery = {
 export async function listLogs(stage: string, opts: LogsQuery, signal?: AbortSignal): Promise<Logs> {
   const q = new URLSearchParams({ date: opts.date });
   if (opts.hour !== undefined) q.set("hour", String(opts.hour));
+  if (opts.since) q.set("since", opts.since);
   for (const k of ["pod", "container", "component", "product"] as const) if (opts[k]) q.set(k, opts[k]!);
   if (opts.runId) q.set("run_id", opts.runId);
   if (opts.severity) q.set("severity", opts.severity);
