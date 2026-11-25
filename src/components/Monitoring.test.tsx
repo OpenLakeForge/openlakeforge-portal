@@ -208,7 +208,7 @@ describe("overview", () => {
     await screen.findByRole("heading", { name: "Critical PROD needs attention" });
     expect(attentionRow("coordinator is not ready")).toHaveTextContent("Trino");
     expect(within(attentionRow("coordinator is not ready")).getByRole("link", { name: "View logs of Trino" }))
-      .toHaveAttribute("href", "/monitoring/prod/logs?date=2026-11-19&hour=9&component=trino");
+      .toHaveAttribute("href", "/monitoring/prod/logs?date=2026-11-19&since=2026-11-19T09%3A26%3A00.000Z&component=trino"); // 15 min before the check
     expect(within(attentionRow("readiness check failed")).queryByRole("link", { name: /View logs/ })).toBeNull();
     // The ring's centre is also text for a screen reader.
     expect(within(card("Services")).getByText("0/2 up")).toHaveClass("sr-only");
@@ -1285,6 +1285,18 @@ describe("one list to act on", () => {
     const cards = ["Services summary", "Pipeline runs summary", "Data quality summary", "Alerts summary"].map((name) => screen.getByRole("region", { name }));
     expect(cards).toHaveLength(4);
     expect(cards[0]).toHaveTextContent("Your role may not read the stage health.");
+  });
+
+  it("opens a failing service's logs just before its alert opened, never before that day", async () => {
+    const at = (opened_at: string) => {
+      const incidents = [inc("down", "service_degraded", { job: null, domain: null, product: null, component: "trino.readiness", severity: "warning", summary: "Trino is degraded", run_ids: [], opened_at })];
+      api(() => ({ body: health({ state: "warning", services: [svc("trino.readiness", "warning")] }) }), undefined, undefined, { alerts: () => ({ body: incidentsOf({ incidents }) }) });
+      open();
+      return screen.findByRole("link", { name: "View logs of Trino" });
+    };
+    expect(await at("2026-11-19T15:32:56Z")).toHaveAttribute("href", "/monitoring/prod/logs?date=2026-11-19&since=2026-11-19T15%3A22%3A56.000Z&component=trino");
+    cleanup();
+    expect(await at("2026-11-19T00:04:00Z")).toHaveAttribute("href", "/monitoring/prod/logs?date=2026-11-19&since=2026-11-19T00%3A00%3A00.000Z&component=trino");
   });
 
   it("keeps an incident's opened and last seen times on the service row it joins", async () => {

@@ -85,8 +85,9 @@ the tabs. The page keeps one line per thing and opens the rest on demand:
   service that is not healthy and each open alert incident, once (an incident about a listed signal or service joins its
   row). A row opens its reason, times, runs, whether a notification went out and how it was delivered, and the incident's
   runbook section (**Runbook ↗**, openlakeforge#1344) when the API names one as a web address. A Dagster or Trino row has
-  **View logs**: the stage's lines of that component in the hour it was checked. The other services run in the platform
-  namespace, whose logs the API does not serve yet.
+  **View logs**: the stage's lines of that component from 10 minutes before its alert opened (15 minutes before the check
+  when no alert is open), as `since=`; a healthy service's chip opens the hour it was checked. The other services run in
+  the platform namespace, whose logs the portal does not show yet.
 - Pipelines: state, latest run, how long it took and its checks; **Details** opens the last success, schedule, failed
   runs (openlakeforge#1319, linking to them), product and the quality reason.
 - Services: a chip per service (probe rows grouped by `service`, the worst row decides); one opens its probes, the last
