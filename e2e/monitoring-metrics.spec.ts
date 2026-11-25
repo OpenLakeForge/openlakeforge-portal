@@ -36,6 +36,30 @@ test("the keyboard reads a chart step by step, and its values open as a table", 
   await expect(card(page, "Trino load").getByRole("region", { name: "Trino load values" }).getByRole("row")).toHaveCount(61);
 });
 
+test("picking a step never moves the plot, however many lines its readout takes", async ({ page }) => {
+  // Long series names, as a real deployment's pipelines have, wrap the readout over several lines on a phone.
+  await page.route("**/api/v1/stages/prod/metrics/**", async (route) => {
+    const res = await route.fetch();
+    const body = await res.json();
+    for (const line of body.lines ?? []) {
+      if (line.labels.job) line.labels.job = `${line.labels.job}_customer_health_reliability_pipeline`;
+    }
+    await route.fulfill({ response: res, json: body });
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/monitoring/metrics?stage=prod&range=1h");
+  const duration = plot(page, "Run duration");
+  await expect(duration).toBeVisible();
+  const readout = card(page, "Run duration").locator(".mc-readout");
+  const top = () => duration.evaluate((el) => el.getBoundingClientRect().top + window.scrollY);
+  const idle = { top: await top(), height: (await readout.boundingBox())!.height };
+  await duration.focus();
+  await page.keyboard.press("End");
+  await expect(readout).toContainText("customer_health_reliability");
+  expect((await readout.boundingBox())!.height).toBeGreaterThan(idle.height); // the case that matters: it did grow
+  expect(await top()).toBe(idle.top);
+});
+
 test("switching the range asks again over it, and a range past the retention is said, not asked", async ({ page }) => {
   const reads: string[] = [];
   page.on("request", (r) => { if (r.url().includes("/api/v1/") && r.url().includes("/metrics/")) reads.push(new URL(r.url()).search); });

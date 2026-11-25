@@ -185,7 +185,6 @@ export function MetricPlot({ title, unit, range, data, perStep }: { title: strin
 
   return (
     <figure className="mc-figure">
-      <p className={at === null ? "mc-readout mc-idle f-mono" : "mc-readout f-mono"} id={`${id}-readout`} aria-live="polite">{readout}</p>
       <div className="mc-frame">
         <div className="mc-y f-mono" aria-hidden="true">
           {ys.map((t) => <span key={t} style={{ bottom: `${(t / top) * 100}%` }}>{axisLabel(t, unit, top)}</span>)}
@@ -224,6 +223,8 @@ export function MetricPlot({ title, unit, range, data, perStep }: { title: strin
         </div>
         <p className="mc-x-caption label">Time ({tz.label})</p>
       </div>
+      {/* Under the plot: however many lines a picked step takes, the plot never moves from under the pointer. */}
+      <p className={at === null ? "mc-readout mc-idle f-mono" : "mc-readout f-mono"} id={`${id}-readout`} aria-live="polite">{readout}</p>
       <figcaption id={`${id}-sum`}>
         <ul className="mc-legend">
           {data.lines.map((l, i) => (

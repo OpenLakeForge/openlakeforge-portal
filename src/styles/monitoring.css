@@ -259,7 +259,7 @@ label.mon-stage .q-select { width: auto; min-width: 6rem; }
   :root:not([data-theme]) .mc-figure { --mc-1: #1766b5; --mc-2: #eb6834; --mc-3: #1baf7a; --mc-4: #6250d6; --mc-5: #e87ba4; }
 }
 .mc-readout { min-height: 2.2rem; margin: 0; color: var(--olf-text-secondary); font-size: 0.6875rem; overflow-wrap: anywhere; }
-/* Unseen, still read out and still as high: the plot never moves when a step is picked. */
+/* Unseen with no step picked, still read out. */
 .mc-idle { opacity: 0; }
 .mc-frame { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 9.5rem auto; column-gap: var(--olf-space-2); }
 .mc-y { position: relative; min-width: 3.25rem; color: var(--olf-text-muted); font-size: 0.625rem; text-align: right; }
