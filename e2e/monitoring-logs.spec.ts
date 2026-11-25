@@ -67,6 +67,15 @@ test("the whole day is read at most 500 lines at once, and a truncated read says
   await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
 });
 
+test("a start time in the address starts the lines there, and its chip takes it away", async ({ page }) => {
+  const day = yesterday();
+  await page.goto(`/monitoring/dev/logs?date=${day}&since=${encodeURIComponent(`${day}T14:00:00.000Z`)}`);
+  await expect(rows(page).first()).toContainText(/^14:\d\d:\d\d/);
+  await page.getByRole("button", { name: "Remove the start time" }).click();
+  await expect(page).toHaveURL(new RegExp(`date=${day}$`));
+  await expect(rows(page).first()).toContainText(/^00:\d\d:\d\d/);
+});
+
 test("the level filter asks the API with severity and is labelled as on the failed-run page", async ({ page }) => {
   const asked = reads(page);
   const day = yesterday();

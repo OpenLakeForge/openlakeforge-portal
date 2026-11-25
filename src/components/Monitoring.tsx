@@ -73,7 +73,8 @@ const BEFORE_CHECK_MS = 15 * 60_000;
 function serviceLogs(stage: string, service: string, healthy: boolean, observed: string | null | undefined, opened: string | undefined, now: number): string {
   const read = observed ? Date.parse(observed) : NaN;
   const checked = Number.isNaN(read) ? now : read;
-  const alert = opened ? Date.parse(opened) : NaN;
+  // A healthy service's alert is history (recovered, or a stale evaluation): only a failing one starts from it.
+  const alert = !healthy && opened ? Date.parse(opened) : NaN;
   const event = Number.isNaN(alert) ? checked : alert;
   const date = new Date(event).toISOString().slice(0, 10);
   const q = new URLSearchParams({ date });

@@ -1299,6 +1299,16 @@ describe("one list to act on", () => {
     expect(await at("2026-11-19T00:04:00Z")).toHaveAttribute("href", "/monitoring/prod/logs?date=2026-11-19&since=2026-11-19T00%3A00%3A00.000Z&component=trino");
   });
 
+  it("opens a healthy service's logs at the hour it was checked, though an old alert is still open for it", async () => {
+    const observed_at = "2026-11-19T15:30:00Z";
+    const incidents = [inc("old", "service_degraded", { job: null, domain: null, product: null, component: "trino.readiness", severity: "warning", summary: "Trino was degraded", run_ids: [], opened_at: "2026-11-18T08:00:00Z" })];
+    api(() => ({ body: health({ services: [svc("trino.readiness", "healthy", { observed_at, expires_at: soon() })] }) }), undefined, undefined, { alerts: () => ({ body: incidentsOf({ incidents }) }) });
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    expect(within(serviceRow("Trino")).getByRole("link", { name: "View logs of Trino" }))
+      .toHaveAttribute("href", "/monitoring/prod/logs?date=2026-11-19&hour=15&component=trino");
+  });
+
   it("keeps an incident's opened and last seen times on the service row it joins", async () => {
     const opened_at = new Date(Date.now() - 3_600_000).toISOString();
     const incidents = [inc("spool", "service_degraded", { job: null, domain: null, product: null, component: "trino.readiness", severity: "warning", summary: "the coordinator is slow", run_ids: [], opened_at })];
