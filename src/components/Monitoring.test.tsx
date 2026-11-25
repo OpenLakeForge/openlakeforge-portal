@@ -210,6 +210,8 @@ describe("overview", () => {
     expect(within(attentionRow("coordinator is not ready")).getByRole("link", { name: "View logs of Trino" }))
       .toHaveAttribute("href", "/monitoring/prod/logs?date=2026-11-19&hour=9&component=trino");
     expect(within(attentionRow("readiness check failed")).queryByRole("link", { name: /View logs/ })).toBeNull();
+    // The ring's centre is also text for a screen reader.
+    expect(within(card("Services")).getByText("0/2 up")).toHaveClass("sr-only");
     expect(serviceRow("Polaris")).toHaveTextContent("The portal cannot show this service's logs yet.");
   });
 
@@ -418,7 +420,7 @@ describe("pipelines and needs attention", () => {
     api(() => ({ body: health({ state: "unknown" }) }), () => ({ body: pipes({ pipelines: [fresh] }) }));
     open();
     expect(await screen.findByRole("heading", { level: 2, name: "Unknown PROD status unknown" })).toBeInTheDocument();
-    expect(attentionRow("No runs yet")).toHaveTextContent("execution: no observation · freshness: no successful run on record");
+    expect(attentionRow("No current evidence")).toHaveTextContent("execution: no observation · freshness: no successful run on record");
     expect(pipelineRow("new_job")).toHaveTextContent("No run in the window");
     expect(pipelineRow("new_job")).toHaveTextContent("None on record");
   });
@@ -1280,6 +1282,17 @@ describe("one list to act on", () => {
     const cards = ["Services summary", "Pipeline runs summary", "Data quality summary", "Alerts summary"].map((name) => screen.getByRole("region", { name }));
     expect(cards).toHaveLength(4);
     expect(cards[0]).toHaveTextContent("Your role may not read the stage health.");
+  });
+
+  it("keeps an incident's opened and last seen times on the service row it joins", async () => {
+    const opened_at = new Date(Date.now() - 3_600_000).toISOString();
+    const incidents = [inc("spool", "service_degraded", { job: null, domain: null, product: null, component: "trino.readiness", severity: "warning", summary: "the coordinator is slow", run_ids: [], opened_at })];
+    api(() => ({ body: health({ state: "warning", services: [svc("trino.readiness", "warning")] }) }), undefined, undefined, { alerts: () => ({ body: incidentsOf({ incidents }) }) });
+    open();
+    await screen.findByRole("region", { name: "Pipeline health" });
+    const row = attentionRow("the coordinator is slow");
+    expect(row.querySelector(".mon-when time")).toHaveAttribute("dateTime", opened_at);
+    expect(row).toHaveTextContent(/last seen \d+ s ago/);
   });
 
   it("keeps the services card to counts, leaving a disabled service out of them", async () => {

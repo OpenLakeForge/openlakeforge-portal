@@ -518,9 +518,10 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
   const tz = useTimeZone();
   const today = utcToday(now);
   const region = useRef<HTMLDivElement | null>(null);
-  const [openLines, setOpenLines] = useState<number[]>([]);
-  useEffect(() => setOpenLines([]), [data.lines[0]]);
-  const toggle = (i: number) => setOpenLines((o) => (o.includes(i) ? o.filter((x) => x !== i) : [...o, i]));
+  // The open records themselves, not their rows' positions: a search that moves the rows keeps each one open, a new read
+  // (new records) opens none, and "Load more" keeps what was open.
+  const [openLines, setOpenLines] = useState<LogLine[]>([]);
+  const toggle = (l: LogLine) => setOpenLines((o) => (o.includes(l) ? o.filter((x) => x !== l) : [...o, l]));
   const filtered = !!(view.pod || view.container || view.component || (!run && view.product));
 
   // Where the lines come from, in words: the day and hour, or the run's window.
@@ -548,7 +549,7 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
   const keys = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const rows = [...(region.current?.querySelectorAll<HTMLTableRowElement>("tr[data-line]") ?? [])];
     const at = rows.indexOf(document.activeElement as HTMLTableRowElement);
-    if (at >= 0 && e.key === "Enter") { e.preventDefault(); toggle(Number(rows[at].dataset.line)); return; }
+    if (at >= 0 && e.key === "Enter") { e.preventDefault(); toggle(shown[Number(rows[at].dataset.line)]); return; }
     if (!rows.length || !["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
     const to = e.key === "Home" ? 0 : e.key === "End" ? rows.length - 1 : at < 0 ? (e.key === "ArrowDown" ? 0 : -1) : at + (e.key === "ArrowDown" ? 1 : -1);
     if (to < 0 || to >= rows.length) return;
@@ -606,7 +607,7 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
         rows.push(<tr key={`day-${i}`} className="run-day"><th scope="rowgroup" colSpan={4}><time dateTime={lineDay}>{formatDate(ts, tz.zone, now)}</time> ({tz.label})</th></tr>);
       }
       const lv = l.level ?? null;
-      const open = openLines.includes(i);
+      const open = openLines.includes(l);
       rows.push(
         <tr key={i} data-line={i} tabIndex={-1} className={open ? "lg-open" : undefined}>
           <td className="f-mono run-time">{ts && <Time at={ts} now={now} bare clock precision="millisecond" />}</td>
@@ -621,9 +622,11 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
             </span>
           </td>
           <td className="f-mono run-line">
-            {l.line !== null
-              ? <button type="button" className="lg-msg" tabIndex={-1} aria-expanded={open} onClick={() => toggle(i)}><Marked text={open ? plain(l.line) : message(l.line)} q={q} /></button>
-              : <span className="mon-why">Unreadable record: {l.error ?? "no reason given"}</span>}
+            <button type="button" className="lg-msg" tabIndex={-1} aria-expanded={open} onClick={() => toggle(l)}>
+              {l.line !== null
+                ? <Marked text={open ? plain(l.line) : message(l.line)} q={q} />
+                : <span className="mon-why">Unreadable record: {l.error ?? "no reason given"}</span>}
+            </button>
           </td>
         </tr>,
       );

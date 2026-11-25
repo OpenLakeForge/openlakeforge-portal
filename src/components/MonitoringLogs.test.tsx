@@ -333,6 +333,25 @@ describe("MonitoringLogs", () => {
     expect(lines()[0]).toHaveTextContent("23:30:00.125");
   });
 
+  it("opens an unreadable record too, and keeps a line open with its record when a search moves the rows", async () => {
+    const user = userEvent.setup();
+    api(); // this API ignores `q`: after one read the search filters the lines loaded
+    open("/monitoring/dev/logs?date=2026-11-19&hour=14");
+    await rows();
+    const search = screen.getByRole("searchbox", { name: "Search" });
+    await user.type(search, "e");
+    await screen.findByText(/does not search/);
+    await user.clear(search);
+    const button = async (words: string) => (await rows()).find((r) => r.textContent?.includes(words))!.querySelector<HTMLButtonElement>(".lg-msg")!;
+    await user.click(await button("Scheduler tick"));
+    await user.click(await button("Unreadable record"));
+    expect(await button("Unreadable record")).toHaveAttribute("aria-expanded", "true");
+    await user.type(search, "Memory");
+    expect(await button("Memory pool")).toHaveAttribute("aria-expanded", "false");
+    await user.clear(search);
+    expect(await button("Scheduler tick")).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("moves between lines with the arrow keys", async () => {
     api();
     open("/monitoring/dev/logs?date=2026-11-19&hour=14");

@@ -185,7 +185,7 @@ export function MetricPlot({ title, unit, range, data, perStep }: { title: strin
 
   return (
     <figure className="mc-figure">
-      <p className={at === null ? "sr-only" : "mc-readout f-mono"} id={`${id}-readout`} aria-live="polite">{readout}</p>
+      <p className={at === null ? "mc-readout mc-idle f-mono" : "mc-readout f-mono"} id={`${id}-readout`} aria-live="polite">{readout}</p>
       <div className="mc-frame">
         <div className="mc-y f-mono" aria-hidden="true">
           {ys.map((t) => <span key={t} style={{ bottom: `${(t / top) * 100}%` }}>{axisLabel(t, unit, top)}</span>)}

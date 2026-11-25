@@ -99,7 +99,7 @@ export function attention(p: Pipes, stage: string): Row[] {
     if (!bad.length && x.shown === "unknown") {
       const unknown = x.signals.filter((s) => s.shown === "unknown");
       rows.push({
-        key: `${x.job}/unknown`, state: "unknown", title: x.latest_run || x.last_success ? "No current evidence" : "No runs yet", job: x.job, sort: RANK.unknown,
+        key: `${x.job}/unknown`, state: "unknown", title: "No current evidence", job: x.job, sort: RANK.unknown,
         detail: unknown.map((s) => `${s.kind.replace("_", " ")}: ${s.shown !== s.state ? "answer expired" : s.reason}`).join(" · ") || "the API gave no signal",
       });
     }

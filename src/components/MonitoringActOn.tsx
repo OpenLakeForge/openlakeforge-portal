@@ -45,7 +45,10 @@ export function actOn(p: Pipes, a: Alerts, stage: string, services: Item[] = [])
       row.runs = [...new Set([...row.runs, ...i.run_ids.slice(-3)])];
       row.scope = row.components ? undefined : scopeOf(i);
       // A service's row reads its probe's words, so the incident's own summary leads what opens under it.
-      if (row.components) row.detail = `${i.summary}\n${row.detail}`;
+      if (row.components) {
+        row.detail = `${i.summary}\n${row.detail}`;
+        row.at = i.opened_at; // when the incident opened, not when the probe was last read
+      }
       row.lastSeen = i.last_seen_at;
       continue;
     }
@@ -142,7 +145,7 @@ export function ActOn({ p, a, now, stage, services, heading, state, retryPipes, 
                       {r.incident && r.incident.run_ids.length > 3 ? ` · +${r.incident.run_ids.length - 3} earlier` : ""}
                     </span>
                   )}
-                  {r.key.startsWith("incident/") && r.lastSeen && <span className="mon-why">last seen <Ago at={r.lastSeen} now={now} /></span>}
+                  {(r.key.startsWith("incident/") || r.components) && r.lastSeen && <span className="mon-why">last seen <Ago at={r.lastSeen} now={now} /></span>}
                   <div className="mon-notify"><span className="mon-why">Notification</span><Notification r={r} a={a} /></div>
                 </div>
               </details>

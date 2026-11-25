@@ -15,6 +15,13 @@ describe("a log line on one row", () => {
       .toBe("order_revenue_pipeline - RUN_START - Started.");
   });
 
+  it("keeps an id that is part of the message, with what follows it", () => {
+    for (const line of [`Failed to fetch job ${ID} - 404 - Not Found`, `Lease ${ID} - 1 - expired`]) {
+      expect(message(line)).toBe(line);
+      expect(message(`2026-11-24 18:03:26 +0000 - dagster - ERROR - ${line}`)).toBe(line);
+    }
+  });
+
   it("leaves any other line as it is", () => {
     for (const line of ["org.apache.iceberg.exceptions.RESTException: Table does not exist", `{"event":"run_started","dagster_run_id":"${ID}"}`, "Totals: files=6 rows=56"]) {
       expect(message(line)).toBe(line);

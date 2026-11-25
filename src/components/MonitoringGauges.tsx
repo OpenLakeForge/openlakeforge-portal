@@ -47,6 +47,7 @@ export function Gauge({ label, title, to, center, unit, slices, state, note, chi
       </div>
       <div className="mon-gauge-body">
         <Ring slices={slices} center={center} unit={unit} />
+        {center !== "—" && <span className="sr-only">{center} {unit}</span>}
         <ul className="mon-legend">
           {slices.filter((s) => !s.optional || s.value > 0).map((s) => (
             <li key={s.label}><span className="mon-key" data-tone={s.tone} aria-hidden="true" /><span>{s.label}</span> <strong>{s.value}</strong></li>
