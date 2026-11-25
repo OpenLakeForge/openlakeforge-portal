@@ -1,13 +1,15 @@
-// Monitoring · pipelines: the Pipelines summary card, the "Needs attention" rows and the pipelines table, all from
-// GET /api/v1/stages/{stage}/health/pipelines. Every row is a signal the API returned, in the API's words: nothing
+// Monitoring · pipelines: the "Needs attention" rows and the pipelines table, with each pipeline's quality checks, from
+// GET /api/v1/stages/{stage}/health/pipelines and .../health/quality. Every row is a signal the API returned, in the API's words: nothing
 // is inferred, and a pipeline answer that is missing, refused or expired is never shown as healthy.
 
 import {
   ApiError, effective, worst,
   type HealthSignal, type HealthState, type HealthWindow, type Integration, type PipelineHealth, type PipelinesHealth,
 } from "../lib/health-api";
+import { useState } from "react";
 import { Link } from "react-router";
-import { formatTime, seconds, useTimeZone, type TimeZoneState } from "../lib/time";
+import { duration, formatTime, seconds, useTimeZone, type TimeZoneState } from "../lib/time";
+import { checksShort, countsLine, qualityWhy, type Quality } from "./MonitoringQuality";
 import { StatusBadge } from "./StatusBadge";
 import { Time, Zoned } from "./Time";
 
@@ -19,15 +21,13 @@ type Signal = HealthSignal & { shown: HealthState };
 export type Pipeline = Omit<PipelineHealth, "signals"> & { signals: Signal[]; shown: HealthState };
 /** What the page knows about pipelines: their list, or a gap with its reason and the state that gap reads as. */
 export type Pipes =
-  | { ok: true; pipelines: Pipeline[]; runWindow: number; window: HealthWindow | null; failed: number; missed: number; quality: { warning: number; critical: number }; expired: number }
+  | { ok: true; pipelines: Pipeline[]; runWindow: number; window: HealthWindow | null; expired: number }
   | { ok: false; state: HealthState; reason: string; error?: ApiError; off?: boolean };
 
 const denied = (e: ApiError) => e.status === 401 || e.status === 403 || e.status === 404;
 /** An integration that gives no evidence: disabled on purpose, or unknown because it could not be read. */
 export const absent = (i?: Pick<Integration, "status">): HealthState | undefined =>
   !i || i.status === "available" ? undefined : i.status === "unavailable" ? "unknown" : "disabled";
-
-const of = (p: Pipeline, kind: HealthSignal["kind"]) => p.signals.find((s) => s.kind === kind);
 
 /** Reads the pipelines answer at `now`: an expired healthy signal reads unknown, and so does the pipeline it is in. */
 export function pipes(load: PipesLoad, now: number): Pipes {
@@ -43,24 +43,9 @@ export function pipes(load: PipesLoad, now: number): Pipes {
     expired += stale;
     return { ...p, signals, shown: stale ? worst([p.state, "unknown"]) : p.state };
   });
-  const count = (kind: HealthSignal["kind"], state: HealthState) => pipelines.filter((p) => of(p, kind)?.shown === state).length;
   return {
     ok: true, pipelines, expired, runWindow: load.data.thresholds.run_window, window: load.data.window ?? null,
-    failed: count("execution", "critical"), missed: count("expected_run", "critical"),
-    quality: { warning: count("quality", "warning"), critical: count("quality", "critical") },
   };
-}
-
-const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
-
-/** The banner's pipeline words: what failed and was missed, from the pipelines answer. */
-export function pipesLine(p: Pipes): string {
-  if (!p.ok) return "pipelines cannot be read";
-  const parts = [`${plural(p.failed, "pipeline")} failed`];
-  if (p.missed) parts.push(plural(p.missed, "missed run"));
-  if (p.quality.critical) parts.push(plural(p.quality.critical, "quality failure"));
-  if (p.quality.warning) parts.push(plural(p.quality.warning, "quality warning"));
-  return parts.join(" · ");
 }
 
 const short = (run: string) => run.slice(0, 8);
@@ -84,27 +69,6 @@ export function JobLink({ stage, job }: { stage: string; job: string }) {
 /** A run id as a link to its Failed-run screen; the accessible name says which run it opens. */
 export function RunLink({ stage, run, label = `run ${short(run)}` }: { stage: string; run: string; label?: string }) {
   return <Link className="run-link f-mono" to={runHref(stage, run)} aria-label={`Open run ${short(run)}`}>{label}</Link>;
-}
-
-/** "2 critical · 1 warning · 1 healthy": how many items read each state, worst first. Counts only, never names. */
-export function stateCounts(states: HealthState[]): string {
-  const order: HealthState[] = ["critical", "warning", "unknown", "disabled", "healthy"];
-  return order.flatMap((st) => { const n = states.filter((x) => x === st).length; return n ? [`${n} ${st}`] : []; }).join(" · ");
-}
-
-export function PipelinesCard({ p }: { p: Pipes }) {
-  const state = p.ok ? (p.pipelines.length ? worst(p.pipelines.map((x) => x.shown)) : "unknown") : p.state;
-  return (
-    <section className="mon-card" aria-label="Pipelines summary">
-      <div className="mon-card-top"><h2 className="label">Pipelines</h2><StatusBadge state={state} /></div>
-      {p.ok
-        ? <p className="mon-value"><strong>{p.failed} failed</strong> of {p.pipelines.length} · {p.missed} missed</p>
-        : <p className="mon-value"><strong>—</strong></p>}
-      <p className="mon-note">
-        {!p.ok ? p.reason : p.pipelines.length ? stateCounts(p.pipelines.map((x) => x.shown)) : "No pipelines on this stage yet."}
-      </p>
-    </section>
-  );
 }
 
 const TITLES: Partial<Record<HealthSignal["kind"], Partial<Record<HealthState, string>>>> = {
@@ -135,7 +99,7 @@ export function attention(p: Pipes, stage: string): Row[] {
     if (!bad.length && x.shown === "unknown") {
       const unknown = x.signals.filter((s) => s.shown === "unknown");
       rows.push({
-        key: `${x.job}/unknown`, state: "unknown", title: "No current evidence", job: x.job, sort: RANK.unknown,
+        key: `${x.job}/unknown`, state: "unknown", title: x.latest_run || x.last_success ? "No current evidence" : "No runs yet", job: x.job, sort: RANK.unknown,
         detail: unknown.map((s) => `${s.kind.replace("_", " ")}: ${s.shown !== s.state ? "answer expired" : s.reason}`).join(" · ") || "the API gave no signal",
       });
     }
@@ -159,41 +123,78 @@ export function failedRuns(x: Pick<PipelineHealth, "failed_runs" | "covered_from
 const SCHEDULE: Record<PipelineHealth["schedule"]["status"], string> = { running: "Running", stopped: "Stopped", absent: "No schedule" };
 const RUN_WORD: Record<string, string> = { SUCCESS: "Succeeded", FAILURE: "Failed", CANCELED: "Canceled", CANCELING: "Canceling", STARTED: "Running", QUEUED: "Queued", STARTING: "Starting", NOT_STARTED: "Not started" };
 
-export function PipelinesTable({ p, now, stage }: { p: Extract<Pipes, { ok: true }>; now: number; stage: string }) {
+/** One row per pipeline: its state, latest run, how long it took and its checks. The rest (last success, schedule,
+ * failed runs, the product and the quality reason) opens under the row. A pipeline only the quality answer names is
+ * listed too, so a role without the pipelines read still sees the checks. */
+export function PipelinesTable({ p, q, now, stage }: { p: Pipes; q: Quality; now: number; stage: string }) {
   const tz = useTimeZone();
-  if (!p.pipelines.length) return null;
+  const [open, setOpen] = useState<string[]>([]);
+  const pipelines = p.ok ? p.pipelines : [];
+  const checks = q.ok ? q.data.pipelines : [];
+  const jobs = [...new Set([...pipelines.map((x) => x.job), ...checks.map((x) => x.job)])];
+  if (!jobs.length) return null;
+  const toggle = (job: string) => setOpen((o) => (o.includes(job) ? o.filter((x) => x !== job) : [...o, job]));
   return (
     <section className="q-card mon-list" aria-labelledby="mon-pipelines-h">
       <div className="f-card-head">
         <h2 id="mon-pipelines-h">Pipelines</h2>
-        <span className="f-count">{p.pipelines.length}</span>
+        <span className="f-count">{jobs.length}</span>
       </div>
       <div className="f-scroll" role="region" aria-label="Pipeline health" tabIndex={0}>
         <table className="f-table mon-table mon-pipes">
           <thead>
-            <tr><th scope="col">Pipeline</th><th scope="col">State</th><th scope="col"><Zoned>Latest run</Zoned></th><th scope="col"><Zoned>Last success</Zoned></th><th scope="col">Schedule</th><th scope="col">Failed runs</th></tr>
+            <tr><th scope="col">Pipeline</th><th scope="col">State</th><th scope="col"><Zoned>Latest run</Zoned></th><th scope="col">Took</th><th scope="col">Checks</th><th scope="col"><span className="sr-only">Details</span></th></tr>
           </thead>
-          <tbody>
-            {p.pipelines.map((x) => {
-              const run = x.latest_run;
+          {jobs.map((job) => {
+              const x = pipelines.find((y) => y.job === job);
+              const c = checks.find((y) => y.job === job);
+              const run = x?.latest_run;
+              const shown = open.includes(job);
+              const f = x && p.ok ? failedRuns(x, p, now, tz) : undefined;
               return (
-                <tr key={x.job}>
-                  <th scope="row"><JobLink stage={stage} job={x.job} /></th>
-                  <td><StatusBadge state={x.shown} /></td>
-                  <td>{run ? <>{RUN_WORD[run.status] ?? run.status} · <Time at={seconds(run.ended_at ?? run.started_at ?? run.created_at)} now={now} bare /><span className="mon-why"><RunLink stage={stage} run={run.run_id} label={short(run.run_id)} /></span></> : "No run in the window"}</td>
-                  <td>{x.freshness.last_success_at ? <Time at={x.freshness.last_success_at} now={now} bare /> : "None on record"}</td>
-                  <td>{x.schedule.status === "absent" ? SCHEDULE.absent : <>{SCHEDULE[x.schedule.status]}<span className="mon-why f-mono">{x.schedule.name && <Breakable text={x.schedule.name} />}</span></>}</td>
-                  <td className="f-mono mon-failed">{(() => {
-                    const f = failedRuns(x, p, now, tz);
-                    const text = f.failedIn
-                      ? <Link className="run-link" to={runsHref(stage, x.job, f.failedIn)} aria-label={`${f.text}: open the failed runs of ${x.job}`}>{f.text}</Link>
-                      : f.text;
-                    return <>{text}{f.why && <span className="mon-why">{f.why}</span>}</>;
-                  })()}</td>
-                </tr>
+                <tbody key={job}>
+                  <tr>
+                    <th scope="row"><JobLink stage={stage} job={job} /></th>
+                    <td><StatusBadge state={x?.shown ?? c!.state} /></td>
+                    <td>{run ? <>{RUN_WORD[run.status] ?? run.status} · <Time at={seconds(run.ended_at ?? run.started_at ?? run.created_at)} now={now} bare /></> : x ? "No run in the window" : "—"}</td>
+                    <td className="f-mono">{run && run.started_at !== null && run.ended_at !== null ? duration(run.ended_at - run.started_at) : "—"}</td>
+                    <td className="mon-checks">
+                      {c ? <>
+                        {c.counts ? checksShort(c.counts) : "Counts unknown"}
+                        {c.complete === false && <span className="mon-tag">Incomplete</span>}
+                        {c.state !== "healthy" && <> <StatusBadge state={c.state} /></>}
+                      </> : "—"}
+                    </td>
+                    <td><button type="button" className="f-link" aria-expanded={shown} aria-label={`Details of ${job}`} onClick={() => toggle(job)}>{shown ? "Hide" : "Details"}</button></td>
+                  </tr>
+                  {shown && (
+                    <tr className="mon-detail">
+                      <td colSpan={6}>
+                        <dl>
+                          {x && <>
+                            <div><dt>Last success</dt><dd>{x.freshness.last_success_at ? <Time at={x.freshness.last_success_at} now={now} /> : "None on record"}</dd></div>
+                            <div><dt>Schedule</dt><dd>{x.schedule.status === "absent" ? SCHEDULE.absent : <>{SCHEDULE[x.schedule.status]}{x.schedule.name && <> · <span className="f-mono"><Breakable text={x.schedule.name} /></span></>}</>}</dd></div>
+                            <div><dt>Failed runs</dt><dd>
+                              {f?.failedIn ? <Link className="run-link" to={runsHref(stage, job, f.failedIn)} aria-label={`${f.text}: open the failed runs of ${job}`}>{f.text}</Link> : f?.text}
+                              {f?.why && <span className="mon-why">{f.why}</span>}
+                            </dd></div>
+                          </>}
+                          {run && <div><dt>Latest run</dt><dd><RunLink stage={stage} run={run.run_id} label={short(run.run_id)} /></dd></div>}
+                          {c && <>
+                            <div><dt>Product</dt><dd className="f-mono">{c.domain ? `${c.domain} · ` : ""}{c.product ?? c.job}</dd></div>
+                            <div><dt>Quality</dt><dd>
+                              {c.counts ? countsLine(c.counts) : "Counts unknown"}
+                              <span className="mon-why mon-quality-why">{qualityWhy(c)}</span>
+                              {c.run_id ? <span className="mon-why"><Time at={c.observed_at} now={now} /> · <RunLink stage={stage} run={c.run_id} /></span> : <span className="mon-why">No run</span>}
+                            </dd></div>
+                          </>}
+                        </dl>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
               );
             })}
-          </tbody>
         </table>
       </div>
     </section>

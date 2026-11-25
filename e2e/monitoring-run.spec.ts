@@ -4,12 +4,18 @@ import { shoot } from "./shots";
 const FAILED = "c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21";
 const LEDGER = "e5d27b8c-0f41-4a9e-b6c3-1d8a2f7e9b05"; // finance_ledger: crossed midnight, incomplete manifest
 const CRM = "4be0c1a9-2d7f-4c63-a1e8-5f3b9d0e7c42"; // crm_accounts: wrote no quality manifest
-const attention = (page: Page) => page.getByRole("region", { name: "What needs attention" });
+const attention = (page: Page) => page.getByRole("list", { name: "What needs attention" });
+/** One item of the list to act on, with its details opened. */
+async function openItem(page: Page, text: RegExp) {
+  const found = attention(page).getByRole("listitem").filter({ hasText: text });
+  await found.locator("summary").click();
+  return found;
+}
 const card = (page: Page, name: string) => page.getByRole("region", { name, exact: true });
 
 test("Needs attention opens the failed run with the keyboard; the screen names the step, the scope and links to Dagster", async ({ page }) => {
   await page.goto("/monitoring?stage=prod");
-  const link = attention(page).getByRole("row", { name: /Run failed/ }).getByRole("link", { name: "Open run c94cbcb0" });
+  const link = (await openItem(page, /Run failed/)).getByRole("link", { name: "Open run c94cbcb0" });
   await link.focus();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(new RegExp(`/monitoring/prod/runs/${FAILED}$`));
@@ -203,16 +209,17 @@ test("an API without log_retention_days reads the run's day from list_logs, at w
 
 test("an incident and a pipelines row link to their run", async ({ page }) => {
   await page.goto("/monitoring?stage=prod");
-  await expect(attention(page).getByRole("row", { name: /Quality check failed/ }).getByRole("link", { name: "Open run c94cbcb0" }))
+  await expect((await openItem(page, /Quality check failed/)).getByRole("link", { name: "Open run c94cbcb0" }))
     .toHaveAttribute("href", `/monitoring/prod/runs/${FAILED}`);
-  await page.getByRole("region", { name: "Pipeline health" }).getByRole("row", { name: /crm_accounts/ }).getByRole("link", { name: "Open run 4be0c1a9" }).click();
+  await page.getByRole("button", { name: "Details of crm_accounts" }).click();
+  await page.getByRole("region", { name: "Pipeline health" }).getByRole("link", { name: "Open run 4be0c1a9" }).first().click();
   await expect(page.getByRole("heading", { level: 1, name: "crm · accounts" })).toBeVisible();
   await expect(card(page, "What failed")).toContainText("This run succeeded: nothing failed.");
 });
 
 test("an expected run that did not start shows when it was due", async ({ page }) => {
   await page.goto("/monitoring?stage=prod");
-  await expect(attention(page).getByRole("row", { name: /Expected run did not start/ })).toContainText(/due \d\d:\d\d/);
+  await expect(attention(page).getByRole("listitem").filter({ hasText: /Expected run did not start/ })).toContainText(/due \d\d:\d\d/);
 });
 
 test("a stage whose run routes answer 403 shows the API's words as Disabled, with no retry", async ({ page }) => {

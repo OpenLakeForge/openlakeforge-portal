@@ -39,15 +39,16 @@ export function Zoned({ children }: { children: React.ReactNode }) {
 export function ZoneSwitch() {
   const tz = useTimeZone();
   const local = tz.local ? `Local (${zoneLabel(tz.local)})` : "Local";
-  const options = [{ value: "utc", label: "UTC" }, { value: "local", label: local }] as const;
+  // The switch shows "Local"; the zone's name is its accessible name and its tooltip, so the head stays one line.
+  const options = [{ value: "utc", label: "UTC", words: "UTC" }, { value: "local", label: local, words: "Local" }] as const;
   return (
     <fieldset className="mc-range mon-stage mon-zone">
       <legend className="q-label">Time zone</legend>
       <div className="mc-segments">
         {options.map((o) => (
-          <label key={o.value}>
+          <label key={o.value} title={o.label}>
             <input type="radio" name="mon-zone" value={o.value} checked={tz.choice === o.value} onChange={() => setZoneChoice(o.value)} aria-label={o.label} />
-            <span aria-hidden="true">{o.label}</span>
+            <span aria-hidden="true">{o.words}</span>
           </label>
         ))}
       </div>

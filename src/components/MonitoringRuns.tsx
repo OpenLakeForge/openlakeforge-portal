@@ -12,13 +12,17 @@ import {
   ApiError, gate, getMonitoringCapabilities, getPipelinesHealth, listRuns, runsGate, RUNS_LIMIT,
   type Gate, type HealthRange, type HealthState, type MonitoringCapabilities, type PipelinesHealth, type Run, type Runs,
 } from "../lib/health-api";
+import { coverage, IN_PROGRESS, matchesStatus, RUN_FILTERS, type RunFilter } from "../lib/runs";
 import { seconds } from "../lib/time";
 import { DEADLINE_MS } from "./Monitoring";
 import { pipes, RunLink, type Part } from "./MonitoringPipelines";
 import { duration, runState } from "./MonitoringRun";
 import { MonitoringViews } from "./MonitoringViews";
 import { StatusBadge } from "./StatusBadge";
-import { Ago, Time, Zoned, ZoneSwitch } from "./Time";
+import { Fresh, MonitoringHead } from "./MonitoringHead";
+import { Time, Zoned } from "./Time";
+
+export { coverage, matchesStatus, RUN_FILTERS, type RunFilter };
 
 export const RUN_WINDOWS: readonly HealthRange[] = ["1h", "6h", "24h", "7d"];
 /** The window a page opens with: the health routes' default. */
@@ -26,20 +30,8 @@ export const DEFAULT_WINDOW: HealthRange = "24h";
 const WINDOW_SECONDS: Record<HealthRange, number> = { "1h": 3600, "6h": 6 * 3600, "24h": 24 * 3600, "7d": 7 * 24 * 3600 };
 const WINDOW_WORDS: Record<HealthRange, string> = { "1h": "1 hour", "6h": "6 hours", "24h": "24 hours", "7d": "7 days" };
 
-export type RunFilter = "failed" | "succeeded" | "in_progress";
-export const RUN_FILTERS: readonly RunFilter[] = ["failed", "succeeded", "in_progress"];
 const FILTER_WORDS: Record<RunFilter | "", string> = { "": "All", failed: "Failed", succeeded: "Succeeded", in_progress: "In progress" };
-/** Dagster's statuses of a run that has not ended. `CANCELED` ends a run without success or failure: it shows under All only. */
-const IN_PROGRESS = new Set(["QUEUED", "NOT_STARTED", "MANAGED", "STARTING", "STARTED", "CANCELING"]);
 const NOT_STARTED = new Set(["QUEUED", "NOT_STARTED", "MANAGED", "STARTING"]);
-
-/** Whether a run's Dagster status is the one `filter` asks for. */
-export function matchesStatus(status: string, filter: RunFilter | ""): boolean {
-  if (filter === "failed") return status === "FAILURE";
-  if (filter === "succeeded") return status === "SUCCESS";
-  if (filter === "in_progress") return IN_PROGRESS.has(status);
-  return true;
-}
 
 const STATUS_WORD: Record<string, string> = {
   SUCCESS: "Succeeded", FAILURE: "Failed", CANCELED: "Canceled", CANCELING: "Canceling", STARTED: "Running", QUEUED: "Queued",
@@ -55,13 +47,6 @@ export function runsHref(stage: string, f: { job?: string; product?: string; sta
   if (f.window && f.window !== DEFAULT_WINDOW) q.set("window", f.window);
   const s = q.toString();
   return `/monitoring/${encodeURIComponent(stage)}/runs${s ? `?${s}` : ""}`;
-}
-
-/** What the read covers of the window: everything, or only back to its oldest run when it reached the limit first. */
-export function coverage(runs: Run[], limit: number, windowStart: number): { complete: boolean; oldest: number | null; coveredFrom: number | null } {
-  const oldest = runs.length ? Math.min(...runs.map((r) => r.created_at)) : null;
-  const complete = runs.length < limit;
-  return { complete, oldest, coveredFrom: !complete && oldest !== null && oldest > windowStart ? oldest : null };
 }
 
 const failure = (e: unknown) => (e instanceof ApiError ? e : new ApiError(0, String(e)));
@@ -206,6 +191,7 @@ export function MonitoringRuns({ stage, stages }: { stage: string; stages: strin
   const pipesWhy = pipesRead && !pipesRead.ok ? pipesRead.reason : "";
 
   let body;
+  let stagePicker: React.ReactNode;
   if (stages.length === 0) {
     body = <p className="empty"><span className="label">No stages</span>This deployment has no stage to monitor yet.</p>;
   } else if (caps.status === "loading") {
@@ -235,16 +221,18 @@ export function MonitoringRuns({ stage, stages }: { stage: string; stages: strin
         scopeOf={scopeOf} pipesWhy={pipesWhy} productKnown={!!pipelines} />;
     }
     const refused = !offered.includes(stage);
+    stagePicker = (
+      <label className="mon-stage">
+        <span className="q-label">Stage</span>
+        <select className="q-select" value={stage} onChange={(e) => pick({ stage: e.target.value })}>
+          {offered.map((s) => <option key={s} value={s}>{s.toUpperCase()}</option>)}
+          {refused && <option value={stage}>{STAGE} · no access</option>}
+        </select>
+      </label>
+    );
     body = (
       <>
         <div className="q-context mc-context rl-context">
-          <label>
-            <span className="q-label">Stage</span>
-            <select className="q-select" value={stage} onChange={(e) => pick({ stage: e.target.value })}>
-              {offered.map((s) => <option key={s} value={s}>{s.toUpperCase()}</option>)}
-              {refused && <option value={stage}>{STAGE} · no access</option>}
-            </select>
-          </label>
           {access && runsOpen?.open && (
             <>
               <label>
@@ -278,25 +266,13 @@ export function MonitoringRuns({ stage, stages }: { stage: string; stages: strin
 
   return (
     <>
-      <div className="q-head">
-        <div>
-          <h1>Monitoring</h1>
-          <p className="f-sub">Every run of the stage's pipelines, newest first, each linked to what happened in it.</p>
-        </div>
-        <div className="mon-head-end">
-          <ZoneSwitch />
-          {snap?.runs.status === "ok" && (
-            <div className="mc-actions">
-              <div className="q-engine" role="status">
-                <span className="icon"><img src="/icons/clock.svg" alt="" width="20" height="20" loading="lazy" /></span>
-                <span><strong>Read <Ago at={snap.at} now={now} /></strong><span className="label">Last {WINDOW_WORDS[win]}</span></span>
-              </div>
-              <button type="button" className="f-btn f-outline" onClick={refresh}><span aria-hidden="true">↻</span> Refresh</button>
-            </div>
-          )}
-        </div>
+      <MonitoringHead>
+        {snap?.runs.status === "ok" && <Fresh at={snap.at} now={now} onRefresh={refresh} title={`Last ${WINDOW_WORDS[win]}`} />}
+      </MonitoringHead>
+      <div className="mon-bar">
+        <MonitoringViews stage={stage} />
+        {stagePicker}
       </div>
-      <MonitoringViews stage={stage} />
       {body}
     </>
   );
@@ -383,13 +359,12 @@ function RunsTable({ stage, runs, at, now, filters, scopeOf, pipesWhy, productKn
       <div className="f-card-head">
         <div className="mc-head">
           <h2 id="rl-h">Runs</h2>
-          <span className="mon-why">{what}</span>
+          <span className="sr-only">{what}</span>
         </div>
         <span className="f-count" aria-label={`${shown.length} shown`}>{shown.length}</span>
       </div>
-      <div className="rl-notes">
-        <p className="mon-note">{read}</p>
-        <p className="mon-note">The API filters runs by pipeline only: status{productKnown ? ", product" : ""} and window are applied here, to the runs read.</p>
+      {(!cover.complete || pipesWhy || productIgnored) && <div className="rl-notes">
+        {!cover.complete && <p className="mon-note">{read}</p>}
         {pipesWhy && <p className="mon-note">Domain and product cannot be shown: {pipesWhy}</p>}
         {productIgnored && (
           <p className="mon-note" id="rl-product-why">
@@ -397,7 +372,7 @@ function RunsTable({ stage, runs, at, now, filters, scopeOf, pipesWhy, productKn
             <strong className="rl-short">The product filter <span className="f-mono">{filters.product}</span> is not applied</strong>: a run's product cannot be determined, so runs of every product are listed.
           </p>
         )}
-      </div>
+      </div>}
       {table}
     </section>
   );

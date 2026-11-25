@@ -129,7 +129,7 @@ describe("MonitoringLogs", () => {
     open("/monitoring/dev/logs?date=2026-11-19&hour=14&pod=trino-coordinator-0");
     const r = await rows();
     expect(r).toHaveLength(5);
-    expect(r[1]).toHaveTextContent(/14:03:00\.339\s*INFO\s*trino-coordinator-0\s*trino\s*Query 0001_03/);
+    expect(r[1]).toHaveTextContent(/14:03:00\.339\s*INFO\s*trino\s*trino-coordinator-0\s*Query 0001_03/);
     expect(within(r[3]).getByRole("link", { name: "Run 8ad7e2f8's window" })).toHaveAttribute("href", "/monitoring/dev/logs?run=8ad7e2f8-0000-4000-a000-000000000000");
     expect(within(r[0]).getByRole("link", { name: "Filter to dagster-daemon-5f7c9" })).toHaveAttribute("href", "/monitoring/dev/logs?date=2026-11-19&hour=14&pod=dagster-daemon-5f7c9");
     expect(r[4]).toHaveTextContent("Unreadable record: the record is not valid JSON");

@@ -15,7 +15,8 @@ import { hasSamples, MetricPlot, shape, type LineRule } from "./MetricChart";
 import { DEADLINE_MS } from "./Monitoring";
 import { MonitoringViews } from "./MonitoringViews";
 import { StatusBadge } from "./StatusBadge";
-import { Ago, Time, ZoneSwitch } from "./Time";
+import { Fresh, MonitoringHead } from "./MonitoringHead";
+import { Time } from "./Time";
 
 /** The range a page opens with: the health routes' default window. */
 export const DEFAULT_RANGE: MetricRange = "24h";
@@ -270,6 +271,7 @@ export function MonitoringMetrics({ stages }: { stages: string[] }) {
   const STAGE = stage?.toUpperCase() ?? "";
 
   let body;
+  let stagePicker: React.ReactNode;
   if (stages.length === 0) {
     body = <p className="empty"><span className="label">No stages</span>This deployment has no stage to monitor yet.</p>;
   } else if (caps.status === "loading") {
@@ -297,16 +299,18 @@ export function MonitoringMetrics({ stages }: { stages: string[] }) {
     } else {
       charts = <Charts access={access} catalog={catalog.data} range={range} attempt={attempt} />;
     }
+    stagePicker = (
+      <label className="mon-stage">
+        <span className="q-label">Stage</span>
+        <select className="q-select" value={stage} onChange={(e) => pick({ stage: e.target.value })}>
+          {offered.map((s) => <option key={s} value={s}>{s.toUpperCase()}</option>)}
+          {refused && <option value={refused}>{refused.toUpperCase()} · no access</option>}
+        </select>
+      </label>
+    );
     body = (
       <>
         <div className="q-context mc-context">
-          <label>
-            <span className="q-label">Stage</span>
-            <select className="q-select" value={stage} onChange={(e) => pick({ stage: e.target.value })}>
-              {offered.map((s) => <option key={s} value={s}>{s.toUpperCase()}</option>)}
-              {refused && <option value={refused}>{refused.toUpperCase()} · no access</option>}
-            </select>
-          </label>
           <fieldset className="mc-range">
             <legend className="q-label">Range</legend>
             <div className="mc-segments">
@@ -326,25 +330,13 @@ export function MonitoringMetrics({ stages }: { stages: string[] }) {
 
   return (
     <>
-      <div className="q-head">
-        <div>
-          <h1>Monitoring</h1>
-          <p className="f-sub">History of the platform's resources, its query engine and its pipelines, per stage.</p>
-        </div>
-        <div className="mon-head-end">
-          <ZoneSwitch />
-          {catalog.status === "ok" && access && (
-            <div className="mc-actions">
-              <div className="q-engine" role="status">
-                <span className="icon"><img src="/icons/clock.svg" alt="" width="20" height="20" loading="lazy" /></span>
-                <span><strong>Read <Ago at={catalog.data.observed_at} now={now} /></strong><span className="label">Last {RANGE_WORDS[range]}</span></span>
-              </div>
-              <button type="button" className="f-btn f-outline" onClick={refresh}><span aria-hidden="true">↻</span> Refresh</button>
-            </div>
-          )}
-        </div>
+      <MonitoringHead>
+        {catalog.status === "ok" && access && <Fresh at={catalog.data.observed_at} now={now} onRefresh={refresh} title={`Last ${RANGE_WORDS[range]}`} />}
+      </MonitoringHead>
+      <div className="mon-bar">
+        <MonitoringViews stage={stage ?? asked ?? undefined} />
+        {stagePicker}
       </div>
-      <MonitoringViews stage={stage ?? asked ?? undefined} />
       {body}
     </>
   );

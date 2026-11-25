@@ -8,6 +8,7 @@
 // &container=&component=&product=&level=info|warning|error|critical&q=<text>, and in run mode match_run=true (only the
 // run's own lines). With no date and no run it opens on the current UTC hour; a date with no hour is the whole UTC day.
 
+import { message, plain } from "../lib/log-line";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import {
@@ -18,7 +19,8 @@ import { DEADLINE_MS } from "./Monitoring";
 import { runHref } from "./MonitoringPipelines";
 import { OLDER_FLOORS, RUN_DEADLINE_MS, SEVERITY_LABEL, type Floor } from "./MonitoringRun";
 import { dayKey, formatDate, useTimeZone } from "../lib/time";
-import { Time, Zoned, ZoneSwitch } from "./Time";
+import { MonitoringHead } from "./MonitoringHead";
+import { Time, Zoned } from "./Time";
 import { MonitoringViews } from "./MonitoringViews";
 import { StatusBadge } from "./StatusBadge";
 
@@ -299,6 +301,7 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
   const shown = data ? search(data.lines, q) : [];
 
   let body;
+  let stagePicker: React.ReactNode;
   if (stages.length === 0) {
     body = <p className="empty"><span className="label">No stages</span>This deployment has no stage to monitor yet.</p>;
   } else if (caps.status === "loading") {
@@ -341,37 +344,59 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
     const floors = older ? OLDER_FLOORS : FLOORS;
     const lines = data?.lines ?? [];
     const seen = (f: (l: LogLine) => string | null | undefined) => [...new Set(lines.map(f).filter((x): x is string => !!x))].sort();
+    const active = ([["product", run ? undefined : product], ["pod", pod], ["container", container], ["component", component]] as const)
+      .filter((f): f is [typeof f[0], string] => !!f[1]);
+    const searchWarns = noSearch || !!(q.trim() && !sendable(q));
+    stagePicker = (
+      <label className="mon-stage">
+        <span className="q-label">Stage</span>
+        <select className="q-select" value={stage} onChange={(e) => switchStage(e.target.value)}>
+          {offered.map((s) => <option key={s} value={s}>{s.toUpperCase()}</option>)}
+          {refused && <option value={stage}>{STAGE} · no access</option>}
+        </select>
+      </label>
+    );
     body = (
       <>
-        <div className="q-context mc-context rl-context lg-context">
-          <label>
-            <span className="q-label">Stage</span>
-            <select className="q-select" value={stage} onChange={(e) => switchStage(e.target.value)}>
-              {offered.map((s) => <option key={s} value={s}>{s.toUpperCase()}</option>)}
-              {refused && <option value={stage}>{STAGE} · no access</option>}
-            </select>
-          </label>
-          {open && run && (
-            <div className="lg-run" role="group" aria-label="Run">
-              <span className="q-label">Run</span>
-              <span className="lg-run-chip">
-                <span className="f-mono">{short(run)}</span>
-                <Link className="run-link" to={runHref(stage, run)}>Run screen</Link>
-                <button type="button" className="f-link" onClick={() => pick({ run: undefined, date: date ?? data?.day ?? (data?.since ? dayOf(data.since) : undefined) })}>
-                  Browse the stage instead
-                </button>
-              </span>
-            </div>
-          )}
-          {open && (
-            <>
+        {open && (
+          <>
+            <div className="lg-bar">
+              <label className="lg-search">
+                <span className="sr-only">Search</span>
+                <input className="q-select lg-q" type="search" value={q} placeholder="Search log lines…" aria-describedby="lg-search-note"
+                  onChange={(e) => pick({ q: e.target.value || undefined }, { replace: true })} />
+              </label>
+              <details className="lg-add">
+                <summary className="f-btn f-outline">+ Filter</summary>
+                <form className="lg-filters" aria-label="Filters"
+                  key={JSON.stringify([product, pod, container, component, run])}
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const f = new FormData(e.currentTarget);
+                    const val = (k: string) => String(f.get(k) ?? "").trim() || undefined;
+                    e.currentTarget.closest("details")?.removeAttribute("open");
+                    pick({ product: run ? product : val("product"), pod: val("pod"), container: val("container"), component: val("component") });
+                  }}>
+                  {!run && <Field name="product" label="Product" value={product} options={seen((l) => l.product)} />}
+                  <Field name="pod" label="Pod" value={pod} options={seen((l) => l.pod)} />
+                  <Field name="container" label="Container" value={container} options={seen((l) => l.container)} />
+                  <Field name="component" label="Component" value={component} options={seen((l) => l.component)} />
+                  <button type="submit" className="f-btn f-outline">Apply</button>
+                </form>
+              </details>
               <label>
-                <span className="q-label">Day (UTC)</span>
+                <span className="sr-only">Level</span>
+                <select className="q-select" value={levelSent ?? ""} onChange={(e) => pick({ level: (e.target.value || undefined) as Floor | undefined })}>
+                  {floors.map((k) => <option key={k} value={k}>{SEVERITY_LABEL[k]}</option>)}
+                </select>
+              </label>
+              <label>
+                <span className="sr-only">Day (UTC)</span>
                 <input className="q-select lg-date" type="date" value={date ?? ""} max={today} min={retention !== null ? addDays(today, -retention) : undefined}
                   onChange={(e) => e.target.value && isDay(e.target.value) ? pick({ date: e.target.value }) : run && pick({ date: undefined, hour: undefined })} />
               </label>
               <label>
-                <span className="q-label">Hour (UTC)</span>
+                <span className="sr-only">Hour (UTC)</span>
                 <select className="q-select lg-hour" value={hour === undefined ? "" : String(hour)} disabled={!date}
                   onChange={(e) => pick({ date, hour: e.target.value === "" ? undefined : Number(e.target.value) })}>
                   <option value="">{run && !date ? "The run's window" : "Whole day"}</option>
@@ -380,42 +405,33 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
                   ))}
                 </select>
               </label>
-              <label>
-                <span className="q-label">Level</span>
-                <select className="q-select" value={levelSent ?? ""} onChange={(e) => pick({ level: (e.target.value || undefined) as Floor | undefined })}>
-                  {floors.map((k) => <option key={k} value={k}>{SEVERITY_LABEL[k]}</option>)}
-                </select>
-              </label>
-            </>
-          )}
-        </div>
-        {open && (
-          <form className="lg-filters" aria-label="Filters"
-            key={JSON.stringify([product, pod, container, component, run])}
-            onSubmit={(e) => {
-              e.preventDefault();
-              const f = new FormData(e.currentTarget);
-              const val = (k: string) => String(f.get(k) ?? "").trim() || undefined;
-              pick({ product: run ? product : val("product"), pod: val("pod"), container: val("container"), component: val("component") });
-            }}>
-            {!run && <Field name="product" label="Product" value={product} options={seen((l) => l.product)} />}
-            <Field name="pod" label="Pod" value={pod} options={seen((l) => l.pod)} />
-            <Field name="container" label="Container" value={container} options={seen((l) => l.container)} />
-            <Field name="component" label="Component" value={component} options={seen((l) => l.component)} />
-            <button type="submit" className="f-btn f-outline">Apply</button>
-            {(product || pod || container || component) && (
-              <button type="button" className="f-link" onClick={() => pick({ product: undefined, pod: undefined, container: undefined, component: undefined })}>Clear filters</button>
+              <span className="q-label lg-utc" aria-hidden="true">UTC</span>
+            </div>
+            {(run || active.length > 0) && (
+              <div className="lg-chips">
+                {run && (
+                  <div className="lg-run" role="group" aria-label="Run">
+                    <span className="lg-run-chip">
+                      <span className="f-mono">run {short(run)}</span>
+                      <Link className="run-link" to={runHref(stage, run)}>Run screen</Link>
+                      <button type="button" className="f-link" onClick={() => pick({ run: undefined, date: date ?? data?.day ?? (data?.since ? dayOf(data.since) : undefined) })}>
+                        Browse the stage instead
+                      </button>
+                    </span>
+                  </div>
+                )}
+                {active.map(([name, value]) => (
+                  <button key={name} type="button" className="lg-chip f-mono" aria-label={`Remove filter ${name} ${value}`} onClick={() => pick({ [name]: undefined })}>
+                    {name}: {value} <span aria-hidden="true">×</span>
+                  </button>
+                ))}
+                {active.length > 0 && (
+                  <button type="button" className="f-link" onClick={() => pick({ product: undefined, pod: undefined, container: undefined, component: undefined })}>Clear filters</button>
+                )}
+              </div>
             )}
-          </form>
-        )}
-        {open && (
-          <div className="lg-search">
-            <label>
-              <span className="q-label">Search</span>
-              <input className="q-select lg-q" type="search" value={q} placeholder="Text in a line…" aria-describedby="lg-search-note"
-                onChange={(e) => pick({ q: e.target.value || undefined }, { replace: true })} />
-            </label>
-            <p className="mon-note" id="lg-search-note">
+            {/* What the search covers is worth a visible line only when it does not cover the archive. */}
+            <p className={searchWarns ? "mon-note" : "sr-only"} id="lg-search-note">
               <SearchNote q={q} data={data} noSearch={noSearch} />
             </p>
             {runMode === "window" && (
@@ -430,7 +446,7 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
                 </span>
               </div>
             )}
-          </div>
+          </>
         )}
         {view.ignored.length > 0 && (
           <p className="mon-note lg-ignored">Not understood, so not applied: <span className="f-mono">{view.ignored.join(", ")}</span>.</p>
@@ -442,16 +458,11 @@ export function MonitoringLogs({ stage, stages }: { stage: string; stages: strin
 
   return (
     <>
-      <div className="q-head">
-        <div>
-          <h1>Monitoring</h1>
-          <p className="f-sub">The stage's archived pod logs, by UTC day and hour, or one run's window.</p>
-        </div>
-        <div className="mon-head-end">
-          <ZoneSwitch />
-        </div>
+      <MonitoringHead />
+      <div className="mon-bar">
+        <MonitoringViews stage={stage} />
+        {stagePicker}
       </div>
-      <MonitoringViews stage={stage} />
       {body}
     </>
   );
@@ -507,6 +518,9 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
   const tz = useTimeZone();
   const today = utcToday(now);
   const region = useRef<HTMLDivElement | null>(null);
+  const [openLines, setOpenLines] = useState<number[]>([]);
+  useEffect(() => setOpenLines([]), [data.lines[0]]);
+  const toggle = (i: number) => setOpenLines((o) => (o.includes(i) ? o.filter((x) => x !== i) : [...o, i]));
   const filtered = !!(view.pod || view.container || view.component || (!run && view.product));
 
   // Where the lines come from, in words: the day and hour, or the run's window.
@@ -533,8 +547,9 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
   /** ↑ ↓ Home End move between lines once one has focus, or from the region itself. */
   const keys = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const rows = [...(region.current?.querySelectorAll<HTMLTableRowElement>("tr[data-line]") ?? [])];
-    if (!rows.length || !["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
     const at = rows.indexOf(document.activeElement as HTMLTableRowElement);
+    if (at >= 0 && e.key === "Enter") { e.preventDefault(); toggle(Number(rows[at].dataset.line)); return; }
+    if (!rows.length || !["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
     const to = e.key === "Home" ? 0 : e.key === "End" ? rows.length - 1 : at < 0 ? (e.key === "ArrowDown" ? 0 : -1) : at + (e.key === "ArrowDown" ? 1 : -1);
     if (to < 0 || to >= rows.length) return;
     e.preventDefault();
@@ -591,25 +606,32 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
         rows.push(<tr key={`day-${i}`} className="run-day"><th scope="rowgroup" colSpan={4}><time dateTime={lineDay}>{formatDate(ts, tz.zone, now)}</time> ({tz.label})</th></tr>);
       }
       const lv = l.level ?? null;
+      const open = openLines.includes(i);
       rows.push(
-        <tr key={i} data-line="" tabIndex={-1}>
+        <tr key={i} data-line={i} tabIndex={-1} className={open ? "lg-open" : undefined}>
           <td className="f-mono run-time">{ts && <Time at={ts} now={now} bare clock precision="millisecond" />}</td>
           <td>{lv && <span className="run-level" data-level={lv}>{lv.toUpperCase()}</span>}</td>
           <td className="lg-where">
-            <Link className="run-link f-mono" to={logsHref(stage, { run, date, hour, pod: l.pod, level })} aria-label={`Filter to ${l.pod}`}>{l.pod}</Link>
-            <span className="mon-why f-mono">{l.container}</span>
-            {l.run_id && l.run_id !== run && (
-              <Link className="run-link lg-run-link" to={logsHref(stage, { run: l.run_id })} aria-label={`Run ${short(l.run_id)}'s window`}>run {short(l.run_id)}</Link>
-            )}
+            <span className="mon-why f-mono lg-container">{l.container}</span>
+            <span className="lg-extra">
+              <Link className="run-link f-mono" to={logsHref(stage, { run, date, hour, pod: l.pod, level })} aria-label={`Filter to ${l.pod}`}>{l.pod}</Link>
+              {l.run_id && l.run_id !== run && (
+                <Link className="run-link lg-run-link" to={logsHref(stage, { run: l.run_id })} aria-label={`Run ${short(l.run_id)}'s window`}>run {short(l.run_id)}</Link>
+              )}
+            </span>
           </td>
-          <td className="f-mono run-line">{l.line !== null ? <Marked text={l.line} q={q} /> : <span className="mon-why">Unreadable record: {l.error ?? "no reason given"}</span>}</td>
+          <td className="f-mono run-line">
+            {l.line !== null
+              ? <button type="button" className="lg-msg" tabIndex={-1} aria-expanded={open} onClick={() => toggle(i)}><Marked text={open ? plain(l.line) : message(l.line)} q={q} /></button>
+              : <span className="mon-why">Unreadable record: {l.error ?? "no reason given"}</span>}
+          </td>
         </tr>,
       );
     });
     table = (
       <div className="f-scroll run-log lg-log" role="region" aria-label={`${STAGE} log lines`} aria-describedby="lg-keys" tabIndex={0} ref={region} onKeyDown={keys}>
         <table className="f-table mon-table">
-          <thead><tr><th scope="col"><Zoned>Time</Zoned></th><th scope="col">Level</th><th scope="col">Pod · container</th><th scope="col">Line</th></tr></thead>
+          <thead><tr><th scope="col"><Zoned>Time</Zoned></th><th scope="col">Level</th><th scope="col">Source</th><th scope="col">Line</th></tr></thead>
           <tbody>{rows}</tbody>
         </table>
       </div>
@@ -661,7 +683,8 @@ function Lines({ stage, view, data, shown, older, more, onMore, retention, now, 
         {table}
         {truncation}
         <p className="mon-why run-foot" id="lg-keys">
-          <span className="label">Archive</span> Oldest first{retention !== null ? ` · Kept ${retention} day${retention === 1 ? "" : "s"}` : ""} · Tab to the lines, then ↑ ↓ to move between them
+          <span className="label">Archive</span> Oldest first{retention !== null ? ` · Kept ${retention} day${retention === 1 ? "" : "s"}` : ""}
+          <span className="sr-only"> · Tab to the lines, then ↑ ↓ to move between them and Enter to open one</span>
         </p>
       </div>
     </section>

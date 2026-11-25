@@ -158,8 +158,9 @@ describe("MonitoringRuns", () => {
     const link = within(r[2]).getByRole("link", { name: /^Open run / });
     expect(link).toHaveAttribute("href", expect.stringMatching(/^\/monitoring\/prod\/runs\/\d{8}-0000-4000-a000-0{12}$/));
     expect(runReads(fetch)).toEqual([`/api/v1/stages/prod/runs?limit=${RUNS_LIMIT}`]);
-    expect(screen.getByText(/Read all 7 runs Dagster holds/)).toBeInTheDocument();
-    expect(screen.getByText(/The API filters runs by pipeline only/)).toBeInTheDocument();
+    // A read that covers the whole window needs no note.
+    expect(screen.queryByText(/Read all 7 runs Dagster holds/)).toBeNull();
+    expect(screen.queryByText(/The API filters runs by pipeline only/)).toBeNull();
     expect(screen.getByRole("navigation", { name: "Monitoring views" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Runs" })).toHaveAttribute("aria-current", "page");
   });
@@ -174,7 +175,7 @@ describe("MonitoringRuns", () => {
     expect(screen.getByRole("combobox", { name: "Pipeline" })).toHaveValue("sales_orders");
     expect(screen.getByRole("radio", { name: "Failed runs" })).toBeChecked();
     expect(screen.getByRole("radio", { name: "Last 7 days" })).toBeChecked();
-    expect(screen.getByText((_, el) => !!el?.matches(".mc-head .mon-why") && el.textContent === "Failed runs of sales_orders created in the last 7 days")).toBeInTheDocument();
+    expect(screen.getByText((_, el) => !!el?.matches(".mc-head .sr-only") && el.textContent === "Failed runs of sales_orders created in the last 7 days")).toBeInTheDocument();
   });
 
   it("filters status and window in place, without a new read, and keeps them in the address", async () => {
@@ -307,7 +308,7 @@ describe("MonitoringRuns", () => {
     expect(screen.getByText(/Domain and product cannot be shown: Dagster could not be read/)).toBeInTheDocument();
     expect(screen.getByText(/runs of every product are listed/)).toHaveTextContent("The product filter orders is not applied");
     expect(screen.getByRole("combobox", { name: "Product" })).toBeDisabled();
-    expect(screen.getByText((_, el) => !!el?.matches(".mc-head .mon-why") && el.textContent === "Runs created in the last 24 hours")).toBeInTheDocument();
+    expect(screen.getByText((_, el) => !!el?.matches(".mc-head .sr-only") && el.textContent === "Runs created in the last 24 hours")).toBeInTheDocument();
   });
 
   it("switching stage goes to that stage's page, keeping status and window but not the pipeline", async () => {
