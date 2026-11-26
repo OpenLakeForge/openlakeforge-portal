@@ -636,8 +636,12 @@ function alertIncidents(stage: string, scenario: Scenario) {
     incidents: [
       incident("prod-sales-failed", "run_failed", "critical", ["sales", "sales_orders", null, null], 38 * 60, "latest run failed",
         ["c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21"], { status: "delivered", event: "opened", attempts: 1, receivers: 2, delivered: 2 }),
+      // One outcome per receiver: the GitHub discussion was posted, the on-call webhook keeps failing.
       incident("prod-sales-quality", "quality", "critical", ["sales", "sales_orders", "silver.orders", null], 38 * 60, "a blocking quality check failed",
-        ["c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21"], { status: "pending", event: "escalated", attempts: 2, receivers: 2, delivered: 1 }),
+        ["c94cbcb0-5d1e-4a8e-9f0b-2f6c1a7e3b21"], { status: "pending", event: "escalated", attempts: 14, receivers: 2, delivered: 1, targets: [
+          { receiver: "discussions", status: "delivered", attempts: 1, url: "https://github.com/orgs/OpenLakeForge/discussions/1441" },
+          { receiver: "on-call", status: "retrying", attempts: 13, url: null },
+        ] }),
       incident("prod-crm-missed", "missed_run", "critical", ["crm", "crm_accounts", null, null], 20 * 60, "an expected run did not start",
         [], { status: "undeliverable", event: "opened", attempts: 10, receivers: 1, delivered: 0 }),
       incident("prod-spool", "service_degraded", "warning", [null, null, null, "log-archive.spool-age"], 12 * 60, "No durable write for 12 min (limit 10 min)",

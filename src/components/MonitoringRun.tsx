@@ -15,10 +15,12 @@ import {
 } from "../lib/health-api";
 import { dayKey, formatClock, formatDate, seconds, toMs, useTimeZone } from "../lib/time";
 import { DEADLINE_MS } from "./Monitoring";
-import { alerts, DELIVERY, deliveryLine, IncidentRunbook, runbookUrl } from "./MonitoringAlerts";
+import { alerts, Delivery, IncidentRunbook, runbookUrl } from "./MonitoringAlerts";
+import { MonitoringHead } from "./MonitoringHead";
 import { absent, pipes, runHref, type Part } from "./MonitoringPipelines";
+import { MonitoringViews } from "./MonitoringViews";
 import { StatusBadge } from "./StatusBadge";
-import { Ago, Time, Zoned, ZoneSwitch } from "./Time";
+import { Ago, Time, Zoned } from "./Time";
 
 export { duration };
 
@@ -600,7 +602,7 @@ function Incidents({ a, runId, job, now, retry }: { a: Part<StageAlertIncidents>
                   <span>
                     <span className="mon-what">{i.summary}</span>
                     <span className="mon-why f-mono">{i.condition}{i.table ? ` · ${i.table}` : ""} · opened <Time at={i.opened_at} now={now} /> · last seen <Ago at={i.last_seen_at} now={now} /></span>
-                    <span className="mon-why"><span className="mon-delivery" data-status={i.delivery.status}>{DELIVERY[i.delivery.status]}</span> {deliveryLine(i.delivery)}</span>
+                    <div className="mon-why run-delivery"><Delivery d={i.delivery} /></div>
                     <IncidentRunbook incident={i} />
                   </span>
                 </li>
@@ -755,19 +757,15 @@ export function MonitoringRun({ stage, runId, dagster }: { stage: string; runId:
   const notYet = run && run.started_at === null && ["QUEUED", "NOT_STARTED", "STARTING"].includes(run.status);
   return (
     <>
-      <nav aria-label="Breadcrumb">
-        <ol className="f-crumbs run-crumbs label">
-          <li><Link to="/monitoring">Monitoring</Link></li>
-          <li aria-hidden="true">/</li>
-          <li><Link to={`/monitoring?stage=${encodeURIComponent(stage)}`}>{STAGE}</Link></li>
-          {scope && <><li aria-hidden="true">/</li><li>{scope}</li></>}
-          <li aria-hidden="true">/</li>
-          <li className="f-current" aria-current="page">Run {short(runId)}</li>
-        </ol>
-      </nav>
+      {/* The Monitoring head and tabs, as on every Monitoring view: a run is one of the stage's Runs. */}
+      <MonitoringHead />
+      <div className="mon-bar">
+        <MonitoringViews stage={stage} />
+      </div>
+      <Link className="run-back" to={`/monitoring/${encodeURIComponent(stage)}/runs`} aria-label="Back to Runs"><span aria-hidden="true">←</span> Runs</Link>
       <div className="q-head run-head">
         <div>
-          <h1>{scope ?? job ?? `Run ${short(runId)}`}</h1>
+          <h2 className="run-title">{scope ?? job ?? `Run ${short(runId)}`}</h2>
           <p className="f-sub">
             {job ? <>Pipeline <span className="f-mono">{job}</span></> : <>Run <span className="f-mono">{runId}</span></>}
             {started !== undefined && <> · started <Time at={seconds(started)} now={now} /></>}
@@ -776,10 +774,7 @@ export function MonitoringRun({ stage, runId, dagster }: { stage: string; runId:
           </p>
         </div>
         {/* With a failure to summarize, its card carries the link; otherwise the run is still one click from Dagster. */}
-        <div className="mon-head-end">
-          <ZoneSwitch />
-          {snap?.failure.status !== "ok" && <OpenInDagster url={dagster} runId={runId} />}
-        </div>
+        {snap?.failure.status !== "ok" && <div className="mon-head-end"><OpenInDagster url={dagster} runId={runId} /></div>}
       </div>
       <ul className="run-chips" aria-label="Run">
         <li><StatusBadge state={state} /></li>

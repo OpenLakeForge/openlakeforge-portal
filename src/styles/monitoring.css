@@ -47,6 +47,11 @@
 }
 .mon-card-top { display: flex; align-items: center; justify-content: space-between; gap: var(--olf-space-3); }
 .mon-card-top h2 { margin: 0; font-size: 0.6875rem; }
+/* A card whose title is a link is clickable as a whole; an active filter card is outlined. */
+.mon-gauge-link { position: relative; }
+.mon-gauge-link h2 a::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+.mon-gauge-link:hover { border-color: var(--olf-border-strong); }
+.mon-gauge[data-active] { border-color: var(--olf-accent); }
 .mon-note { margin: 0; color: var(--olf-text-muted); font-size: 0.75rem; overflow-wrap: anywhere; }
 
 .mon-list .f-card-head { background: var(--olf-bg-raised); }
@@ -100,6 +105,13 @@ label.mon-stage .q-select { width: auto; min-width: 6rem; }
 .mon-delivery[data-status="delivered"] { color: var(--olf-success); }
 .mon-delivery[data-status="undeliverable"] { color: var(--olf-danger); }
 .mon-delivery[data-status="unrouted"] { color: var(--olf-warning); }
+/* One line per receiver of an incident's notification. */
+.mon-targets { margin: 0.1875rem 0 0; padding: 0; list-style: none; }
+.mon-targets li { margin-top: 0.125rem; }
+.mon-targets li[data-status="rejected"], .mon-targets li[data-status="expired"] { color: var(--olf-danger); }
+.run-incidents .run-delivery > .mon-why { display: inline; }
+.run-incidents .mon-targets li { display: block; color: var(--olf-text-muted); font-size: 0.75rem; }
+.run-incidents .mon-targets li[data-status="rejected"], .run-incidents .mon-targets li[data-status="expired"] { color: var(--olf-danger); }
 .mon-stale {
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--olf-space-2); margin: 0; padding: 0.625rem var(--olf-space-4);
   border-top: 1px solid var(--olf-border-subtle); color: var(--olf-text-secondary); font-size: 0.8125rem;
@@ -112,7 +124,11 @@ label.mon-stage .q-select { width: auto; min-width: 6rem; }
 .mon-list .f-scroll { position: relative; }
 .run-crumbs { margin-bottom: var(--olf-space-3); font-size: 0.6875rem; }
 .run-crumbs li { overflow-wrap: anywhere; }
-.run-head h1 { overflow-wrap: anywhere; }
+/* The run's own title, under the Monitoring head and tabs, and the way back to the stage's runs above it. */
+.run-head .run-title { margin: 0; font: 400 1.5rem / 1.2 var(--olf-font-display); overflow-wrap: anywhere; }
+.run-back { display: inline-block; margin-bottom: var(--olf-space-3); color: var(--olf-text-secondary); font-size: 0.8125rem; text-decoration: none; }
+.run-back:hover { color: var(--olf-text-primary); }
+.run-back:focus-visible { outline: 2px solid var(--olf-highlight); outline-offset: 2px; }
 .run-dagster { flex: none; text-decoration: none; }
 .run-chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--olf-space-2); margin: var(--olf-space-4) 0; padding: 0; list-style: none; }
 .run-chip {
@@ -406,6 +422,17 @@ label.mon-stage .q-select { width: auto; min-width: 6rem; }
 .mon-item-body .mon-reason { white-space: pre-line; }
 .mon-notify { margin-top: var(--olf-space-2); }
 .mon-item-action { align-self: center; margin-right: var(--olf-space-4); }
+/* A row an incident is open for carries a bell; the row an incident's address asks for is tinted. */
+.mon-bell { display: inline-flex; flex: none; width: 14px; color: var(--olf-text-muted); }
+.mon-item[data-asked] { background: var(--olf-bg-accent-subtle); }
+/* The alerts filter: a small removable chip beside the count. */
+.mon-act-end { display: inline-flex; align-items: center; gap: var(--olf-space-3); }
+.mon-filter {
+  display: inline-flex; align-items: center; gap: 0.375rem; padding: 0 0.5rem; border: 1px solid var(--olf-accent); border-radius: var(--olf-radius-full);
+  color: var(--olf-text-primary); font-size: 0.75rem; line-height: 1.5rem; text-decoration: none;
+}
+.mon-filter:hover { background: var(--olf-bg-accent-subtle); }
+.mon-filter:focus-visible { outline: 2px solid var(--olf-highlight); outline-offset: 2px; }
 .mon-clear { margin: 0; padding: var(--olf-space-4); border-top: 1px solid var(--olf-border-subtle); color: var(--olf-text-secondary); font-size: 0.875rem; }
 
 /* Pipelines: one line each, the rest under it. */
@@ -419,6 +446,8 @@ label.mon-stage .q-select { width: auto; min-width: 6rem; }
 .mon-chip { display: inline-flex; align-items: center; gap: var(--olf-space-3); min-height: 2.75rem; padding: 0 var(--olf-space-3); border: 1px solid var(--olf-border-default); border-radius: var(--olf-radius-md); background: none; color: var(--olf-text-primary); font: 500 0.875rem var(--olf-font-body); cursor: pointer; }
 .mon-chip[aria-expanded="true"] { border-color: var(--olf-accent); background: var(--olf-bg-accent-subtle); }
 .mon-chip:focus-visible { outline: 2px solid var(--olf-highlight); outline-offset: 2px; }
+/* A disabled service is listed, but switched off: muted and dashed, after the others. */
+.mon-chip-off { border-style: dashed; color: var(--olf-text-muted); }
 .mon-chip-detail { display: flex; flex-direction: column; align-items: flex-start; gap: var(--olf-space-2); padding: 0 var(--olf-space-4) var(--olf-space-4); color: var(--olf-text-secondary); font-size: 0.875rem; }
 .mon-chip-detail[hidden] { display: none; }
 .mon-chip-title { display: flex; align-items: center; gap: var(--olf-space-3); margin: 0; color: var(--olf-text-primary); }

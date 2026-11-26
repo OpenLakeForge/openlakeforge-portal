@@ -45,11 +45,11 @@ test("a deep link with its filters opens pre-filtered, and each row opens its ru
   await link.focus();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(new RegExp(`/monitoring/prod/runs/${FAILED}$`));
-  await expect(page.getByRole("heading", { level: 1, name: "sales · orders" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "sales · orders" })).toBeVisible();
   // An older failure from the list opens too: the run screen reads the same runs.
   await page.goBack();
   await rows(page).nth(2).getByRole("link").click();
-  await expect(page.getByRole("heading", { level: 1, name: "sales · orders" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "sales · orders" })).toBeVisible();
   await expect(page.getByRole("list", { name: "Run" })).toContainText("Critical");
 });
 

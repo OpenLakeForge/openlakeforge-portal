@@ -23,9 +23,28 @@ export function quality(load: Part<StageQualityHealth>): Quality {
   return { ok: true, data: load.data, state: p.length ? worst(p.map((x) => x.state)) : "unknown", counted: p.filter((x) => x.counts).length };
 }
 
-/** "0 error · 2 warn · 14 passed", with blocking errors, not-run and unknown checks when there are any. */
+/** Failed checks with whether they block: `blocking` counts the failed checks that stopped the pipeline, so the rest
+ * failed without stopping it. "4 failed (non-blocking)", "2 failed (1 blocking)", "1 failed (blocking)". */
+export function failedWords(c: Pick<QualityCounts, "error" | "blocking">): string {
+  if (!c.error) return "0 failed";
+  const tag = !c.blocking ? "non-blocking" : c.blocking >= c.error ? "blocking" : `${c.blocking} blocking`;
+  return `${c.error} failed (${tag})`;
+}
+
+const checks = (n: number, what: string) => `${n} ${what}${n === 1 ? "" : "s"}`;
+/** A quality row of the list to act on, from its counts: what failed or warned, the worst first. Undefined when the
+ * counts show nothing failed or warned (they are of another run than the signal), so the signal's own words stand. */
+export function qualityTitle(c: QualityCounts): string | undefined {
+  const soft = c.error - c.blocking;
+  if (c.blocking) return `${checks(c.blocking, "blocking check")} failed`;
+  if (soft > 0) return `${checks(soft, "non-blocking check")} failed`;
+  if (c.warn) return `${checks(c.warn, "check")} warned`;
+  return undefined;
+}
+
+/** "0 failed · 2 warned · 14 passed", with blocking failures, not-run and unknown checks when there are any. */
 export function countsLine(c: QualityCounts): string {
-  const parts = [`${c.error} error${c.blocking ? ` (${c.blocking} blocking)` : ""}`, `${c.warn} warn`, `${c.passed} passed`];
+  const parts = [failedWords(c), `${c.warn} warned`, `${c.passed} passed`];
   if (c.not_run) parts.push(`${c.not_run} not run`);
   if (c.unknown) parts.push(`${c.unknown} unknown`);
   return parts.join(" · ");
@@ -81,6 +100,6 @@ export function QualityCard({ q, retry }: { q: Quality; retry?(): void }) {
 
 /** A pipeline's checks in a few words for its row: what failed or warned first, then what passed. */
 export function checksShort(c: QualityCounts): string {
-  const parts = [c.error && `${c.error} failed`, c.warn && `${c.warn} warned`, `${c.passed} passed`, c.not_run && `${c.not_run} not run`, c.unknown && `${c.unknown} unknown`];
+  const parts = [c.error && failedWords(c), c.warn && `${c.warn} warned`, `${c.passed} passed`, c.not_run && `${c.not_run} not run`, c.unknown && `${c.unknown} unknown`];
   return parts.filter(Boolean).join(" · ");
 }
