@@ -62,6 +62,10 @@ const access = (stage: string, over: Partial<MonitoringStage> = {}): MonitoringS
 });
 const caps = (...stages: MonitoringStage[]): MonitoringCapabilities => ({ stages: stages.length ? stages : [access("dev"), access("prod")] });
 const CAPS_URL = "/api/v1/monitoring-capabilities";
+/** Every stage in full for a role that may also read a run's quality checks, from an API that serves them. */
+const withRunChecks = () => ({
+  body: caps(...["dev", "prod"].map((s) => access(s, { log_retention_days: 30, operations: [...ALL_OPS, "get_run_quality"] as MonitoringStage["operations"] }))),
+});
 const counts = (over: Partial<QualityCounts> = {}): QualityCounts => ({ passed: 12, warn: 0, error: 0, not_run: 0, unknown: 0, blocking: 0, ...over });
 const pq = (job: string, over: Partial<PipelineQuality> = {}): PipelineQuality => ({
   job, domain: "sales", product: job, run_id: `${job}-run-0001`, observed_at: new Date().toISOString(), complete: true,
@@ -897,7 +901,7 @@ describe("data quality", () => {
           check("accepted_values_orders_status", "error"), check("orders_recent", "warn"), check("orders_rows", "error")],
       },
     });
-    const fetch = api(() => ({ body: health({ state: "critical" }) }), () => ({ body: pipes({ pipelines: [bad] }) }), undefined, { quality: () => ({ body }), runQuality });
+    const fetch = api(() => ({ body: health({ state: "critical" }) }), () => ({ body: pipes({ pipelines: [bad] }) }), withRunChecks, { quality: () => ({ body }), runQuality });
     open();
     await ready();
     const row = attentionRow("1 blocking check failed");
@@ -1095,7 +1099,7 @@ describe("alert incidents", () => {
     const quality = incident("q", { status: "delivered", event: "opened", attempts: 1, receivers: 1, delivered: 1 }, {
       condition: "quality", job: "crm_accounts", run_ids: ["run-crm"], summary: "a blocking quality check failed",
     });
-    const fetch = api(() => ({ body: health() }), undefined, undefined, {
+    const fetch = api(() => ({ body: health() }), undefined, withRunChecks, {
       alerts: () => ({ body: incidentsOf({ incidents: [quality] }) }),
       runQuality: (run) => ({ body: { run_id: run, job: "crm_accounts", status: "FAILURE", complete: true, counts: null, reports: [], runbook: null, sources: [], checks: [] } }),
     });
@@ -1106,6 +1110,22 @@ describe("alert incidents", () => {
     details.open = true;
     fireEvent(details, new Event("toggle"));
     await vi.waitFor(() => expect(urls(fetch).filter((u) => u.endsWith("/runs/run-crm/quality"))).toHaveLength(1));
+  });
+
+  it("does not read a run's checks for a role, or an API, that cannot", async () => {
+    const quality = incident("q", { status: "delivered", event: "opened", attempts: 1, receivers: 1, delivered: 1 }, {
+      condition: "quality", job: "crm_accounts", run_ids: ["run-crm"], summary: "a blocking quality check failed",
+    });
+    // The default capabilities: an API without `log_retention_days` serves no run quality, and the role lacks the op.
+    const fetch = api(() => ({ body: health() }), undefined, undefined, { alerts: () => ({ body: incidentsOf({ incidents: [quality] }) }) });
+    open();
+    await ready();
+    const details = attentionRow("a blocking quality check failed").querySelector("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    await act(async () => { await Promise.resolve(); });
+    expect(urls(fetch).filter((u) => u.includes("/runs/run-crm/quality"))).toHaveLength(0);
+    expect(within(attentionRow("a blocking quality check failed")).queryByText(/Reading the run's checks/)).toBeNull();
   });
 
   it("links an incident's runs to their Failed-run screen and names its job", async () => {

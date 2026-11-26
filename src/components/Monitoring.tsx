@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import {
   ApiError, effective, gate, getAlertIncidents, getMonitoringCapabilities, getPipelinesHealth, getQualityHealth, getStageHealth,
-  listRuns, runsGate, RUNS_LIMIT, worst,
+  listRuns, runGate, runsGate, RUNS_LIMIT, worst,
   type Gate, type HealthState, type MonitoringCapabilities, type MonitoringStage, type Runs, type ServiceHealth,
   type StageAlertIncidents, type StageHealth, type StageQualityHealth,
 } from "../lib/health-api";
@@ -198,7 +198,9 @@ function Overview({ access, snap, now, retry }: { access: MonitoringStage; snap:
     </>
   );
   const table = <PipelinesTable p={p} q={q} now={now} stage={access.stage} />;
-  const act = { p, a, q, now, stage: access.stage, retryPipes: pipesRetry, retryAlerts: retry.onRetry };
+  // A quality row reads its run's checks only where the role and the stage's quality source allow that read.
+  const checks = runGate(access, "get_run_quality", "this run's quality checks").open;
+  const act = { p, a, q, now, stage: access.stage, checks, retryPipes: pipesRetry, retryAlerts: retry.onRetry };
   // A role without get_stage_health: no rollup to show, so the page says so and keeps the panels it may read.
   if (!health) {
     return (

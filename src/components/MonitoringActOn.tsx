@@ -169,8 +169,10 @@ function Notification({ r, a }: { r: Item; a: Alerts }) {
 const CLEAR = "Nothing needs attention: no pipeline signal is warning or critical and no alert incident is open.";
 const STALE_CLEAR = "No open incident in the last evaluation, but it is stale, so none can be ruled out.";
 
-export function ActOn({ p, a, q, now, stage, services, heading, state, retryPipes, retryAlerts }: {
+export function ActOn({ p, a, q, now, stage, checks = false, services, heading, state, retryPipes, retryAlerts }: {
   p: Pipes; a: Alerts; q?: Quality; now: number; stage: string; services?: Item[]; heading: React.ReactNode; state?: HealthState;
+  /** Whether the role may read a run's quality checks on this stage (`runGate`); without it no row reads them. */
+  checks?: boolean;
   retryPipes?: { onRetry(): void; lastGood?: number }; retryAlerts?(): void;
 }) {
   const [params] = useSearchParams();
@@ -216,7 +218,7 @@ export function ActOn({ p, a, q, now, stage, services, heading, state, retryPipe
         {rows.map((r) => {
           const about = r.name ?? r.job ?? r.scope;
           const asked = !!wanted && r.incident?.id === wanted;
-          const checksRun = r.kind === "quality" ? r.run ?? r.runs[0] : undefined;
+          const checksRun = checks && r.kind === "quality" ? r.run ?? r.runs[0] : undefined;
           return (
             <li key={r.key} className="mon-item" ref={asked ? target : undefined} data-asked={asked || undefined}>
               <details open={asked || undefined} onToggle={toggled(r.key)}>
