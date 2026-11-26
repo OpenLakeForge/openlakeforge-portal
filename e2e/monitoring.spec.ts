@@ -87,7 +87,7 @@ test("PROD's needs-attention list names each failing signal, service and open in
   await expect(rows.first()).toContainText("Critical");
   await expect(item(page, /Run failed/)).toContainText("run c94cbcb0");
   await expect(item(page, /Expected run did not start/)).toContainText("crm_accounts");
-  await expect(item(page, /Quality check warned/)).toContainText("finance_ledger");
+  await expect(item(page, /2 checks warned/)).toContainText("finance_ledger");
   await expect(rows.last()).toContainText("Warning");
   await expect(pipelines(page).locator("tbody")).toHaveCount(4);
   await expect(await openPipe(page, "finance_ledger")).toContainText("Stopped · finance_ledger_daily");
@@ -118,7 +118,8 @@ test("PROD shows quality counts per pipeline, and every open incident with its d
   await expect(pipe(page, "crm_accounts")).toContainText("Counts unknown");
   await expect(pipe(page, "finance_ledger")).toContainText("Incomplete");
   await expect(await openPipe(page, "finance_ledger")).not.toContainText("not every result is in yet");
-  for (const word of ["Delivered", "Pending", "Undeliverable", "Unrouted", "Unknown"]) {
+  // sales_orders' quality notification reached its discussion while the on-call webhook retries: delivered 1 of 2, never pending.
+  for (const word of ["Delivered", "Delivered 1 of 2", "Undeliverable", "Unrouted", "Unknown"]) {
     await expect(attention(page).locator(".mon-delivery", { hasText: new RegExp(`^${word}$`) })).toHaveCount(1);
   }
   // A signal no incident is about says no notification went out.
@@ -302,7 +303,7 @@ test("a run that failed before its quality checks finished reads unknown and inc
   await expect(web).toContainText("1 failed since");
   await web.getByRole("link", { name: "Open run 7f3a1c62" }).first().click();
   await expect(page).toHaveURL(/\/monitoring\/prod\/runs\/7f3a1c62-9e4b-4d08-b5a1-3c6e2d9f8b14$/);
-  await expect(page.getByRole("heading", { level: 1, name: "web_events" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "web_events" })).toBeVisible();
   await expect(page.getByRole("list", { name: "Run" })).toContainText("floe_bronze_web_events");
   await expect(page.getByRole("region", { name: "Quality checks", exact: true })).toContainText("2 passed");
 });

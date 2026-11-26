@@ -117,7 +117,7 @@ function api(routes: Routes = {}) {
 }
 const urls = (fetch: ReturnType<typeof vi.fn>) => fetch.mock.calls.map(([u]) => new URL(u as string, "http://portal.test"));
 const open = (dagster: string | null = DAGSTER, runId = RUN) =>
-  render(<MemoryRouter><MonitoringRun stage="prod" runId={runId} dagster={dagster ?? undefined} /></MemoryRouter>);
+  render(<MemoryRouter initialEntries={[`/monitoring/prod/runs/${runId}`]}><MonitoringRun stage="prod" runId={runId} dagster={dagster ?? undefined} /></MemoryRouter>);
 const card = (name: string) => screen.getByRole("region", { name });
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -129,12 +129,8 @@ describe("failed run", () => {
   it("names the scope, the failing step, its redacted first line and the rows, and links to the run in Dagster", async () => {
     api();
     open();
-    expect(await screen.findByRole("heading", { level: 1, name: "sales · orders" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 2, name: "sales · orders" })).toBeInTheDocument();
     expect(await screen.findByText("SchemaMismatchError")).toBeInTheDocument();
-    const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
-    expect(crumbs).toHaveTextContent("Monitoring/PROD/sales · orders/Run c94cbcb0");
-    expect(within(crumbs).getByRole("link", { name: "PROD" })).toHaveAttribute("href", "/monitoring?stage=prod");
-    expect(within(crumbs).getByText("Run c94cbcb0")).toHaveAttribute("aria-current", "page");
     const chips = screen.getByRole("list", { name: "Run" });
     expect(chips).toHaveTextContent("Critical");
     expect(chips).toHaveTextContent("Stage PROD");
@@ -149,6 +145,39 @@ describe("failed run", () => {
       expect(link).toHaveAttribute("target", "_blank");
       expect(link).toHaveAttribute("rel", "noopener noreferrer");
     }
+  });
+
+  it("keeps the Monitoring head and tabs, Runs current, with a way back to the stage's runs", async () => {
+    api();
+    open();
+    expect(await screen.findByRole("heading", { level: 1, name: "Monitoring" })).toBeInTheDocument();
+    const views = screen.getByRole("navigation", { name: "Monitoring views" });
+    expect(within(views).getByRole("link", { name: "Overview" })).toHaveAttribute("href", "/monitoring?stage=prod");
+    expect(within(views).getByRole("link", { name: "Metrics" })).toHaveAttribute("href", "/monitoring/metrics?stage=prod");
+    expect(within(views).getByRole("link", { name: "Logs" })).toHaveAttribute("href", "/monitoring/prod/logs");
+    const runs = within(views).getByRole("link", { name: "Runs" });
+    expect(runs).toHaveAttribute("href", "/monitoring/prod/runs");
+    expect(runs).toHaveAttribute("aria-current", "page");
+    const back = screen.getByRole("link", { name: "Back to Runs" });
+    expect(back).toHaveAttribute("href", "/monitoring/prod/runs");
+    expect(back).toHaveTextContent("← Runs");
+  });
+
+  it("shows each receiver of an incident's notification, from an API that names them", async () => {
+    const delivery = {
+      status: "pending" as const, event: "escalated" as const, attempts: 14, receivers: 2, delivered: 1,
+      targets: [
+        { receiver: "discussions", status: "delivered" as const, attempts: 1, url: "https://github.com/orgs/OpenLakeForge/discussions/1441" },
+        { receiver: "on-call", status: "retrying" as const, attempts: 13, url: null },
+      ],
+    };
+    api({ alerts: () => ({ body: incidentsOf([incident({ delivery })]) }) });
+    open();
+    const incidents = await screen.findByRole("region", { name: "Open incidents" });
+    await within(incidents).findByText("latest run failed");
+    expect(incidents).toHaveTextContent("Delivered 1 of 2");
+    expect(incidents).toHaveTextContent("on-call — Retrying · 13 attempts");
+    expect(within(incidents).getByRole("link", { name: /View discussion/ })).toHaveAttribute("href", delivery.targets[0].url);
   });
 
   it("offers no Re-run: run control stays in Dagster in v0.7, and no runbook while the API names none", async () => {
@@ -750,33 +779,33 @@ describe("domain and product", () => {
   it("takes them from the failure answer before the pipelines answer", async () => {
     api({ failure: () => ({ body: failureOf({ domain: "commerce", product: "checkout" }) }) });
     open();
-    expect(await screen.findByRole("heading", { level: 1, name: "commerce · checkout" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 2, name: "commerce · checkout" })).toBeInTheDocument();
   });
 
   it("falls back to the pipelines answer only where the failure answer has none", async () => {
     api({ failure: () => ({ body: failureOf({ domain: null, product: null }) }) });
     open();
-    expect(await screen.findByRole("heading", { level: 1, name: "sales · orders" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 2, name: "sales · orders" })).toBeInTheDocument();
   });
 
   it("falls back to the job and says why the domain and product are not known", async () => {
     api({ failure: () => ({ body: failureOf({ domain: null, product: null }) }), pipes: () => ({ body: pipesOf([pipelineOf({ domain: null, product: null })]) }), alerts: () => ({ body: incidentsOf([]) }) });
     open();
-    expect(await screen.findByRole("heading", { level: 1, name: "sales_orders" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 2, name: "sales_orders" })).toBeInTheDocument();
     expect(screen.getByText(/Not known: the job declares no data product/)).toBeInTheDocument();
   });
 
   it("takes the scope from an incident of the job when the failure names none and the pipelines read is refused", async () => {
     api({ failure: () => ({ body: failureOf({ domain: null, product: null }) }), pipes: () => ({ status: 403, body: { detail: "role may not call list_pipeline_health" } }) });
     open();
-    expect(await screen.findByRole("heading", { level: 1, name: "sales · orders" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 2, name: "sales · orders" })).toBeInTheDocument();
   });
 
   it("accepts a failure answer from before `domain` and `product`, as null", async () => {
     const { domain: _d, product: _p, ...older } = failureOf();
     api({ failure: () => ({ body: older }) });
     open();
-    expect(await screen.findByRole("heading", { level: 1, name: "sales · orders" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 2, name: "sales · orders" })).toBeInTheDocument();
   });
 });
 

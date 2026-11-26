@@ -71,7 +71,7 @@ test("Local switches every time on the page to the browser's zone, and the choic
   await expect(page.locator("main")).not.toContainText(/\(UTC\)| UTC\b/);
 
   // The choice is the browser's: the overview, the Runs page, Metrics and a reload all keep it, and nothing is in the address.
-  await page.getByRole("navigation", { name: "Breadcrumb" }).getByRole("link", { name: "PROD" }).click();
+  await page.getByRole("navigation", { name: "Monitoring views" }).getByRole("link", { name: "Overview" }).click();
   await expect(page).toHaveURL(/\/monitoring\?stage=prod$/);
   await expect(zone(page).getByRole("radio", { name: `Local (${NY})` })).toBeChecked();
   await expect(page.getByRole("region", { name: "Pipeline health" }).getByRole("columnheader", { name: `Latest run (${NY})` })).toBeVisible();

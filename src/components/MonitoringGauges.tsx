@@ -2,7 +2,7 @@
 // counts listed beside it, so colour is never the only carrier. A source that gives no answer reads "—" with its
 // state and the API's reason: never an empty green ring.
 
-import { Link } from "react-router";
+import { Link, type To } from "react-router";
 import type { HealthState } from "../lib/health-api";
 import { StatusBadge } from "./StatusBadge";
 
@@ -35,15 +35,18 @@ function Ring({ slices, center, unit, fill }: { slices: Slice[]; center: string;
   );
 }
 
-export function Gauge({ label, title, to, center, unit, slices, fill, state, note, children }: {
-  label: string; title: string; to?: string; center: string; unit?: string; slices: Slice[]; state?: HealthState;
+export function Gauge({ label, title, to, active, center, unit, slices, fill, state, note, children }: {
+  label: string; title: string; to?: To; center: string; unit?: string; slices: Slice[]; state?: HealthState;
+  /** The card's link is a filter that is on: the card is outlined and the link says so. */
+  active?: boolean;
   /** The whole ring in one tone when every count is zero and that is the answer. Without it, zero is a dashed ring. */
   fill?: Tone; note?: React.ReactNode; children?: React.ReactNode;
 }) {
   return (
-    <section className="mon-card mon-gauge" aria-label={label}>
+    // A card with a link is clickable as a whole: the link's hit area covers it (CSS), the title stays its name.
+    <section className={to ? "mon-card mon-gauge mon-gauge-link" : "mon-card mon-gauge"} aria-label={label} data-active={active || undefined}>
       <div className="mon-card-top">
-        <h2>{to ? <Link to={to}>{title} <span aria-hidden="true">›</span></Link> : title}</h2>
+        <h2>{to ? <Link to={to} aria-current={active || undefined}>{title} <span aria-hidden="true">›</span></Link> : title}</h2>
         {state && <StatusBadge state={state} />}
       </div>
       <div className="mon-gauge-body">

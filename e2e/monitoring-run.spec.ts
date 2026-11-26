@@ -19,8 +19,10 @@ test("Needs attention opens the failed run with the keyboard; the screen names t
   await link.focus();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(new RegExp(`/monitoring/prod/runs/${FAILED}$`));
-  await expect(page.getByRole("heading", { level: 1, name: "sales · orders" })).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "Breadcrumb" })).toContainText("Monitoring/PROD/sales · orders/Run c94cbcb0");
+  await expect(page.getByRole("heading", { level: 2, name: "sales · orders" })).toBeVisible();
+  // The Monitoring tabs stay, Runs current, with a way back to the stage's runs.
+  await expect(page.getByRole("navigation", { name: "Monitoring views" }).getByRole("link", { name: "Runs" })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("link", { name: "Back to Runs" })).toHaveAttribute("href", "/monitoring/prod/runs");
   await expect(page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Monitoring" })).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("list", { name: "Run" })).toContainText("Critical");
   await expect(page.getByRole("list", { name: "Run" })).toContainText("floe_silver_orders");
@@ -100,7 +102,7 @@ for (const [what, runbook] of [["null", null], ["absent (an older API)", undefin
     const incidents = card(page, "Open incidents");
     await expect(incidents).toContainText("latest run failed");
     await expect(incidents).toContainText("Delivered opened notification");
-    await expect(incidents.getByRole("link")).toHaveCount(0);
+    await expect(incidents.getByRole("link", { name: /Runbook/ })).toHaveCount(0);
     await expect(incidents).not.toContainText("Runbook");
   });
 }
@@ -209,11 +211,11 @@ test("an API without log_retention_days reads the run's day from list_logs, at w
 
 test("an incident and a pipelines row link to their run", async ({ page }) => {
   await page.goto("/monitoring?stage=prod");
-  await expect((await openItem(page, /Quality check failed/)).getByRole("link", { name: "Open run c94cbcb0" }))
+  await expect((await openItem(page, /1 blocking check failed/)).getByRole("link", { name: "Open run c94cbcb0" }))
     .toHaveAttribute("href", `/monitoring/prod/runs/${FAILED}`);
   await page.getByRole("button", { name: "Details of crm_accounts" }).click();
   await page.getByRole("region", { name: "Pipeline health" }).getByRole("link", { name: "Open run 4be0c1a9" }).first().click();
-  await expect(page.getByRole("heading", { level: 1, name: "crm · accounts" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "crm · accounts" })).toBeVisible();
   await expect(card(page, "What failed")).toContainText("This run succeeded: nothing failed.");
 });
 

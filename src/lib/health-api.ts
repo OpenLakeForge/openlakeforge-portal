@@ -289,13 +289,23 @@ export type PipelineQuality = {
 export type StageQualityHealth = { stage: string; evaluated_at: string; integrations: Integration[]; totals: QualityCounts | null; pipelines: PipelineQuality[] };
 
 export type DeliveryStatus = "pending" | "delivered" | "undeliverable" | "unrouted" | "unknown";
-/** The incident's latest notification: queued, or how it left the outbox. Counts only, never a receiver. */
+/** How the notification fared at one receiver of the deployment profile. `url` is where it landed (a GitHub
+ * discussion), null for a webhook. */
+export type DeliveryTarget = {
+  receiver: string;
+  status: "delivered" | "rejected" | "retrying" | "expired";
+  attempts: number;
+  url: string | null;
+};
+/** The incident's latest notification: queued, or how it left the outbox, with its counts and, from an API that
+ * keeps them, one outcome per receiver (`targets`; null or absent from an older API, which keeps the counts only). */
 export type AlertDelivery = {
   status: DeliveryStatus;
   event: "opened" | "escalated" | "resolved" | null;
   attempts: number | null;
   receivers: number | null;
   delivered: number | null;
+  targets?: DeliveryTarget[] | null;
 };
 export type AlertIncident = {
   id: string;
@@ -331,9 +341,13 @@ const isPipelineQuality = (v: unknown) =>
   isObject(v) && isText(v.job) && isTextOrNull(v.domain) && isTextOrNull(v.product) && isTextOrNull(v.run_id) && isTextOrNull(v.observed_at)
   && (v.complete === null || typeof v.complete === "boolean") && STATES.has(v.state) && isCountsOrNull(v.counts) && isText(v.reason);
 const DELIVERY = new Set<unknown>(["pending", "delivered", "undeliverable", "unrouted", "unknown"]);
+const TARGET_STATUS = new Set<unknown>(["delivered", "rejected", "retrying", "expired"]);
+const isTarget = (v: unknown) =>
+  isObject(v) && isText(v.receiver) && TARGET_STATUS.has(v.status) && Number.isInteger(v.attempts) && (v.attempts as number) >= 0 && isTextOrNull(v.url);
 const isDelivery = (v: unknown) =>
   isObject(v) && DELIVERY.has(v.status) && (v.event === null || ["opened", "escalated", "resolved"].includes(v.event as string))
-  && isNumberOrNull(v.attempts) && isNumberOrNull(v.receivers) && isNumberOrNull(v.delivered);
+  && isNumberOrNull(v.attempts) && isNumberOrNull(v.receivers) && isNumberOrNull(v.delivered)
+  && isOptional((t) => t === null || (Array.isArray(t) && t.every(isTarget)))(v.targets);
 const isIncident = (v: unknown) =>
   isObject(v) && isText(v.id) && isText(v.condition) && (v.severity === "warning" || v.severity === "critical")
   && isOptional(isTextOrNull)(v.job) && isTextOrNull(v.domain) && isTextOrNull(v.product) && isTextOrNull(v.table) && isTextOrNull(v.component)
@@ -365,7 +379,7 @@ export async function getQualityHealth(stage: string, signal?: AbortSignal): Pro
 export async function getAlertIncidents(stage: string, signal?: AbortSignal): Promise<StageAlertIncidents> {
   const body = await read("alerts/incidents", stage, signal);
   if (!isStageAlertIncidents(body)) throw new ApiError(200, explain(500, stage));
-  return { ...body, incidents: body.incidents && body.incidents.map((i) => ({ ...i, job: i.job ?? null })) };
+  return { ...body, incidents: body.incidents && body.incidents.map((i) => ({ ...i, job: i.job ?? null, delivery: { ...i.delivery, targets: i.delivery.targets ?? null } })) };
 }
 
 // ── One run: its failure summary (#1271), its times and its archived lines ──────────────────────────────────

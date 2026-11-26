@@ -3,7 +3,8 @@
 // Read-only: there is no acknowledgement (ADR 0023, decision 3). `incidents: null` is unknown, never "none open", and a
 // stale evaluator's list is shown as stale, never as current.
 
-import { ApiError, worst, type AlertDelivery, type AlertIncident, type HealthState, type StageAlertIncidents } from "../lib/health-api";
+import { ApiError, worst, type AlertDelivery, type AlertIncident, type DeliveryTarget, type HealthState, type StageAlertIncidents } from "../lib/health-api";
+import type { To } from "react-router";
 import { Gauge } from "./MonitoringGauges";
 import { type Part } from "./MonitoringPipelines";
 
@@ -41,6 +42,55 @@ export function deliveryLine(d: AlertDelivery): string {
   return `${event}${counts}${attempts}`;
 }
 
+const targetsOf = (d: AlertDelivery) => (d.targets?.length ? d.targets : null);
+
+/** The headline word: from the receivers when the API names them, so one that delivered while another still retries
+ * reads "Delivered 1 of 2", never "Pending"; the API's own status otherwise. */
+export function deliveryWord(d: AlertDelivery): { word: string; status: string } {
+  const targets = targetsOf(d);
+  const done = targets?.filter((t) => t.status === "delivered").length ?? 0;
+  if (!targets || done === 0) return { word: DELIVERY[d.status], status: d.status };
+  if (done === targets.length) return { word: DELIVERY.delivered, status: "delivered" };
+  return { word: `Delivered ${done} of ${targets.length}`, status: "partial" };
+}
+
+/** One receiver's outcome in a few words. */
+export function targetLine(t: DeliveryTarget): string {
+  if (t.status === "delivered") return "Delivered";
+  if (t.status === "rejected") return "Refused";
+  if (t.status === "expired") return `Gave up after ${plural(t.attempts, "attempt")}`;
+  // Not tried yet: the API lists an escalation's receivers before its first attempt, to keep the earlier link.
+  if (t.attempts === 0) return "Queued";
+  return `Retrying · ${plural(t.attempts, "attempt")}`;
+}
+
+/** An incident's notification: its headline word, then one line per receiver (with a link to where it landed), or the
+ * counts line of an API that names no receiver. */
+export function Delivery({ d }: { d: AlertDelivery }) {
+  const targets = targetsOf(d);
+  const { word, status } = deliveryWord(d);
+  return (
+    <>
+      <span className="mon-delivery" data-status={status}>{word}</span>{" "}
+      {targets ? (
+        <ul className="mon-targets" aria-label="Receivers">
+          {targets.map((t, n) => {
+            const href = runbookUrl(t.url);
+            return (
+              <li key={`${t.receiver}/${n}`} className="mon-why" data-status={t.status}>
+                <span className="f-mono">{t.receiver}</span> — {targetLine(t)}
+                {href && <> · <a className="run-link" href={href} target="_blank" rel="noopener noreferrer">
+                  {/\/discussions\/\d+/.test(href) ? "View discussion" : "View"} <span aria-hidden="true">↗</span><span className="sr-only"> (opens in a new tab)</span>
+                </a></>}
+              </li>
+            );
+          })}
+        </ul>
+      ) : <span className="mon-why">{deliveryLine(d)}</span>}
+    </>
+  );
+}
+
 /** A runbook is linked only when the API names one as a web address: a run's quality answer (#1325) and each incident
  * (#1344) carry one when the deployment sets a runbook page, null when it sets none, and an older API leaves it out.
  * A bare scheme with no host is not one, and the scheme is matched as the API writes it, lower case. */
@@ -60,14 +110,15 @@ export function IncidentRunbook({ incident }: { incident: AlertIncident }) {
   );
 }
 
-export function AlertsCard({ a }: { a: Alerts }) {
+/** `to` toggles the needs-attention list to the rows an incident is open for; `active` says that filter is on. */
+export function AlertsCard({ a, to, active }: { a: Alerts; to?: To; active?: boolean }) {
   const n = a.ok ? a.data.incidents.length : 0;
   const of = (severity: HealthState) => (a.ok ? a.data.incidents.filter((i) => i.severity === severity).length : 0);
   // No open incident is a whole green ring only for a current evaluation; a stale one proves nothing.
   const clear = a.ok && !a.stale && n === 0;
   return (
     <Gauge
-      label="Alerts summary" title="Alerts" state={a.state === "healthy" ? undefined : a.state}
+      label="Alerts summary" title="Alerts" state={a.state === "healthy" ? undefined : a.state} to={to} active={active}
       center={a.ok ? String(n) : "—"} unit={a.ok ? `incident${n === 1 ? "" : "s"}` : undefined}
       fill={clear ? "ok" : undefined}
       slices={a.ok ? [

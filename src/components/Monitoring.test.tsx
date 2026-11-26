@@ -5,7 +5,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getStageHealth, type AlertIncident, type HealthSignal, type HealthWindow, type HealthState, type MonitoringCapabilities, type MonitoringStage, type PipelineHealth,
-  type PipelineQuality, type PipelinesHealth, type QualityCounts, type StageAlertIncidents, type StageHealth, type StageQualityHealth,
+  type PipelineQuality, type PipelinesHealth, type QualityCheck, type QualityCounts, type StageAlertIncidents, type StageHealth, type StageQualityHealth,
 } from "../lib/health-api";
 import { formatTime } from "../lib/time";
 import { DEADLINE_MS, Monitoring } from "./Monitoring";
@@ -62,6 +62,10 @@ const access = (stage: string, over: Partial<MonitoringStage> = {}): MonitoringS
 });
 const caps = (...stages: MonitoringStage[]): MonitoringCapabilities => ({ stages: stages.length ? stages : [access("dev"), access("prod")] });
 const CAPS_URL = "/api/v1/monitoring-capabilities";
+/** Every stage in full for a role that may also read a run's quality checks, from an API that serves them. */
+const withRunChecks = () => ({
+  body: caps(...["dev", "prod"].map((s) => access(s, { log_retention_days: 30, operations: [...ALL_OPS, "get_run_quality"] as MonitoringStage["operations"] }))),
+});
 const counts = (over: Partial<QualityCounts> = {}): QualityCounts => ({ passed: 12, warn: 0, error: 0, not_run: 0, unknown: 0, blocking: 0, ...over });
 const pq = (job: string, over: Partial<PipelineQuality> = {}): PipelineQuality => ({
   job, domain: "sales", product: job, run_id: `${job}-run-0001`, observed_at: new Date().toISOString(), complete: true,
@@ -76,10 +80,12 @@ const incidentsOf = (over: Partial<StageAlertIncidents> = {}): StageAlertInciden
   incidents: [], ...over,
 });
 type Reply = { status?: number; body?: unknown } | "down";
-type Panels = { quality?: (stage: string) => Reply; alerts?: (stage: string) => Reply };
+type Panels = { quality?: (stage: string) => Reply; alerts?: (stage: string) => Reply; runQuality?: (run: string) => Reply };
 /** The panels' routes: quality counts with every check passed and no open incident, unless `panels` says otherwise. */
 function panel(input: string, panels: Panels = {}): Reply | undefined {
   if (/\/runs\?/.test(input)) return { body: { runs: [] } };
+  const [, runId] = /\/runs\/([^/?]+)\/quality$/.exec(input) ?? [];
+  if (runId) return panels.runQuality ? panels.runQuality(decodeURIComponent(runId)) : { status: 404, body: {} };
   const [, stage = "", path] = /stages\/([^/]+)\/(health\/quality|alerts\/incidents)$/.exec(input) ?? [];
   if (path === "health/quality") return (panels.quality ?? ((st) => ({ body: qualityOf({ stage: st }) })))(stage);
   if (path === "alerts/incidents") return (panels.alerts ?? ((st) => ({ body: incidentsOf({ stage: st }) })))(stage);
@@ -847,11 +853,85 @@ describe("data quality", () => {
     expect(await within(await screen.findByRole("region", { name: "Data quality summary" })).findByText("Critical")).toBeInTheDocument();
     expect(qcard()).toHaveTextContent("Passed 10Warn 1Failed 2");
     expect(qcard()).toHaveTextContent("1 blocking · counts from 2 of 3 pipelines");
-    expect(qualityRow("sales_orders")).toHaveTextContent("2 error (1 blocking) · 1 warn · 10 passed");
+    expect(qualityRow("sales_orders")).toHaveTextContent("2 failed (1 blocking) · 1 warned · 10 passed");
     expect(qualityRow("crm_accounts")).toHaveTextContent("Counts unknown");
-    expect(qualityRow("crm_accounts")).not.toHaveTextContent(/\d (passed|error|warn)/);
+    expect(qualityRow("crm_accounts")).not.toHaveTextContent(/\d (passed|failed|warned)/);
     expect(qualityRow("crm_accounts")).toHaveTextContent("Unknown");
-    expect(qualityRow("web_events")).toHaveTextContent("0 error · 0 warn · 0 passed"); // zero is a count, unlike null
+    expect(qualityRow("web_events")).toHaveTextContent("0 failed · 0 warned · 0 passed"); // zero is a count, unlike null
+  });
+
+  it("says failed checks that did not stop the pipeline are non-blocking, in its row and in the list to act on", async () => {
+    const soft = counts({ passed: 41, error: 4 });
+    const body = qualityOf({ totals: soft, pipelines: [pq("sales_orders", { state: "warning", counts: soft, reason: "quality checks warned" })] });
+    const warned = pipeline("sales_orders", { state: "warning", signals: [sig("execution", "healthy"), sig("quality", "warning", { reason: "quality checks warned" })] });
+    api(() => ({ body: health({ state: "warning" }) }), () => ({ body: pipes({ pipelines: [warned] }) }), undefined, { quality: () => ({ body }) });
+    open();
+    await ready();
+    const cell = within(screen.getByRole("region", { name: "Pipeline health" })).getByText(/4 failed/);
+    expect(cell).toHaveTextContent("4 failed (non-blocking) · 41 passed");
+    const row = attentionRow("4 non-blocking checks failed");
+    expect(row).toHaveTextContent("Warning");
+    expect(row).toHaveTextContent("4 failed (non-blocking) · 0 warned · 41 passed");
+    expect(attention()).not.toHaveTextContent("Quality check warned");
+  });
+
+  it.each([["another run", "run-new"], ["no run", null]])("keeps the signal's own words when the quality counts are of %s", async (_, runId) => {
+    const soft = counts({ passed: 41, error: 4 });
+    const body = qualityOf({ totals: soft, pipelines: [pq("sales_orders", { state: "warning", counts: soft, run_id: runId })] });
+    const bad = pipeline("sales_orders", { state: "critical", signals: [sig("quality", "critical", { run: "run-old", reason: "a blocking quality check failed" })] });
+    api(() => ({ body: health({ state: "critical" }) }), () => ({ body: pipes({ pipelines: [bad] }) }), undefined, { quality: () => ({ body }) });
+    open();
+    await ready();
+    expect(attention()).not.toHaveTextContent("non-blocking");
+    expect(attentionRow("sales_orders")).toHaveTextContent("Critical");
+  });
+
+  it("names the failed checks of a quality row's run once the row is opened, blocking first", async () => {
+    const c = counts({ passed: 30, error: 4, blocking: 1 });
+    const body = qualityOf({ totals: c, pipelines: [pq("sales_orders", { state: "critical", counts: c, run_id: "run-q1" })] });
+    const bad = pipeline("sales_orders", { state: "critical", signals: [sig("quality", "critical", { run: "run-q1" })] });
+    const check = (check_id: string, outcome: QualityCheck["outcome"], pipeline_outcome: QualityCheck["pipeline_outcome"] = "continued"): QualityCheck => ({
+      engine: "dbt", check_id, table: "orders", column: null, engine_severity: "error", outcome, pipeline_outcome,
+      observed_at: new Date().toISOString(), rows: null, accepted_rows: null, rejected_rows: null, violations: 1, failures: 1, report_id: null,
+    });
+    const runQuality = (run: string) => ({
+      body: {
+        run_id: run, job: "sales_orders", status: "FAILURE", complete: true, counts: c, reports: [], runbook: null, sources: [],
+        checks: [check("unique_orders_id", "error"), check("passed_one", "passed"), check("not_null_orders_amount", "error", "blocked"),
+          check("accepted_values_orders_status", "error"), check("orders_recent", "warn"), check("orders_rows", "error")],
+      },
+    });
+    const fetch = api(() => ({ body: health({ state: "critical" }) }), () => ({ body: pipes({ pipelines: [bad] }) }), withRunChecks, { quality: () => ({ body }), runQuality });
+    open();
+    await ready();
+    const row = attentionRow("1 blocking check failed");
+    const runReads = () => fetch.mock.calls.filter(([u]) => (u as string).endsWith("/runs/run-q1/quality"));
+    expect(runReads()).toHaveLength(0); // nothing is read for a row nobody opened
+
+    const details = row.querySelector("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+
+    expect(await within(row).findByText(/^Checks/)).toHaveTextContent(
+      "Checks not_null_orders_amount (blocking), unique_orders_id, accepted_values_orders_status +2 more",
+    );
+    expect(runReads()).toHaveLength(1);
+  });
+
+  it.each([
+    [{ error: 2, blocking: 1, warn: 1 }, "1 blocking check failed", "2 failed (1 blocking) · 1 warned · 12 passed"],
+    [{ error: 1, blocking: 1 }, "1 blocking check failed", "1 failed (blocking) · 12 passed"],
+    [{ error: 1 }, "1 non-blocking check failed", "1 failed (non-blocking) · 12 passed"],
+    [{ warn: 3 }, "3 checks warned", "3 warned · 12 passed"],
+  ])("names %o as %s", async (over, title, short) => {
+    const c = counts(over);
+    const body = qualityOf({ totals: c, pipelines: [pq("sales_orders", { state: "critical", counts: c })] });
+    const bad = pipeline("sales_orders", { state: "critical", signals: [sig("quality", "critical")] });
+    api(() => ({ body: health({ state: "critical" }) }), () => ({ body: pipes({ pipelines: [bad] }) }), undefined, { quality: () => ({ body }) });
+    open();
+    await ready();
+    expect(attentionRow(title)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Pipeline health" })).toHaveTextContent(short);
   });
 
   it("shows no totals as unknown, not as zero checks", async () => {
@@ -1006,6 +1086,48 @@ describe("alert incidents", () => {
   const show = (body: StageAlertIncidents | Reply) =>
     api(() => ({ body: health() }), undefined, undefined, { alerts: () => ("state" in (body as object) ? { body } : body as Reply) });
 
+  it("keeps the stale warning when the alerts filter leaves no row", async () => {
+    const stale = incidentsOf({ state: { status: "available", reason: "the alert evaluator has not run since 10:00", evaluated_at: new Date(Date.now() - 3_600_000).toISOString(), stale: true } });
+    api(() => ({ body: health() }), undefined, undefined, { alerts: () => ({ body: stale }) });
+    open(undefined, "/monitoring?stage=prod&focus=alerts");
+    await ready();
+    expect(screen.getByText(/No open incident in the last evaluation, but it is stale/)).toBeInTheDocument();
+    expect(screen.queryByText("No alert incident is open.")).toBeNull();
+  });
+
+  it("reads the checks of a quality incident that has no pipeline row of its own, its latest run, once opened", async () => {
+    const quality = incident("q", { status: "delivered", event: "opened", attempts: 1, receivers: 1, delivered: 1 }, {
+      condition: "quality", job: "crm_accounts", run_ids: ["run-0", "run-1", "run-2", "run-crm"], summary: "a blocking quality check failed",
+    });
+    const fetch = api(() => ({ body: health() }), undefined, withRunChecks, {
+      alerts: () => ({ body: incidentsOf({ incidents: [quality] }) }),
+      runQuality: (run) => ({ body: { run_id: run, job: "crm_accounts", status: "FAILURE", complete: true, counts: null, reports: [], runbook: null, sources: [], checks: [] } }),
+    });
+    open();
+    await ready();
+    const row = attentionRow("a blocking quality check failed");
+    const details = row.querySelector("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    await vi.waitFor(() => expect(urls(fetch).filter((u) => u.endsWith("/runs/run-crm/quality"))).toHaveLength(1));
+  });
+
+  it("does not read a run's checks for a role, or an API, that cannot", async () => {
+    const quality = incident("q", { status: "delivered", event: "opened", attempts: 1, receivers: 1, delivered: 1 }, {
+      condition: "quality", job: "crm_accounts", run_ids: ["run-crm"], summary: "a blocking quality check failed",
+    });
+    // The default capabilities: an API without `log_retention_days` serves no run quality, and the role lacks the op.
+    const fetch = api(() => ({ body: health() }), undefined, undefined, { alerts: () => ({ body: incidentsOf({ incidents: [quality] }) }) });
+    open();
+    await ready();
+    const details = attentionRow("a blocking quality check failed").querySelector("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    await act(async () => { await Promise.resolve(); });
+    expect(urls(fetch).filter((u) => u.includes("/runs/run-crm/quality"))).toHaveLength(0);
+    expect(within(attentionRow("a blocking quality check failed")).queryByText(/Reading the run's checks/)).toBeNull();
+  });
+
   it("links an incident's runs to their Failed-run screen and names its job", async () => {
     show(incidentsOf({ incidents: [incident("a", { status: "delivered", event: "opened", attempts: 1, receivers: 1, delivered: 1 }, {
       run_ids: ["c94cbcb0-5d1e-4a8e"], job: "sales_orders", product: null, domain: null,
@@ -1034,6 +1156,62 @@ describe("alert incidents", () => {
     expect(row).toHaveTextContent("sales · orders");
     expect(within(acard()).getAllByText("Critical")[0]).toBeInTheDocument();
     expect(acard()).toHaveTextContent("1incident");
+  });
+
+  describe("one line per receiver, from an API that names them", () => {
+    type Target = NonNullable<AlertIncident["delivery"]["targets"]>[number];
+    const DISCUSSION = "https://github.com/orgs/OpenLakeForge/discussions/1441";
+    const target = (receiver: string, status: Target["status"], attempts = 1, url: string | null = null): Target => ({ receiver, status, attempts, url });
+    const withTargets = (targets: Target[] | null, status: AlertIncident["delivery"]["status"] = "pending") =>
+      incident("i-1", { status, event: "escalated", attempts: 14, receivers: 2, delivered: 1, targets });
+    const receivers = (row: HTMLElement) => within(row).getAllByRole("listitem").filter((li) => li.closest(".mon-targets")).map((li) => li.textContent);
+
+    it("says a delivery one receiver took while another retries is delivered 1 of 2, never pending, and links where it landed", async () => {
+      show(incidentsOf({ incidents: [withTargets([target("discussions", "delivered", 1, DISCUSSION), target("on-call", "retrying", 13)])] }));
+      open();
+      await ready();
+      const row = attentionRow("incident i-1");
+      expect(row.querySelector(".mon-delivery")).toHaveTextContent(/^Delivered 1 of 2$/);
+      expect(row).not.toHaveTextContent("Pending");
+      expect(receivers(row)).toEqual(["discussions — Delivered · View discussion ↗ (opens in a new tab)", "on-call — Retrying · 13 attempts"]);
+      const link = within(row).getByRole("link", { name: /View discussion/ });
+      expect(link).toHaveAttribute("href", DISCUSSION);
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link.getAttribute("rel")).toContain("noopener");
+      // The counts line is the older API's fallback only.
+      expect(row).not.toHaveTextContent("receivers");
+    });
+
+    it.each([
+      [[target("on-call", "rejected", 1)], "undeliverable", "Undeliverable", "on-call — Refused"],
+      [[target("on-call", "expired", 10)], "undeliverable", "Undeliverable", "on-call — Gave up after 10 attempts"],
+      [[target("on-call", "retrying", 1)], "pending", "Pending", "on-call — Retrying · 1 attempt"],
+      [[target("on-call", "retrying", 0)], "pending", "Pending", "on-call — Queued"],
+      [[target("discussions", "delivered", 1, DISCUSSION), target("hook", "delivered", 2)], "delivered", "Delivered", "hook — Delivered"],
+    ] as const)("reads %j as %s", async (targets, status, word, line) => {
+      show(incidentsOf({ incidents: [withTargets([...targets], status)] }));
+      open();
+      await ready();
+      const row = attentionRow("incident i-1");
+      expect(row.querySelector(".mon-delivery")).toHaveTextContent(new RegExp(`^${word}$`));
+      expect(receivers(row)).toContain(line);
+    });
+
+    it("links no receiver whose address is not a web address", async () => {
+      show(incidentsOf({ incidents: [withTargets([target("discussions", "delivered", 1, "javascript:alert(1)")], "delivered")] }));
+      open();
+      await ready();
+      expect(within(attentionRow("incident i-1")).queryByRole("link", { name: /View/ })).toBeNull();
+    });
+
+    it.each([["null", null], ["empty", []]])("keeps the counts line when the receivers are %s", async (_, targets) => {
+      show(incidentsOf({ incidents: [withTargets(targets as Target[] | null)] }));
+      open();
+      await ready();
+      const row = attentionRow("incident i-1");
+      expect(row.querySelector(".mon-delivery")).toHaveTextContent(/^Pending$/);
+      expect(row).toHaveTextContent("escalated notification · 1 of 2 receivers · 14 attempts");
+    });
   });
 
   it("says no open incidents only for a current evaluation, and offers no acknowledgement", async () => {
@@ -1122,6 +1300,12 @@ describe("alert incidents", () => {
     ["no state", (b: StageAlertIncidents) => { delete (b as Partial<StageAlertIncidents>).state; }],
     ["a text stale flag", (b: StageAlertIncidents) => { (b.state as { stale: unknown }).stale = "no"; }],
     ["a runbook that is not text", (b: StageAlertIncidents) => { (b.incidents![0] as { runbook: unknown }).runbook = 42; }],
+    ["a receiver status the API does not define", (b: StageAlertIncidents) => {
+      b.incidents![0].delivery.targets = [{ receiver: "x", status: "sent" as "delivered", attempts: 1, url: null }];
+    }],
+    ["a receiver without attempts", (b: StageAlertIncidents) => {
+      b.incidents![0].delivery.targets = [{ receiver: "x", status: "delivered", url: null } as unknown as NonNullable<AlertIncident["delivery"]["targets"]>[number]];
+    }],
   ])("reads an incidents answer with %s as unknown", async (_, spoil) => {
     const body = incidentsOf({ incidents: [incident("i-1", { status: "delivered", event: "opened", attempts: 1, receivers: 1, delivered: 1 })] });
     spoil(body);
@@ -1188,6 +1372,72 @@ describe("one list to act on", () => {
     expect(spool).toHaveTextContent("Warning");
     expect(spool).toHaveTextContent(/last seen \d+ s ago/);
     expect(document.querySelector(".mon-act .f-count")).toHaveTextContent("4");
+  });
+
+  describe("the alerts filter and an incident's own address", () => {
+    const incidents = () => [
+      inc("failed", "run_failed"),
+      inc("spool", "service_degraded", { job: null, domain: null, product: null, component: "log-archive.spool-age", severity: "warning", summary: "the spool is not draining", run_ids: [] }),
+    ];
+    const load = (entry: string) => {
+      api(() => ({ body: health({ state: "critical" }) }), () => ({ body: failing() }), undefined, { alerts: () => ({ body: incidentsOf({ incidents: incidents() }) }) });
+      open(undefined, entry);
+      return screen.findByRole("region", { name: "Pipeline health" });
+    };
+
+    it("marks each row an incident is open for with a bell, and no other", async () => {
+      await load("/monitoring?stage=prod");
+      expect(within(attentionRow("Run failed")).getByRole("img", { name: "Open alert incident" })).toBeInTheDocument();
+      expect(within(attentionRow("the spool is not draining")).getByRole("img", { name: "Open alert incident" })).toBeInTheDocument();
+      expect(within(attentionRow("Data is late")).queryByRole("img", { name: "Open alert incident" })).toBeNull();
+    });
+
+    it("filters the list to the rows with an incident from the Alerts card, keeps the stage, and clears from its chip", async () => {
+      await load("/monitoring?stage=prod");
+      expect(names()).toHaveLength(4);
+      const link = within(card("Alerts")).getByRole("link", { name: "Alerts" });
+      expect(link).toHaveAttribute("href", "/monitoring?stage=prod&focus=alerts");
+      await userEvent.click(link);
+      expect(names()).toEqual(["Run failed", "the spool is not draining"]);
+      expect(document.querySelector(".mon-act .f-count")).toHaveTextContent("2");
+      expect(within(card("Alerts")).getByRole("link", { name: "Alerts" })).toHaveAttribute("aria-current", "true");
+      expect(screen.getByRole("heading", { level: 2, name: "Critical PROD needs attention" })).toBeInTheDocument(); // still PROD
+      const chip = screen.getByRole("link", { name: "Remove filter: Alerts only" });
+      expect(chip).toHaveTextContent("Alerts only ×");
+      expect(chip).toHaveAttribute("href", "/monitoring?stage=prod");
+      await userEvent.click(chip);
+      expect(names()).toHaveLength(4);
+      expect(screen.queryByRole("link", { name: "Remove filter: Alerts only" })).toBeNull();
+    });
+
+    it("reads the filter from the address, so it can be linked", async () => {
+      await load("/monitoring?stage=prod&focus=alerts");
+      expect(names()).toEqual(["Run failed", "the spool is not draining"]);
+      expect(within(card("Alerts")).getByRole("link", { name: "Alerts" })).toHaveAttribute("href", "/monitoring?stage=prod");
+    });
+
+    it("says so when the filter leaves no row", async () => {
+      api(() => ({ body: health({ state: "critical" }) }), () => ({ body: failing() }));
+      open(undefined, "/monitoring?stage=prod&focus=alerts");
+      await screen.findByRole("region", { name: "Pipeline health" });
+      expect(screen.getByText("No alert incident is open.")).toBeInTheDocument();
+      expect(within(attention()).queryAllByRole("listitem")).toHaveLength(0);
+    });
+
+    it("opens the row of the incident its address names, on its stage, and scrolls to it once", async () => {
+      const scroll = vi.fn();
+      Element.prototype.scrollIntoView = scroll;
+      try {
+        await load("/monitoring?stage=prod&incident=spool");
+        const row = attentionRow("the spool is not draining");
+        expect(row.querySelector("details")).toHaveAttribute("open");
+        expect(attentionRow("Run failed").querySelector("details")).not.toHaveAttribute("open");
+        expect(scroll).toHaveBeenCalledTimes(1);
+        expect(scroll.mock.contexts[0]).toBe(row);
+      } finally {
+        delete (Element.prototype as Partial<Element>).scrollIntoView;
+      }
+    });
   });
 
   describe("each incident's runbook section (#1344)", () => {
@@ -1327,6 +1577,20 @@ describe("one list to act on", () => {
     expect(services).toHaveTextContent("1/2");
     expect(services).toHaveTextContent("Up 1Warning 1Critical 0");
     expect(services).not.toHaveTextContent(/Trino|Polaris/);
+  });
+
+  it("counts the same services in the Services section as on its card, and lists a disabled one last and muted", async () => {
+    api(() => ({ body: health({ services: [svc("quality-sync.publication", "disabled"), svc("trino.readiness", "warning"), svc("polaris.readiness", "healthy")] }) }));
+    open();
+    const services = await screen.findByRole("region", { name: "Services summary" });
+    expect(services).toHaveTextContent("1/2");
+    const section = screen.getByRole("region", { name: "Services" });
+    expect(section.querySelector(".f-count")).toHaveTextContent(/^2$/);
+    const chips = within(section).getAllByRole("button");
+    // Resource metrics is not provided here, so it reads Disabled too: both switched-off chips come after the others.
+    expect(chips.map((c) => c.textContent)).toEqual(["Trino Warning", "Polaris Healthy", "Quality sync Disabled", "Resource metrics Disabled"]);
+    expect(chips[2]).toHaveClass("mon-chip-off");
+    expect(chips[0]).not.toHaveClass("mon-chip-off");
   });
 });
 

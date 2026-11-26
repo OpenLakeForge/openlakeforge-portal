@@ -2,12 +2,12 @@ import { useCallback, useEffect, useId, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import {
   ApiError, effective, gate, getAlertIncidents, getMonitoringCapabilities, getPipelinesHealth, getQualityHealth, getStageHealth,
-  listRuns, runsGate, RUNS_LIMIT, worst,
+  listRuns, runGate, runsGate, RUNS_LIMIT, worst,
   type Gate, type HealthState, type MonitoringCapabilities, type MonitoringStage, type Runs, type ServiceHealth,
   type StageAlertIncidents, type StageHealth, type StageQualityHealth,
 } from "../lib/health-api";
 import { coverage, matchesStatus } from "../lib/runs";
-import { ActOn, type Item } from "./MonitoringActOn";
+import { ActOn, alertsToggle, FOCUS, type Item } from "./MonitoringActOn";
 import { alerts, AlertsCard } from "./MonitoringAlerts";
 import { Gauge } from "./MonitoringGauges";
 import { Fresh, MonitoringHead } from "./MonitoringHead";
@@ -122,19 +122,22 @@ function ServicesPanel({ groups, gap, metricsGap, metricsReason, now, logs }: {
 }) {
   const [picked, setPicked] = useState<string>();
   const id = useId();
-  const all = metricsGap ? [...groups, { service: "metrics", name: "Resource metrics", state: metricsGap, rows: [] as Shown[] }] : groups;
+  const listed = metricsGap ? [...groups, { service: "metrics", name: "Resource metrics", state: metricsGap, rows: [] as Shown[] }] : groups;
+  // A disabled service is switched off, not down: it stays listed, last and muted, and is not counted, as on the card.
+  const all = [...listed.filter((g) => g.state !== "disabled"), ...listed.filter((g) => g.state === "disabled")];
+  const counted = groups.filter((g) => g.state !== "disabled").length;
   const open = all.find((g) => g.service === picked);
   const href = open && open.rows.length ? logs(open) : undefined;
   return (
     <section className="q-card mon-list mon-svc" aria-labelledby="mon-services-h">
       <div className="f-card-head">
         <h2 id="mon-services-h">Services</h2>
-        <span className="f-count">{all.length}</span>
+        <span className="f-count">{counted}</span>
       </div>
       {gap && <p className="mon-clear"><StatusBadge state={gap.state} /> Service probes: {gap.reason ?? "The API reported no services for this stage."}</p>}
       <div className="mon-chips">
         {all.map((g) => (
-          <button key={g.service} type="button" className="mon-chip" aria-expanded={picked === g.service} aria-controls={id}
+          <button key={g.service} type="button" className={g.state === "disabled" ? "mon-chip mon-chip-off" : "mon-chip"} aria-expanded={picked === g.service} aria-controls={id}
             onClick={() => setPicked((x) => (x === g.service ? undefined : g.service))}>
             {g.name} <StatusBadge state={g.state} />
           </button>
@@ -179,6 +182,7 @@ function RunsCard({ load, stage, now }: { load: Part<Runs>; stage: string; now: 
 }
 
 function Overview({ access, snap, now, retry }: { access: MonitoringStage; snap: Snapshot; now: number; retry: Retry }) {
+  const [params] = useSearchParams();
   const stage = access.stage.toUpperCase();
   const health = snap.data;
   const p = pipes(snap.pipes, now);
@@ -189,11 +193,14 @@ function Overview({ access, snap, now, retry }: { access: MonitoringStage; snap:
     <>
       <RunsCard load={snap.runs} stage={access.stage} now={now} />
       <QualityCard q={q} retry={retry.onRetry} />
-      <AlertsCard a={a} />
+      {/* The Alerts card filters the list to act on to the rows an incident is open for, and back. */}
+      <AlertsCard a={a} to={{ search: alertsToggle(params) }} active={params.get(FOCUS) === "alerts"} />
     </>
   );
   const table = <PipelinesTable p={p} q={q} now={now} stage={access.stage} />;
-  const act = { p, a, now, stage: access.stage, retryPipes: pipesRetry, retryAlerts: retry.onRetry };
+  // A quality row reads its run's checks only where the role and the stage's quality source allow that read.
+  const checks = runGate(access, "get_run_quality", "this run's quality checks").open;
+  const act = { p, a, q, now, stage: access.stage, checks, retryPipes: pipesRetry, retryAlerts: retry.onRetry };
   // A role without get_stage_health: no rollup to show, so the page says so and keeps the panels it may read.
   if (!health) {
     return (
