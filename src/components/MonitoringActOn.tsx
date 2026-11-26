@@ -3,8 +3,8 @@
 // or service component joins that row, so its notification is read beside it; an incident about nothing listed is its
 // own row. A row is one line; its reason, times, notification and runbook open under it. Read-only (ADR 0023, decision 3).
 
-import { useEffect, useRef } from "react";
-import { worst, type AlertIncident, type HealthSignal, type HealthState } from "../lib/health-api";
+import { useEffect, useRef, useState } from "react";
+import { getRunQuality, worst, type AlertIncident, type HealthSignal, type HealthState, type QualityCheck } from "../lib/health-api";
 import { Link, useSearchParams } from "react-router";
 import { Icon } from "./FilesIcons";
 import { Delivery, denied, IncidentRunbook, type Alerts } from "./MonitoringAlerts";
@@ -93,6 +93,38 @@ export function actOn(p: Pipes, a: Alerts, stage: string, services: Item[] = [],
   return rows.sort((x, y) => x.sort - y.sort || at(y) - at(x));
 }
 
+const CHECK_RANK = (c: QualityCheck) => (c.pipeline_outcome === "blocked" ? 0 : c.outcome === "error" ? 1 : 2);
+const checkName = (c: QualityCheck) => `${c.check_id}${c.table && !c.check_id.includes(c.table) ? ` (${c.table})` : ""}`;
+
+/** The checks that failed or warned in a quality row's run, by name, read when the row is opened: the overview's quality
+ * answer has counts only. Blocking ones first; three at most, then how many more. Nothing when they cannot be read:
+ * the row's run link still leads to them. */
+export function RunChecks({ stage, run }: { stage: string; run: string }) {
+  const [checks, setChecks] = useState<QualityCheck[] | null | undefined>(undefined);
+  useEffect(() => {
+    const ctl = new AbortController();
+    setChecks(undefined);
+    getRunQuality(stage, run, ctl.signal).then(
+      (q) => setChecks((q.checks ?? []).filter((c) => c.outcome === "error" || c.outcome === "warn").sort((x, y) => CHECK_RANK(x) - CHECK_RANK(y))),
+      () => { if (!ctl.signal.aborted) setChecks(null); },
+    );
+    return () => ctl.abort();
+  }, [stage, run]);
+  if (checks === undefined) return <span className="mon-why">Reading the run's checks…</span>;
+  if (!checks?.length) return null;
+  return (
+    <span className="mon-why mon-checks">
+      {checks.length === 1 ? "Check" : "Checks"}{" "}
+      {checks.slice(0, 3).map((c, n) => (
+        <span key={`${c.check_id}/${c.table ?? ""}/${n}`}>
+          {n ? ", " : ""}<code className="f-mono">{checkName(c)}</code>{c.pipeline_outcome === "blocked" ? " (blocking)" : c.outcome === "warn" ? " (warned)" : ""}
+        </span>
+      ))}
+      {checks.length > 3 ? ` +${checks.length - 3} more` : ""}
+    </span>
+  );
+}
+
 /** The notification cell: the incident's delivery, or why there is none, never a silent blank, and the runbook section
  * its notification links to, when it has one. */
 function Notification({ r, a }: { r: Item; a: Alerts }) {
@@ -145,6 +177,12 @@ export function ActOn({ p, a, q, now, stage, services, heading, state, retryPipe
   // An incident's own address opens its row and scrolls to it, once per incident asked for.
   const target = useRef<HTMLLIElement>(null);
   const scrolled = useRef<string | null>(null);
+  // Rows opened so far: a quality row reads its run's checks only once it is opened.
+  const [openRows, setOpenRows] = useState<ReadonlySet<string>>(() => new Set());
+  const toggled = (key: string) => (e: React.SyntheticEvent<HTMLDetailsElement>) => {
+    const isOpen = e.currentTarget.open;
+    setOpenRows((s) => (isOpen === s.has(key) ? s : isOpen ? new Set(s).add(key) : new Set([...s].filter((k) => k !== key))));
+  };
   useEffect(() => {
     if (!wanted || !target.current || scrolled.current === wanted) return;
     scrolled.current = wanted;
@@ -173,9 +211,10 @@ export function ActOn({ p, a, q, now, stage, services, heading, state, retryPipe
         {rows.map((r) => {
           const about = r.name ?? r.job ?? r.scope;
           const asked = !!wanted && r.incident?.id === wanted;
+          const checksRun = r.kind === "quality" ? r.run ?? r.runs[0] : undefined;
           return (
             <li key={r.key} className="mon-item" ref={asked ? target : undefined} data-asked={asked || undefined}>
-              <details open={asked || undefined}>
+              <details open={asked || undefined} onToggle={toggled(r.key)}>
                 <summary>
                   <StatusBadge state={r.state} />
                   {/* A slot on every row, so the names line up whether or not a bell is in it. */}
@@ -187,7 +226,8 @@ export function ActOn({ p, a, q, now, stage, services, heading, state, retryPipe
                 </summary>
                 <div className="mon-item-body">
                   <span className="mon-why f-mono mon-reason">{r.detail}</span>
-                  {r.job && <span className="mon-why"><JobLink stage={stage} job={r.job} />{r.scope ? ` · ${r.scope}` : ""}</span>}
+                  {checksRun && (asked || openRows.has(r.key)) && <RunChecks stage={stage} run={checksRun} />}
+                  {r.job &&<span className="mon-why"><JobLink stage={stage} job={r.job} />{r.scope ? ` · ${r.scope}` : ""}</span>}
                   {(r.due || r.at) && <span className="mon-why mon-when">{r.due ? <>due <Time at={r.due} now={now} /></> : <Time at={r.at} now={now} />}</span>}
                   {r.runs.length > 0 && (
                     <span className="mon-why run-ids">

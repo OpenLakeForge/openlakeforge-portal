@@ -5,7 +5,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getStageHealth, type AlertIncident, type HealthSignal, type HealthWindow, type HealthState, type MonitoringCapabilities, type MonitoringStage, type PipelineHealth,
-  type PipelineQuality, type PipelinesHealth, type QualityCounts, type StageAlertIncidents, type StageHealth, type StageQualityHealth,
+  type PipelineQuality, type PipelinesHealth, type QualityCheck, type QualityCounts, type StageAlertIncidents, type StageHealth, type StageQualityHealth,
 } from "../lib/health-api";
 import { formatTime } from "../lib/time";
 import { DEADLINE_MS, Monitoring } from "./Monitoring";
@@ -76,10 +76,12 @@ const incidentsOf = (over: Partial<StageAlertIncidents> = {}): StageAlertInciden
   incidents: [], ...over,
 });
 type Reply = { status?: number; body?: unknown } | "down";
-type Panels = { quality?: (stage: string) => Reply; alerts?: (stage: string) => Reply };
+type Panels = { quality?: (stage: string) => Reply; alerts?: (stage: string) => Reply; runQuality?: (run: string) => Reply };
 /** The panels' routes: quality counts with every check passed and no open incident, unless `panels` says otherwise. */
 function panel(input: string, panels: Panels = {}): Reply | undefined {
   if (/\/runs\?/.test(input)) return { body: { runs: [] } };
+  const [, runId] = /\/runs\/([^/?]+)\/quality$/.exec(input) ?? [];
+  if (runId) return panels.runQuality ? panels.runQuality(decodeURIComponent(runId)) : { status: 404, body: {} };
   const [, stage = "", path] = /stages\/([^/]+)\/(health\/quality|alerts\/incidents)$/.exec(input) ?? [];
   if (path === "health/quality") return (panels.quality ?? ((st) => ({ body: qualityOf({ stage: st }) })))(stage);
   if (path === "alerts/incidents") return (panels.alerts ?? ((st) => ({ body: incidentsOf({ stage: st }) })))(stage);
@@ -867,6 +869,38 @@ describe("data quality", () => {
     expect(row).toHaveTextContent("Warning");
     expect(row).toHaveTextContent("4 failed (non-blocking) · 0 warned · 41 passed");
     expect(attention()).not.toHaveTextContent("Quality check warned");
+  });
+
+  it("names the failed checks of a quality row's run once the row is opened, blocking first", async () => {
+    const c = counts({ passed: 30, error: 4, blocking: 1 });
+    const body = qualityOf({ totals: c, pipelines: [pq("sales_orders", { state: "critical", counts: c })] });
+    const bad = pipeline("sales_orders", { state: "critical", signals: [sig("quality", "critical", { run: "run-q1" })] });
+    const check = (check_id: string, outcome: QualityCheck["outcome"], pipeline_outcome: QualityCheck["pipeline_outcome"] = "continued"): QualityCheck => ({
+      engine: "dbt", check_id, table: "orders", column: null, engine_severity: "error", outcome, pipeline_outcome,
+      observed_at: new Date().toISOString(), rows: null, accepted_rows: null, rejected_rows: null, violations: 1, failures: 1, report_id: null,
+    });
+    const runQuality = (run: string) => ({
+      body: {
+        run_id: run, job: "sales_orders", status: "FAILURE", complete: true, counts: c, reports: [], runbook: null, sources: [],
+        checks: [check("unique_orders_id", "error"), check("passed_one", "passed"), check("not_null_orders_amount", "error", "blocked"),
+          check("accepted_values_orders_status", "error"), check("orders_recent", "warn"), check("orders_rows", "error")],
+      },
+    });
+    const fetch = api(() => ({ body: health({ state: "critical" }) }), () => ({ body: pipes({ pipelines: [bad] }) }), undefined, { quality: () => ({ body }), runQuality });
+    open();
+    await ready();
+    const row = attentionRow("1 blocking check failed");
+    const runReads = () => fetch.mock.calls.filter(([u]) => (u as string).endsWith("/runs/run-q1/quality"));
+    expect(runReads()).toHaveLength(0); // nothing is read for a row nobody opened
+
+    const details = row.querySelector("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+
+    expect(await within(row).findByText(/^Checks/)).toHaveTextContent(
+      "Checks not_null_orders_amount (blocking), unique_orders_id, accepted_values_orders_status +2 more",
+    );
+    expect(runReads()).toHaveLength(1);
   });
 
   it.each([
