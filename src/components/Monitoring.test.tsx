@@ -1082,6 +1082,32 @@ describe("alert incidents", () => {
   const show = (body: StageAlertIncidents | Reply) =>
     api(() => ({ body: health() }), undefined, undefined, { alerts: () => ("state" in (body as object) ? { body } : body as Reply) });
 
+  it("keeps the stale warning when the alerts filter leaves no row", async () => {
+    const stale = incidentsOf({ state: { status: "available", reason: "the alert evaluator has not run since 10:00", evaluated_at: new Date(Date.now() - 3_600_000).toISOString(), stale: true } });
+    api(() => ({ body: health() }), undefined, undefined, { alerts: () => ({ body: stale }) });
+    open(undefined, "/monitoring?stage=prod&focus=alerts");
+    await ready();
+    expect(screen.getByText(/No open incident in the last evaluation, but it is stale/)).toBeInTheDocument();
+    expect(screen.queryByText("No alert incident is open.")).toBeNull();
+  });
+
+  it("reads the checks of a quality incident that has no pipeline row of its own, once opened", async () => {
+    const quality = incident("q", { status: "delivered", event: "opened", attempts: 1, receivers: 1, delivered: 1 }, {
+      condition: "quality", job: "crm_accounts", run_ids: ["run-crm"], summary: "a blocking quality check failed",
+    });
+    const fetch = api(() => ({ body: health() }), undefined, undefined, {
+      alerts: () => ({ body: incidentsOf({ incidents: [quality] }) }),
+      runQuality: (run) => ({ body: { run_id: run, job: "crm_accounts", status: "FAILURE", complete: true, counts: null, reports: [], runbook: null, sources: [], checks: [] } }),
+    });
+    open();
+    await ready();
+    const row = attentionRow("a blocking quality check failed");
+    const details = row.querySelector("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    await vi.waitFor(() => expect(urls(fetch).filter((u) => u.endsWith("/runs/run-crm/quality"))).toHaveLength(1));
+  });
+
   it("links an incident's runs to their Failed-run screen and names its job", async () => {
     show(incidentsOf({ incidents: [incident("a", { status: "delivered", event: "opened", attempts: 1, receivers: 1, delivered: 1 }, {
       run_ids: ["c94cbcb0-5d1e-4a8e"], job: "sales_orders", product: null, domain: null,

@@ -83,7 +83,8 @@ export function actOn(p: Pipes, a: Alerts, stage: string, services: Item[] = [],
       continue;
     }
     rows.push({
-      key: `incident/${i.id}`, state: i.severity, title: i.summary, detail: i.condition, job: i.job ?? undefined, at: i.opened_at,
+      // The condition's signal kind, so an incident-only quality row still reads its run's checks when opened.
+      key: `incident/${i.id}`, kind, state: i.severity, title: i.summary, detail: i.condition, job: i.job ?? undefined, at: i.opened_at,
       runs: i.run_ids.slice(-3), scope: scopeOf(i), incident: i, lastSeen: i.last_seen_at, sort: RANK[i.severity],
     });
   }
@@ -210,7 +211,7 @@ export function ActOn({ p, a, q, now, stage, services, heading, state, retryPipe
           <StatusBadge state="unknown" /> Stale: {a.data.state.reason}. Its incidents and notifications may be out of date.
         </p>
       )}
-      {rows.length === 0 && <p className="mon-clear">{focus ? "No alert incident is open." : a.ok && a.stale ? STALE_CLEAR : CLEAR}</p>}
+      {rows.length === 0 && <p className="mon-clear">{a.ok && a.stale ? STALE_CLEAR : focus ? "No alert incident is open." : CLEAR}</p>}
       <ul className="mon-items" aria-label="What needs attention">
         {rows.map((r) => {
           const about = r.name ?? r.job ?? r.scope;
