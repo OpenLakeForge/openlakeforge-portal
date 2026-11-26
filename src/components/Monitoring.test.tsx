@@ -871,9 +871,20 @@ describe("data quality", () => {
     expect(attention()).not.toHaveTextContent("Quality check warned");
   });
 
+  it("keeps the signal's own words when the quality counts are of another run", async () => {
+    const soft = counts({ passed: 41, error: 4 });
+    const body = qualityOf({ totals: soft, pipelines: [pq("sales_orders", { state: "warning", counts: soft, run_id: "run-new" })] });
+    const bad = pipeline("sales_orders", { state: "critical", signals: [sig("quality", "critical", { run: "run-old", reason: "a blocking quality check failed" })] });
+    api(() => ({ body: health({ state: "critical" }) }), () => ({ body: pipes({ pipelines: [bad] }) }), undefined, { quality: () => ({ body }) });
+    open();
+    await ready();
+    expect(attention()).not.toHaveTextContent("non-blocking");
+    expect(attentionRow("sales_orders")).toHaveTextContent("Critical");
+  });
+
   it("names the failed checks of a quality row's run once the row is opened, blocking first", async () => {
     const c = counts({ passed: 30, error: 4, blocking: 1 });
-    const body = qualityOf({ totals: c, pipelines: [pq("sales_orders", { state: "critical", counts: c })] });
+    const body = qualityOf({ totals: c, pipelines: [pq("sales_orders", { state: "critical", counts: c, run_id: "run-q1" })] });
     const bad = pipeline("sales_orders", { state: "critical", signals: [sig("quality", "critical", { run: "run-q1" })] });
     const check = (check_id: string, outcome: QualityCheck["outcome"], pipeline_outcome: QualityCheck["pipeline_outcome"] = "continued"): QualityCheck => ({
       engine: "dbt", check_id, table: "orders", column: null, engine_severity: "error", outcome, pipeline_outcome,
@@ -1129,6 +1140,7 @@ describe("alert incidents", () => {
       [[target("on-call", "rejected", 1)], "undeliverable", "Undeliverable", "on-call — Refused"],
       [[target("on-call", "expired", 10)], "undeliverable", "Undeliverable", "on-call — Gave up after 10 attempts"],
       [[target("on-call", "retrying", 1)], "pending", "Pending", "on-call — Retrying · 1 attempt"],
+      [[target("on-call", "retrying", 0)], "pending", "Pending", "on-call — Queued"],
       [[target("discussions", "delivered", 1, DISCUSSION), target("hook", "delivered", 2)], "delivered", "Delivered", "hook — Delivered"],
     ] as const)("reads %j as %s", async (targets, status, word, line) => {
       show(incidentsOf({ incidents: [withTargets([...targets], status)] }));

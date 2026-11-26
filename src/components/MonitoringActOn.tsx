@@ -48,7 +48,11 @@ const scopeOf = (i: AlertIncident) => [i.domain, i.product, i.table].filter(Bool
  * the checks' names: those are on the run's own screen, which the row links. */
 function withCounts(r: Item, q?: Quality): Item {
   if (r.kind !== "quality" || !r.job || !q?.ok) return r;
-  const c = q.data.pipelines.find((x) => x.job === r.job)?.counts;
+  const found = q.data.pipelines.find((x) => x.job === r.job);
+  // The two reads are separate: a run that finished between them leaves counts of another run, which must not reword
+  // this signal. A signal that names no run takes the job's counts.
+  if (r.run && found?.run_id && found.run_id !== r.run) return r;
+  const c = found?.counts;
   const title = c && qualityTitle(c);
   return title && c ? { ...r, title, detail: `${r.detail}\n${countsLine(c)}` } : r;
 }

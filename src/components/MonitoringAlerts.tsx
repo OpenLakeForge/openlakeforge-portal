@@ -59,6 +59,8 @@ export function targetLine(t: DeliveryTarget): string {
   if (t.status === "delivered") return "Delivered";
   if (t.status === "rejected") return "Refused";
   if (t.status === "expired") return `Gave up after ${plural(t.attempts, "attempt")}`;
+  // Not tried yet: the API lists an escalation's receivers before its first attempt, to keep the earlier link.
+  if (t.attempts === 0) return "Queued";
   return `Retrying · ${plural(t.attempts, "attempt")}`;
 }
 
