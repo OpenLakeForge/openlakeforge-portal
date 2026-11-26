@@ -875,9 +875,9 @@ describe("data quality", () => {
     expect(attention()).not.toHaveTextContent("Quality check warned");
   });
 
-  it("keeps the signal's own words when the quality counts are of another run", async () => {
+  it.each([["another run", "run-new"], ["no run", null]])("keeps the signal's own words when the quality counts are of %s", async (_, runId) => {
     const soft = counts({ passed: 41, error: 4 });
-    const body = qualityOf({ totals: soft, pipelines: [pq("sales_orders", { state: "warning", counts: soft, run_id: "run-new" })] });
+    const body = qualityOf({ totals: soft, pipelines: [pq("sales_orders", { state: "warning", counts: soft, run_id: runId })] });
     const bad = pipeline("sales_orders", { state: "critical", signals: [sig("quality", "critical", { run: "run-old", reason: "a blocking quality check failed" })] });
     api(() => ({ body: health({ state: "critical" }) }), () => ({ body: pipes({ pipelines: [bad] }) }), undefined, { quality: () => ({ body }) });
     open();
@@ -1095,9 +1095,9 @@ describe("alert incidents", () => {
     expect(screen.queryByText("No alert incident is open.")).toBeNull();
   });
 
-  it("reads the checks of a quality incident that has no pipeline row of its own, once opened", async () => {
+  it("reads the checks of a quality incident that has no pipeline row of its own, its latest run, once opened", async () => {
     const quality = incident("q", { status: "delivered", event: "opened", attempts: 1, receivers: 1, delivered: 1 }, {
-      condition: "quality", job: "crm_accounts", run_ids: ["run-crm"], summary: "a blocking quality check failed",
+      condition: "quality", job: "crm_accounts", run_ids: ["run-0", "run-1", "run-2", "run-crm"], summary: "a blocking quality check failed",
     });
     const fetch = api(() => ({ body: health() }), undefined, withRunChecks, {
       alerts: () => ({ body: incidentsOf({ incidents: [quality] }) }),

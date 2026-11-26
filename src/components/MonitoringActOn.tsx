@@ -50,8 +50,8 @@ function withCounts(r: Item, q?: Quality): Item {
   if (r.kind !== "quality" || !r.job || !q?.ok) return r;
   const found = q.data.pipelines.find((x) => x.job === r.job);
   // The two reads are separate: a run that finished between them leaves counts of another run, which must not reword
-  // this signal. A signal that names no run takes the job's counts.
-  if (r.run && found?.run_id && found.run_id !== r.run) return r;
+  // this signal, and nor must counts that name no run. A signal that names no run takes the job's counts.
+  if (r.run && found?.run_id !== r.run) return r;
   const c = found?.counts;
   const title = c && qualityTitle(c);
   return title && c ? { ...r, title, detail: `${r.detail}\n${countsLine(c)}` } : r;
@@ -218,7 +218,8 @@ export function ActOn({ p, a, q, now, stage, checks = false, services, heading, 
         {rows.map((r) => {
           const about = r.name ?? r.job ?? r.scope;
           const asked = !!wanted && r.incident?.id === wanted;
-          const checksRun = checks && r.kind === "quality" ? r.run ?? r.runs[0] : undefined;
+          // The signal's run, or else the latest the row keeps (`runs` is oldest first).
+          const checksRun = checks && r.kind === "quality" ? r.run ?? r.runs.at(-1) : undefined;
           return (
             <li key={r.key} className="mon-item" ref={asked ? target : undefined} data-asked={asked || undefined}>
               <details open={asked || undefined} onToggle={toggled(r.key)}>
